@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+dist/
+.vite/
+*.egg-info/
+.env
+.env.*
+!.env.example
+logs/
+*.log
+*.sql
