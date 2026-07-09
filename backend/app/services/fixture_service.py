@@ -80,16 +80,209 @@ def _upsert_fixture(db: Session, row: dict) -> Fixture | None:
     return obj
 
 
+def _is_free_plan_error(data: dict) -> bool:
+    """检测 API 返回的免费版限制错误"""
+    errors = data.get("errors", {})
+    if isinstance(errors, dict):
+        plan_msg = errors.get("plan", "")
+        if isinstance(plan_msg, str) and "free plans" in plan_msg.lower():
+            return True
+    return False
+
+
+def _sync_one_league_by_season(db: Session, league_id: int, season_year: int) -> tuple[int, dict | None]:
+    """按 league+season 拉取赛程（付费版），返回 (synced_count, plan_error_data)"""
+    msg = f"联赛 {league_id} 赛季 {season_year}"
+    page_num = 1
+    synced = 0
+
+    while True:
+        try:
+            url = f"{settings.api_football_base_url}/fixtures"
+            params = {"league": str(league_id), "season": str(season_year), "page": page_num}
+            response = httpx.get(
+                url,
+                headers={"x-apisports-key": settings.api_football_key},
+                params=params,
+                timeout=30.0,
+            )
+            remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
+            limit = response.headers.get("x-ratelimit-requests-limit", "?")
+            logger.debug(f"API[{response.status_code}] {url} league={league_id} season={season_year} page={page_num}  remaining={remaining}/{limit}")
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            logger.error(f"拉取{msg}赛程失败 (page={page_num}): {e}")
+            print(f"  {msg} page={page_num} FAILED: {e}")
+            return (synced, None)
+
+        errors = data.get("errors", [])
+        if errors:
+            err_msg = errors if isinstance(errors, str) else str(errors)
+            logger.warning(f"API 返回错误 {msg}: {err_msg}")
+            print(f"  {msg} API errors: {err_msg}")
+            # 返回错误数据以便调用方判断是否是免费版限制
+            if _is_free_plan_error(data):
+                return (synced, data)
+            return (synced, None)
+
+        items = data.get("response", [])
+        if not items:
+            logger.info(f"{msg}: 无数据 (page={page_num})")
+            break
+
+        for row in items:
+            _upsert_fixture(db, row)
+
+        synced += len(items)
+        db.commit()
+
+        paging = data.get("paging", {})
+        total_pages = paging.get("total") if isinstance(paging.get("total"), int) else 0
+        current = paging.get("current", page_num)
+        if current >= total_pages or len(items) == 0:
+            break
+        page_num += 1
+        time.sleep(0.2)
+
+    return (synced, None)
+
+
+def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
+    """通用 API 请求，返回 (data, error_msg)"""
+    try:
+        response = httpx.get(
+            f"{settings.api_football_base_url}/fixtures",
+            headers={"x-apisports-key": settings.api_football_key},
+            params=params,
+            timeout=30.0,
+        )
+        remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
+        logger.debug(f"API[{response.status_code}] fixtures params={params}  remaining={remaining}")
+        response.raise_for_status()
+        data = response.json()
+
+        errors = data.get("errors", [])
+        if errors:
+            err_msg = errors if isinstance(errors, str) else "; ".join(
+                f"{k}: {v}" for k, v in errors.items()
+            ) if isinstance(errors, dict) else str(errors)
+            return (None, err_msg)
+        return (data, None)
+    except Exception as e:
+        return (None, str(e))
+
+
+def _parse_free_plan_date_range(err_msg: str) -> tuple[str | None, str | None]:
+    """从免费版错误信息中提取可用日期范围，如 'try from 2026-07-05 to 2026-07-07'"""
+    import re
+    m = re.search(r'try from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})', err_msg)
+    if m:
+        return (m.group(1), m.group(2))
+    return (None, None)
+
+
+def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
+                        days_back: int = 7, days_forward: int = 7) -> int:
+    """免费版回退方案: 逐日查询赛程，自动检测免费版日期窗口并仅查询可用日"""
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    total_synced = 0
+
+    # ── 步骤1: 先探测今天，确认日期窗口 ──
+    allowed_dates: set[str] = set()
+    today_str = today.strftime("%Y-%m-%d")
+    data, err = _fetch_fixtures_by_params({"date": today_str})
+
+    if data is None and err and "rateLimit" in err:
+        time.sleep(10)
+        data, err = _fetch_fixtures_by_params({"date": today_str})
+
+    if data is not None:
+        # 今天可用，尝试识别完整窗口
+        allowed_dates.add(today_str)
+        # 尝试昨天和明天来确定边界
+        for day_offset in (-1, 1, -2, 2):
+            test_date = (today + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            if test_date in allowed_dates:
+                continue
+            d, e = _fetch_fixtures_by_params({"date": test_date})
+            if d is not None:
+                allowed_dates.add(test_date)
+            elif e:
+                parsed_from, parsed_to = _parse_free_plan_date_range(e)
+                if parsed_from and parsed_to:
+                    # 用 API 建议的范围扩展
+                    from_dt = datetime.strptime(parsed_from, "%Y-%m-%d")
+                    to_dt = datetime.strptime(parsed_to, "%Y-%m-%d")
+                    d2_dt = from_dt
+                    while d2_dt <= to_dt:
+                        allowed_dates.add(d2_dt.strftime("%Y-%m-%d"))
+                        d2_dt += timedelta(days=1)
+            time.sleep(0.15)
+    elif err:
+        # 今天的请求也出错，尝试解析错误中的建议范围
+        parsed_from, parsed_to = _parse_free_plan_date_range(err)
+        if parsed_from and parsed_to:
+            from_dt = datetime.strptime(parsed_from, "%Y-%m-%d")
+            to_dt = datetime.strptime(parsed_to, "%Y-%m-%d")
+            d2_dt = from_dt
+            while d2_dt <= to_dt:
+                allowed_dates.add(d2_dt.strftime("%Y-%m-%d"))
+                d2_dt += timedelta(days=1)
+        else:
+            logger.warning(f"无法确定可用日期范围: {err}")
+            return 0
+
+    if not allowed_dates:
+        logger.warning("未找到任何可用日期，跳过赛程同步")
+        return 0
+
+    # ── 步骤2: 只请求可用日期 ──
+    sorted_dates = sorted(allowed_dates)
+    logger.info(f"免费版可用日期窗口: {sorted_dates[0]} ~ {sorted_dates[-1]} ({len(sorted_dates)} 天)")
+    print(f"  免费版日期窗口: {sorted_dates[0]} ~ {sorted_dates[-1]} ({len(sorted_dates)} 天)")
+
+    for i, date_str in enumerate(sorted_dates):
+        # 今天已经在步骤1中获取了，跳过重复请求
+        if date_str == today_str and data is not None:
+            items = data.get("response", [])
+        else:
+            d, e = _fetch_fixtures_by_params({"date": date_str})
+            if d is None:
+                if e and "rateLimit" in e:
+                    time.sleep(10)
+                    d, e = _fetch_fixtures_by_params({"date": date_str})
+                if d is None:
+                    logger.warning(f"date={date_str} 跳过: {e}")
+                    continue
+            items = d.get("response", [])
+
+        date_synced = 0
+        for row in items:
+            league_raw = row.get("league", {})
+            if league_raw.get("id") in enabled_league_ids:
+                _upsert_fixture(db, row)
+                date_synced += 1
+                total_synced += 1
+
+        if date_synced > 0:
+            db.commit()
+            print(f"    {date_str}: {date_synced} 场 ✓")
+
+        # 间隔 2.5 秒（30次/分钟限制）
+        if i < len(sorted_dates) - 1:
+            time.sleep(2.5)
+
+    logger.info(f"逐日查询完成: 共 {total_synced} 场")
+    return total_synced
+
+
 def sync_fixtures(db: Session) -> None:
-    """每日同步: 遍历已启用联赛当前赛季，拉取近 7 天 + 未来 7 天赛程"""
+    """每日同步: 先尝试 league+season 分页，免费版则回退到日期范围拉取"""
     if not settings.api_football_key:
         logger.warning("API_FOOTBALL_KEY 未配置，跳过赛程同步")
         return
-
-    from datetime import timedelta
-    today = datetime.now().date()
-    from_date = (today - timedelta(days=1)).isoformat()
-    to_date = today.isoformat()
 
     seasons = (
         db.query(Season)
@@ -104,42 +297,30 @@ def sync_fixtures(db: Session) -> None:
         logger.warning("没有找到当前赛季，跳过赛程同步")
         return
 
+    enabled_league_ids = {s.league_id for s in seasons}
     total_synced = 0
     processed = 0
+
     for season in seasons:
-        msg = f"联赛 {season.league_id} 赛季 {season.year}"
-        logger.info(f"拉取{msg}昨日+今日赛程 ({from_date} ~ {to_date})...")
-
-        try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/fixtures",
-                headers={"x-apisports-key": settings.api_football_key},
-                params={
-                    "league": str(season.league_id),
-                    "season": str(season.year),
-                    "from": from_date,
-                    "to": to_date,
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            logger.error(f"拉取{msg}赛程失败: {e}")
-            print(f"  {msg} FAILED: {e}")
-            continue
-
-        items = data.get("response", [])
-        if not items:
-            continue
-
-        for row in items:
-            _upsert_fixture(db, row)
-
-        db.commit()
+        synced, plan_error = _sync_one_league_by_season(db, season.league_id, season.year)
         processed += 1
-        total_synced += len(items)
-        print(f"  [{processed}/{len(seasons)}] {msg}: {len(items)} 场")
+
+        if plan_error is not None:
+            # 免费版限制，切换到日期回退方案
+            logger.warning(
+                f"检测到免费版 API 限制 (league={season.league_id} season={season.year})，"
+                f"切换到按日期范围拉取 ({len(enabled_league_ids)} 个联赛)"
+            )
+            print(f"  ⚠️ 免费版限制，改用日期范围拉取...")
+            # 回滚当前赛季未提交的数据
+            db.rollback()
+            # 按日期范围拉取所有启用联赛的赛程
+            total_synced = _sync_by_date_range(db, enabled_league_ids)
+            print(f"  日期范围拉取完成: {total_synced} 场")
+            break
+        else:
+            total_synced += synced
+            print(f"  [{processed}/{len(seasons)}] 联赛 {season.league_id} 赛季 {season.year}: {synced} 场")
 
     logger.info(f"赛程每日同步完成，共 {total_synced} 场")
     print(f"  赛程每日同步完成: {total_synced} 场")
@@ -150,13 +331,44 @@ def sync_fixtures(db: Session) -> None:
 
 # ──────────── sub-data sync ────────────
 
-BATCH_SIZE = 4
-MAX_WORKERS = 4
+BATCH_SIZE = 1
+MAX_WORKERS = 1
 RETRY_MAX = 3
+API_RETRY_MAX = 3          # 单次 API 调用 429 重试次数
+API_BASE_DELAY = 1.5       # API 基础延迟(秒)
+
+
+def _api_get(endpoint: str, params: dict) -> dict:
+    """带 429 重试和退避的 API GET 请求"""
+    url = f"{settings.api_football_base_url}/{endpoint}"
+    headers = {"x-apisports-key": settings.api_football_key}
+    for attempt in range(API_RETRY_MAX):
+        try:
+            r = httpx.get(url, headers=headers, params=params, timeout=30.0)
+            if r.status_code == 429:
+                wait = API_BASE_DELAY * (2 ** attempt)
+                logger.debug(f"429 限流, 等待 {wait:.1f}s 后重试 #{attempt+1}")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                wait = API_BASE_DELAY * (2 ** attempt)
+                logger.debug(f"429 限流, 等待 {wait:.1f}s 后重试 #{attempt+1}")
+                time.sleep(wait)
+                continue
+            raise
+    # 所有重试均失败
+    raise httpx.HTTPStatusError(
+        f"429 Too Many Requests after {API_RETRY_MAX} retries for {endpoint}",
+        request=r.request if 'r' in dir() else None,
+        response=r if 'r' in dir() else None,
+    )
 
 
 def _do_fetch(db: Session, fixture_id: int) -> None:
-    """4 个 API 并行请求，已存在则跳过，纯 INSERT 无 DELETE"""
+    """串行请求 4 个 API，已存在则跳过，纯 INSERT 无 DELETE"""
     from app.models.fixture import FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
 
     results = {}
@@ -195,10 +407,10 @@ def _do_fetch(db: Session, fixture_id: int) -> None:
     if need_stats: tasks.append((_fetch_statistics, "statistics"))
     if need_players: tasks.append((_fetch_player_stats, "players"))
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(_fetch_one, fn, key) for fn, key in tasks]
-        for f in futures:
-            f.result()
+    # 串行请求避免 429 限流
+    for fn, key in tasks:
+        _fetch_one(fn, key)
+        time.sleep(0.5)  # 每个子请求间隔 0.5s
 
     fail = [k for k in ["events", "lineups", "statistics", "players"]
             if k in results and not results[k]]
@@ -221,7 +433,7 @@ def _sync_one_fixture_sub_data(fixture_id: int) -> bool:
         except Exception as e:
             db.rollback()
             if attempt < RETRY_MAX - 1:
-                time.sleep(2 * (attempt + 1))  # 退避: 2s, 4s, 6s
+                time.sleep(3 * (2 ** attempt))  # 退避: 3s, 6s, 12s
                 logger.debug(f"子数据重试 fixture={fixture_id} #{attempt+1}")
             else:
                 logger.warning(f"子数据失败 fixture={fixture_id}: {e}")
@@ -277,7 +489,7 @@ def sync_completed_sub_data(db: Session) -> None:
             if batch_no == 1 or batch_no % 10 == 0 or batch_no * BATCH_SIZE >= len(ids):
                 print(f"    [{datetime.now().strftime('%H:%M:%S')}] {total_ok}/{len(ids)}", flush=True)
 
-        time.sleep(0.3)  # 批次间隔
+        time.sleep(2.0)  # 批次间隔
 
     db.expire_all()
     logger.info(f"子数据同步完成 ({total_ok}/{len(ids)}, 失败 {total_fail})")
@@ -285,14 +497,7 @@ def sync_completed_sub_data(db: Session) -> None:
 
 def _fetch_events(db: Session, fixture_id: int) -> None:
     try:
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures/events",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"fixture": fixture_id},
-            timeout=30.0,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = _api_get("fixtures/events", {"fixture": fixture_id})
     except Exception as e:
         logger.warning(f"拉取事件失败 fixture={fixture_id}: {e}")
         return
@@ -322,14 +527,7 @@ def _fetch_events(db: Session, fixture_id: int) -> None:
 
 def _fetch_lineups(db: Session, fixture_id: int) -> None:
     try:
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures/lineups",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"fixture": fixture_id},
-            timeout=30.0,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = _api_get("fixtures/lineups", {"fixture": fixture_id})
     except Exception as e:
         logger.warning(f"拉取阵容失败 fixture={fixture_id}: {e}")
         return
@@ -376,14 +574,7 @@ def _fetch_lineups(db: Session, fixture_id: int) -> None:
 
 def _fetch_statistics(db: Session, fixture_id: int) -> None:
     try:
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures/statistics",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"fixture": fixture_id},
-            timeout=30.0,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = _api_get("fixtures/statistics", {"fixture": fixture_id})
     except Exception as e:
         logger.warning(f"拉取统计失败 fixture={fixture_id}: {e}")
         return
@@ -406,14 +597,7 @@ def _fetch_statistics(db: Session, fixture_id: int) -> None:
 
 def _fetch_player_stats(db: Session, fixture_id: int) -> None:
     try:
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures/players",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"fixture": fixture_id},
-            timeout=30.0,
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = _api_get("fixtures/players", {"fixture": fixture_id})
     except Exception as e:
         logger.warning(f"拉取球员统计失败 fixture={fixture_id}: {e}")
         return

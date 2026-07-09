@@ -33,6 +33,7 @@ class PlayerSchema(BaseModel):
     lastname: Optional[str] = None
     age: Optional[int] = None
     nationality: Optional[str] = None
+    position: Optional[str] = None
     height: Optional[str] = None
     weight: Optional[str] = None
     injured: bool = False

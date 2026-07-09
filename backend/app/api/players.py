@@ -24,7 +24,10 @@ def _get_players_sync(db, page, page_size, search):
     query = db.query(Player)
     if search:
         query = query.filter(or_(
-            Player.name.contains(search), Player.name_zh.contains(search),
+            Player.name.contains(search),
+            Player.name_zh.contains(search),
+            Player.firstname.contains(search),
+            Player.lastname.contains(search),
             Player.nationality.contains(search),
         ))
     total = query.count()
@@ -34,6 +37,13 @@ def _get_players_sync(db, page, page_size, search):
     ).order_by(Player.id).offset((page - 1) * page_size).limit(page_size).all())
     for p in players:
         zh_swap(p)
+        # 从统计数据中提取 position 到顶层
+        if not getattr(p, 'position', None):
+            for s in p.statistics:
+                games = s.games or {}
+                if isinstance(games, dict) and games.get('position'):
+                    p.position = games['position']
+                    break
         for s in p.statistics:
             if s.team: zh_swap(s.team)
             if s.league: zh_swap(s.league)
@@ -53,6 +63,13 @@ def _get_player_sync(db, player_id):
     if player is None:
         raise HTTPException(status_code=404, detail="球员不存在")
     zh_swap(player)
+    # 从统计数据中提取 position 到顶层
+    if not getattr(player, 'position', None):
+        for s in player.statistics:
+            games = s.games or {}
+            if isinstance(games, dict) and games.get('position'):
+                player.position = games['position']
+                break
     for s in player.statistics:
         if s.team: zh_swap(s.team)
         if s.league: zh_swap(s.league)

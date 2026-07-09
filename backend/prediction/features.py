@@ -30,7 +30,7 @@ from app.db.session import SessionLocal, engine
 
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), 'features.csv')
 
-CUP_LEAGUES = {45, 2, 3, 848, 10, 11, 13, 17, 18, 666}
+CUP_LEAGUES = {1, 4, 5, 6, 7, 8, 9, 848, 10, 11, 13, 17, 18, 666}
 WINDOW_SHORT = 5
 WINDOW_LONG = 10
 

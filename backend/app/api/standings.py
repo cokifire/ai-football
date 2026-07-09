@@ -11,10 +11,26 @@ from app.core.zh import standings_apply_denorm_zh
 router = APIRouter()
 
 
+@router.get("/standings/seasons")
+async def get_standing_seasons(
+    league_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """返回该联赛在积分榜表中实际存在的赛季列表（降序）"""
+    rows = (
+        db.query(Standing.season)
+        .filter(Standing.league_id == league_id)
+        .distinct()
+        .order_by(Standing.season.desc())
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 @router.get("/standings", response_model=PaginatedResponse[StandingSchema])
 async def get_standings(
     league_id: int = Query(...), season: int | None = Query(None),
-    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     return await asyncio.to_thread(_get_standings_sync, db, league_id, season, page, page_size)

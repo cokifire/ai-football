@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query, Depends
+from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -22,14 +23,58 @@ def _date_to_utc_range(date_str: str) -> tuple[str, str]:
 @router.post("/predict/{fixture_id}")
 async def predict_match(fixture_id: int):
     """手动触发单场预测"""
+    logger.info(f"收到单场预测请求: fixture_id={fixture_id}")
+    import time
+    t0 = time.time()
+
     def _run():
         from prediction.predict import predict_fixture
         return predict_fixture(fixture_id)
 
-    result = await asyncio.to_thread(_run)
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.error(f"单场预测异常 fixture_id={fixture_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"预测异常: {str(e)}")
+
+    elapsed = time.time() - t0
     if result is None:
+        logger.warning(f"单场预测返回空 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
         raise HTTPException(status_code=400, detail="预测失败（数据不足或比赛不存在）")
-    return {"status": "ok", "fixture_id": fixture_id, "result": result}
+
+    logger.info(f"单场预测完成 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
+    return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
+
+
+@router.post("/odds/{fixture_id}")
+async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
+    """手动触发赔率抓取，保存到 odds 表（每次点击都覆盖旧数据）。"""
+    logger.info(f"收到赔率抓取请求: fixture_id={fixture_id}")
+
+    def _run():
+        from prediction.predict import _fetch_odds, _save_odds
+        result = _fetch_odds(fixture_id)
+        if result is None:
+            return None
+        _save_odds(db, fixture_id, result)
+        return result
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.error(f"赔率抓取异常 fixture_id={fixture_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"赔率抓取异常: {str(e)}")
+
+    if result is None:
+        raise HTTPException(status_code=400, detail="未获取到赔率数据（可能该比赛暂无赔率）")
+
+    logger.info(f"赔率抓取完成 fixture_id={fixture_id}")
+    return {
+        "status": "ok",
+        "fixture_id": fixture_id,
+        "updated_at": datetime.now().isoformat(),
+        "data": result,
+    }
 
 
 @router.get("/predictions")

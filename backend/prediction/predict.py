@@ -68,6 +68,16 @@ def _poisson_top3(lambda_home: float, lambda_away: float,
     return scores[:3]
 
 
+def _normalize_llm_fields(parsed: dict) -> dict:
+    """将模型可能返回的列表/数值字段规整为字符串，避免写入 TEXT 列时报错。"""
+    for k, v in list(parsed.items()):
+        if isinstance(v, list):
+            parsed[k] = ",".join(str(x) for x in v)
+        elif isinstance(v, (int, float)):
+            parsed[k] = str(v)
+    return parsed
+
+
 def _call_llm(prompt: str) -> dict | None:
     try:
         import httpx
@@ -81,18 +91,30 @@ def _call_llm(prompt: str) -> dict | None:
                 "model": settings.deepseek_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens": 800,
+                "max_tokens": 1200,
+                # 关闭推理模型的 thinking，使其直接输出最终 JSON（content 不再为空）
+                "enable_thinking": False,
             },
-            timeout=30.0,
+            timeout=40.0,
         )
         resp.raise_for_status()
-        content = resp.json()['choices'][0]['message']['content']
+        message = resp.json()['choices'][0]['message']
+        content = message.get('content') or ''
+        # 兜底：部分推理模型把结果放在 reasoning_content
+        if not content.strip() and message.get('reasoning_content'):
+            content = message['reasoning_content']
         parsed = _parse_llm_json(content)
         if parsed and _has_required_llm_fields(parsed):
-            return parsed
+            return _normalize_llm_fields(parsed)
         logger.warning("LLM 返回缺少必要预测字段")
     except Exception as e:
-        logger.warning(f"LLM 失败: {e}")
+        detail = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                detail += f" | body: {e.response.text[:500]}"
+            except Exception:
+                pass
+        logger.warning(f"LLM 失败: {detail}")
     return None
 
 
@@ -170,25 +192,45 @@ def _fetch_odds(fixture_id: int) -> dict | None:
         if not bookmaker_odds:
             return None
 
-        # 取数据最多的前5个庄家
+        # 取数据最多的前5个庄家，组织为结构化数据（仅返回 odds_data）
         sorted_bms = sorted(bookmaker_odds.items(), key=lambda x: -len(x[1]))[:5]
-        # 格式化输出
-        lines = []
+        odds_data = []
         for bm_name, dates in sorted_bms:
-            lines.append(f"  {bm_name}:")
+            entries = []
             for day_offset in range(6, -1, -1):
-                d = (today - timedelta(days=day_offset)).strftime("%m/%d")
                 key = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
-                odds = dates.get(key)
-                if odds:
-                    lines.append(f"    {d}: 主{odds['home_odd']:.0%}({odds['home_raw']}) 平{odds['draw_odd']:.0%}({odds['draw_raw']}) 客{odds['away_odd']:.0%}({odds['away_raw']})")
+                o = dates.get(key)
+                if o:
+                    entries.append({
+                        "date": key,
+                        "home_odd": o["home_odd"], "draw_odd": o["draw_odd"], "away_odd": o["away_odd"],
+                        "home_raw": o["home_raw"], "draw_raw": o["draw_raw"], "away_raw": o["away_raw"],
+                    })
                 else:
-                    lines.append(f"    {d}: 无数据")
+                    entries.append({"date": key})
+            odds_data.append({"bookmaker": bm_name, "entries": entries})
 
-        return {"text": "\n" + "\n".join(lines)}
+        return {"odds_data": odds_data}
     except Exception as e:
         logger.debug(f"赔率获取失败: {e}")
     return None
+
+
+def _odds_to_text(odds_data: list) -> str:
+    """将结构化赔率数据转换为可读文本，供 LLM 提示词使用。"""
+    from datetime import datetime as _dt
+    lines = []
+    for bm in odds_data:
+        lines.append(f"  {bm['bookmaker']}:")
+        for e in bm['entries']:
+            try:
+                d = _dt.strptime(e['date'], "%Y-%m-%d").strftime("%m/%d")
+            except Exception:
+                d = e['date']
+            if e.get('home_odd') is not None:
+                lines.append(f"    {d}: 主{e['home_odd']:.0%}({e['home_raw']}) 平{e['draw_odd']:.0%}({e['draw_raw']}) 客{e['away_odd']:.0%}({e['away_raw']})")
+
+    return "\n" + "\n".join(lines)
 
 
 def _fetch_standings_text(db, team_id, league_id, season) -> str:
@@ -319,21 +361,17 @@ def _competition_context(fixture: dict) -> str:
             "这类比赛样本少、轮换多、战意和赛制影响大，赔率市场不可作为主要判断依据。"
         )
     return (
-        "本场更接近常规联赛环境。赔率仍只能作为市场情绪和风险提示，"
-        "最终判断应优先依据球队状态、主客场、积分背景和对手含金量。"
+        "本场是常规联赛。赔率仍只能作为市场情绪和风险提示，"
+        "最终判断应优先依据球队状态、主客场、积分背景和近5场双方比赛历史。"
     )
 
 
-def _build_llm_prompt(fixture: dict, xgb_result: dict, odds: dict | None,
+def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       home_stats: str, away_stats: str,
                       home_standings: str, away_standings: str,
                       lineups_text: str) -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
-
-    odds_text = ""
-    if odds and odds.get("text"):
-        odds_text = f"{odds['text']}"
 
     model_probs = {'主胜': pw['win_home'], '平局': pw['win_draw'], '客胜': pw['win_away']}
     model_top = max(model_probs, key=model_probs.get)
@@ -342,39 +380,39 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds: dict | None,
 
     return f"""你是一位专业足球分析师.请对以下比赛进行独立分析并给出最终预测.
 
-【比赛信息】
-{fixture['home_name']} vs {fixture['away_name']}
-联赛:{fixture['league_name']} 赛季:{fixture['season']}
-赛事属性:{competition_context}
-阵容信息:{lineups_text}
+    【比赛信息】
+    {fixture['home_name']} vs {fixture['away_name']}
+    联赛:{fixture['league_name']} 赛季:{fixture['season']}
+    赛事属性:{competition_context}
+    阵容信息:{lineups_text}
 
-【{fixture['home_name']} 完整数据】
-积分榜: {home_standings}
-近10场战绩: {home_stats}
+    【{fixture['home_name']} 完整数据】
+    积分榜: {home_standings}
+    近10场战绩: {home_stats}
 
-【{fixture['away_name']} 完整数据】
-积分榜: {away_standings}
-近10场战绩: {away_stats}
+    【{fixture['away_name']} 完整数据】
+    积分榜: {away_standings}
+    近10场战绩: {away_stats}
 
-{"" if not odds_text else "【市场赔率】" + odds_text}
+    {"" if not odds_text else "【市场赔率】" + odds_text}
 
-【机器模型参考】仅作校准，不是结论
-胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
-让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
-Top3比分参考: {top3_str}
-模型最高项:{model_top}({model_top_pct:.0%})
+    【机器模型参考】仅作校准，不是结论
+    胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
+    让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
+    Top3比分参考: {top3_str}
+    模型最高项:{model_top}({model_top_pct:.0%})
 
-【重要规则】
-1. 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断，再参考机器模型做校准。
-2. 不要因为模型最高项是{model_top}就默认选择它；如果球队数据、赛程背景或赔率信号不支持，应选择其他结果。
-3. 重点检查平局和冷门可能性，不要为了迎合模型概率而排除低概率但合理的结果。
-4. 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
-5. 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
-6. 世界杯/国家队比赛若没有确认首发，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
-7. 置信度要反映真实不确定性；数据冲突、杯赛、友谊赛、世界杯、阵容未确认或样本不足时应降低置信度。
+    【重要规则】
+    1. 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断，再参考机器模型做校准。
+    2. 不要因为模型最高项是{model_top}就默认选择它；如果球队数据、赛程背景或赔率信号不支持，应选择其他结果。
+    3. 重点检查平局和冷门可能性，不要为了迎合模型概率而排除低概率但合理的结果。
+    4. 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
+    5. 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
+    6. 世界杯/国家队比赛若没有确认首发，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
+    7. 置信度要反映真实不确定性；数据冲突、杯赛、友谊赛、世界杯、阵容未确认或样本不足时应降低置信度。
 
-请严格输出JSON格式:
-{{"win":"主胜|平局|客胜","win_pct":"本场预测信心百分比,如85%","score":"三个最可能比分用逗号分隔如2-1,1-1,3-0","handicap_num":"让球数,负数=主队让,正数=客队让,如-1","handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%","ou_line":"大小球线如2.5","ou_type":"大或小","ou_pct":"大小球概率百分比如60%","brief_analysis":"一句话结论(20字内)","core_data":"主客队数据对比(100字内)","deep_report":"攻防对比/数据支撑(200字内)"}}"""
+    请严格输出JSON格式:
+    {{"win":"主胜|平局|客胜","win_pct":"本场预测信心百分比,如85%","score":"三个最可能比分用逗号分隔如2-1,1-1,3-0","handicap_num":"让球数,负数=主队让,正数=客队让,如-1","handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%","ou_line":"大小球线如2.5","ou_type":"大或小","ou_pct":"大小球概率百分比如60%","brief_analysis":"一句话结论(20字内)","core_data":"主客队数据对比(100字内)","deep_report":"攻防对比/数据支撑(200字内)"}}"""
 
 
 def predict_fixture(fixture_id: int, db=None) -> dict | None:
@@ -439,6 +477,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
 
         # 3. 赔率
         odds = _fetch_odds(fixture_id)
+        odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
 
         # 4. 全量数据
         home_stats = _fetch_team_recent_via_api(fixture['home_id'])
@@ -450,7 +489,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
         # 5. LLM
         llm_result = None
         try:
-            prompt = _build_llm_prompt(fixture, xgb_result, odds,
+            prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
                                        lineups_text)
@@ -532,3 +571,32 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
         'now': datetime.now(),
     })
     db.commit()
+
+
+def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
+    """将赔率数据写入 odds 表，每次点击都覆盖旧数据（仅保存 odds_data）。"""
+    odds_data = odds_result.get("odds_data")
+    now = datetime.now()
+    # 确保表存在（与现有 raw SQL 管理表的方式保持一致）
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS odds (
+            fixture_id INT PRIMARY KEY,
+            odds_data JSON,
+            updated_at DATETIME
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """))
+    db.execute(text("""
+        INSERT INTO odds (fixture_id, odds_data, updated_at)
+        VALUES (:fid, :odata, :now)
+        ON DUPLICATE KEY UPDATE
+            odds_data = :odata,
+            updated_at = :now
+    """), {
+        "fid": fixture_id,
+        "odata": json.dumps(odds_data, ensure_ascii=False),
+        "now": now,
+    })
+    db.commit()
+
+
+

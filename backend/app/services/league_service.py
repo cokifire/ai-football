@@ -56,7 +56,8 @@ def sync_leagues(db: Session) -> None:
 
         # 联赛 upsert
         league = db.query(League).get(league_raw["id"])
-        if league is None:
+        is_new_league = league is None
+        if is_new_league:
             league = League(id=league_raw["id"])
             db.add(league)
             league_count += 1
@@ -67,8 +68,8 @@ def sync_leagues(db: Session) -> None:
         league.country_name = country_raw.get("name", "")
         league.country_code = country_raw.get("code", "")
         league.country_flag = country_raw.get("flag", "")
-        # 白名单自动启用，已启用的保持不变
-        if league_raw["id"] in WHITELIST_LEAGUE_IDS:
+        # 白名单自动启用（仅对新联赛生效，已有联赛保持用户手动设置不变）
+        if is_new_league and league_raw["id"] in WHITELIST_LEAGUE_IDS:
             league.enabled = True
 
         # 赛季 upsert
