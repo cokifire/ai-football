@@ -35,6 +35,46 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 FEATURE_COLS_PATH = os.path.join(MODELS_DIR, 'feature_cols.pkl')
 
 
+# ── API-Football 请求节流（免费版 10 次/分钟）──
+import time
+from collections import deque
+from threading import Lock
+
+_API_RATE_LIMIT = 10          # 免费版每分钟最多请求次数
+_API_RATE_WINDOW = 60.0       # 滚动时间窗（秒）
+_api_timestamps: deque = deque()
+_api_rate_lock = Lock()
+
+
+def _throttle_api_football():
+    """限制对 API-Football 的请求频率：任意 60 秒滚动窗口内最多 10 次。"""
+    with _api_rate_lock:
+        now = time.monotonic()
+        # 清理已离开时间窗的时间戳
+        while _api_timestamps and now - _api_timestamps[0] >= _API_RATE_WINDOW:
+            _api_timestamps.popleft()
+        # 窗口已满则等待最早的一次离开窗口
+        if len(_api_timestamps) >= _API_RATE_LIMIT:
+            wait = _API_RATE_WINDOW - (now - _api_timestamps[0]) + 0.1
+            if wait > 0:
+                time.sleep(wait)
+        _api_timestamps.append(time.monotonic())
+
+
+def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
+    """带节流地请求 API-Football 的指定接口，返回解析后的 JSON。"""
+    _throttle_api_football()
+    import httpx
+    r = httpx.get(
+        f"{settings.api_football_base_url}/{path}",
+        headers={"x-apisports-key": settings.api_football_key},
+        params=params,
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def _load_feature_cols() -> list[str]:
     with open(FEATURE_COLS_PATH, 'rb') as f:
         return pickle.load(f)
@@ -147,47 +187,117 @@ def _has_required_llm_fields(data: dict) -> bool:
     return all(str(data.get(k) or "").strip() for k in required)
 
 
-def _fetch_odds(fixture_id: int) -> dict | None:
-    """拉取近7天至少5个庄家的赔率变化"""
+def _parse_1x2(values) -> dict | None:
+    """解析 1X2（主/平/客）赔率，返回隐含概率与原始赔率，失败返回 None。"""
     try:
-        import httpx
+        vals = {v["value"]: float(v["odd"]) for v in values}
+        ho, dr, aw = vals.get("Home"), vals.get("Draw"), vals.get("Away")
+        if not (ho and dr and aw):
+            return None
+        t = 1 / ho + 1 / dr + 1 / aw
+        return {
+            "home_odd": round(1 / ho / t, 3), "draw_odd": round(1 / dr / t, 3), "away_odd": round(1 / aw / t, 3),
+            "home_raw": ho, "draw_raw": dr, "away_raw": aw,
+        }
+    except Exception:
+        return None
+
+
+def _parse_asian_handicap(values) -> dict | None:
+    """解析亚盘（Asian Handicap）。
+
+    收集所有让球盘口，默认取双方赔率最相近（原始赔率差最小）的盘口线，
+    即庄家认为最均衡的让球盘；返回该盘口的让球线与两侧隐含概率/原始赔率。
+    """
+    try:
+        lines: dict = {}
+        for v in values:
+            s = v["value"]  # e.g. "Home -1.5"
+            team, hcap = s.rsplit(" ", 1)
+            hcap = float(hcap)
+            lines.setdefault(hcap, {})[team] = float(v["odd"])
+        # 仅保留主/客都有的有效盘口
+        valid = {ln: o for ln, o in lines.items() if o.get("Home") and o.get("Away")}
+        if not valid:
+            return None
+        # 默认取双方（主/客）赔率最相近的盘口线
+        ln = min(valid, key=lambda l: abs(valid[l]["Home"] - valid[l]["Away"]))
+        ho, ao = valid[ln]["Home"], valid[ln]["Away"]
+        t = 1 / ho + 1 / ao
+        return {
+            "ah_line": ln,
+            "ah_home_odd": round(1 / ho / t, 3), "ah_away_odd": round(1 / ao / t, 3),
+            "ah_home_raw": ho, "ah_away_raw": ao,
+        }
+    except Exception:
+        return None
+
+
+def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
+    """解析大小球（Goals Over/Under）。
+
+    默认（prefer_line 为 None）取双方赔率最相近（原始赔率差最小）的盘口线，
+    即庄家认为最均衡、最像"五五开"的盘口；若指定 prefer_line 且该盘口存在则优先使用。
+    """
+    try:
+        lines: dict = {}
+        for v in values:
+            s = v["value"]  # e.g. "Over 2.5"
+            kind, ln = s.rsplit(" ", 1)
+            ln = float(ln)
+            lines.setdefault(ln, {})[kind] = float(v["odd"])
+        # 仅保留 Over / Under 都有的有效盘口
+        valid = {ln: o for ln, o in lines.items() if o.get("Over") and o.get("Under")}
+        if not valid:
+            return None
+        if prefer_line is not None and prefer_line in valid:
+            ln = prefer_line
+        else:
+            # 默认：取双方（大/小）赔率最相近的盘口线
+            ln = min(valid, key=lambda l: abs(valid[l]["Over"] - valid[l]["Under"]))
+        ov, un = valid[ln]["Over"], valid[ln]["Under"]
+        t = 1 / ov + 1 / un
+        return {
+            "ou_line": ln,
+            "ou_over_odd": round(1 / ov / t, 3), "ou_under_odd": round(1 / un / t, 3),
+            "ou_over_raw": ov, "ou_under_raw": un,
+        }
+    except Exception:
+        return None
+
+
+def _fetch_odds(fixture_id: int) -> dict | None:
+    """拉取近7天至少5个庄家的赔率（含 1X2 / 亚盘 / 大小球）。"""
+    try:
         from datetime import datetime, timedelta
-        # 收集所有庄家数据: {bookmaker_name: {date: {home_odd, draw_odd, away_odd}}}
+        # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
         today = datetime.now()
 
         for day_offset in range(7):
             date_str = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
-            r = httpx.get(
-                f"{settings.api_football_base_url}/odds",
-                headers={"x-apisports-key": settings.api_football_key},
-                params={"fixture": fixture_id, "date": date_str},
-                timeout=10.0,
-            )
-            r.raise_for_status()
-            data = r.json().get("response", [])
+            data = _api_get("odds", {"fixture": fixture_id, "date": date_str}).get("response", [])
             if not data:
                 continue
 
             for bm in data[0].get("bookmakers", []):
                 bm_name = bm.get("name", "未知")
-                if bm_name not in bookmaker_odds:
-                    bookmaker_odds[bm_name] = {}
+                bm_dict = bookmaker_odds.setdefault(bm_name, {})
                 for bet in bm.get("bets", []):
-                    if bet.get("name") != "Match Winner":
-                        continue
-                    vals = {v["value"]: float(v["odd"]) for v in bet.get("values", [])}
-                    ho, dr, aw = vals.get("Home"), vals.get("Draw"), vals.get("Away")
-                    if not all([ho, dr, aw]):
-                        continue
-                    t = 1/ho + 1/dr + 1/aw
-                    bookmaker_odds[bm_name][date_str] = {
-                        "home_odd": round(1/ho / t, 3),
-                        "draw_odd": round(1/dr / t, 3),
-                        "away_odd": round(1/aw / t, 3),
-                        "home_raw": ho, "draw_raw": dr, "away_raw": aw,
-                    }
-                    break
+                    name = bet.get("name")
+                    values = bet.get("values", [])
+                    parsed = None
+                    if name == "Match Winner":
+                        parsed = _parse_1x2(values)
+                    elif name == "Asian Handicap":
+                        parsed = _parse_asian_handicap(values)
+                    elif name == "Goals Over/Under":
+                        parsed = _parse_over_under(values)
+                    if parsed:
+                        base = bm_dict.get(date_str, {"date": date_str})
+                        base.update(parsed)
+                        base["date"] = date_str
+                        bm_dict[date_str] = base
 
         if not bookmaker_odds:
             return None
@@ -201,11 +311,7 @@ def _fetch_odds(fixture_id: int) -> dict | None:
                 key = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
                 o = dates.get(key)
                 if o:
-                    entries.append({
-                        "date": key,
-                        "home_odd": o["home_odd"], "draw_odd": o["draw_odd"], "away_odd": o["away_odd"],
-                        "home_raw": o["home_raw"], "draw_raw": o["draw_raw"], "away_raw": o["away_raw"],
-                    })
+                    entries.append(o)
                 else:
                     entries.append({"date": key})
             odds_data.append({"bookmaker": bm_name, "entries": entries})
@@ -217,8 +323,13 @@ def _fetch_odds(fixture_id: int) -> dict | None:
 
 
 def _odds_to_text(odds_data: list) -> str:
-    """将结构化赔率数据转换为可读文本，供 LLM 提示词使用。"""
+    """将结构化赔率数据转换为可读文本，供 LLM 提示词使用（含 1X2 / 亚盘 / 大小球）。"""
     from datetime import datetime as _dt
+
+    def _fmt_line(v):
+        fv = float(v)
+        return str(int(fv)) if fv == int(fv) else str(fv)
+
     lines = []
     for bm in odds_data:
         lines.append(f"  {bm['bookmaker']}:")
@@ -227,8 +338,27 @@ def _odds_to_text(odds_data: list) -> str:
                 d = _dt.strptime(e['date'], "%Y-%m-%d").strftime("%m/%d")
             except Exception:
                 d = e['date']
+            parts = []
             if e.get('home_odd') is not None:
-                lines.append(f"    {d}: 主{e['home_odd']:.0%}({e['home_raw']}) 平{e['draw_odd']:.0%}({e['draw_raw']}) 客{e['away_odd']:.0%}({e['away_raw']})")
+                parts.append(
+                    f"1X2 主{e['home_odd']:.0%}({e['home_raw']}) "
+                    f"平{e['draw_odd']:.0%}({e['draw_raw']}) "
+                    f"客{e['away_odd']:.0%}({e['away_raw']})"
+                )
+            if e.get('ah_home_odd') is not None:
+                parts.append(
+                    f"亚盘{_fmt_line(e['ah_line'])} "
+                    f"主{e['ah_home_odd']:.0%}({e['ah_home_raw']}) "
+                    f"客{e['ah_away_odd']:.0%}({e['ah_away_raw']})"
+                )
+            if e.get('ou_over_odd') is not None:
+                parts.append(
+                    f"大小球{_fmt_line(e['ou_line'])} "
+                    f"大{e['ou_over_odd']:.0%}({e['ou_over_raw']}) "
+                    f"小{e['ou_under_odd']:.0%}({e['ou_under_raw']})"
+                )
+            if parts:
+                lines.append(f"    {d}: " + " | ".join(parts))
 
     return "\n" + "\n".join(lines)
 
@@ -247,15 +377,7 @@ def _fetch_standings_text(db, team_id, league_id, season) -> str:
 def _fetch_team_recent_via_api(team_id: int) -> str:
     """通过API拉取球队近10场真实战绩（含逐场对手明细）"""
     try:
-        import httpx
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"team": team_id, "last": 10},
-            timeout=10.0,
-        )
-        r.raise_for_status()
-        data = r.json().get("response", [])
+        data = _api_get("fixtures", {"team": team_id, "last": 10}).get("response", [])
         if not data:
             return "无"
         wins = draws = losses = gf = ga = 0
@@ -299,15 +421,7 @@ def _fetch_team_recent_via_api(team_id: int) -> str:
 def _fetch_lineups_text(fixture_id: int, home_id: int, away_id: int) -> str:
     """拉取确认首发；未公布时返回阵容不确定提示。"""
     try:
-        import httpx
-        r = httpx.get(
-            f"{settings.api_football_base_url}/fixtures/lineups",
-            headers={"x-apisports-key": settings.api_football_key},
-            params={"fixture": fixture_id},
-            timeout=10.0,
-        )
-        r.raise_for_status()
-        data = r.json().get("response", [])
+        data = _api_get("fixtures/lineups", {"fixture": fixture_id}).get("response", [])
         if not data:
             return "未获取到确认首发。国家队/世界杯阵容轮换、临场战术和球员状态不确定，必须降低置信度。"
 
@@ -394,7 +508,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     积分榜: {away_standings}
     近10场战绩: {away_stats}
 
-    {"" if not odds_text else "【市场赔率】" + odds_text}
+    {"" if not odds_text else "【市场赔率】各庄家逐日行情(1X2 / 亚盘 / 大小球)，括号内为原始赔率、前面为隐含概率:" + odds_text}
 
     【机器模型参考】仅作校准，不是结论
     胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
@@ -403,16 +517,19 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     模型最高项:{model_top}({model_top_pct:.0%})
 
     【重要规则】
-    1. 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断，再参考机器模型做校准。
+    1. 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断，再参考机器模型与市场赔率做校准。
     2. 不要因为模型最高项是{model_top}就默认选择它；如果球队数据、赛程背景或赔率信号不支持，应选择其他结果。
     3. 重点检查平局和冷门可能性，不要为了迎合模型概率而排除低概率但合理的结果。
     4. 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
     5. 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
     6. 世界杯/国家队比赛若没有确认首发，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
     7. 置信度要反映真实不确定性；数据冲突、杯赛、友谊赛、世界杯、阵容未确认或样本不足时应降低置信度。
+    8. 必须参考市场赔率中的【亚盘】与【大小球】来校准结论：
+       - 让球(handicap)：handicap_num/handicap_team 应与市场亚盘方向一致（亚盘主胜概率高则主队让球、客胜概率高则客队让球），handicap_pct 与市场亚盘隐含概率对齐。
+       - 大小球(ou)：ou_line 优先取赔率中最均衡（双方赔率最相近）的盘口线，ou_type 与 ou_pct 须与市场大小球隐含概率方向一致（大球隐含概率高则选"大"，否则选"小"）。
 
     请严格输出JSON格式:
-    {{"win":"主胜|平局|客胜","win_pct":"本场预测信心百分比,如85%","score":"三个最可能比分用逗号分隔如2-1,1-1,3-0","handicap_num":"让球数,负数=主队让,正数=客队让,如-1","handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%","ou_line":"大小球线如2.5","ou_type":"大或小","ou_pct":"大小球概率百分比如60%","brief_analysis":"一句话结论(20字内)","core_data":"主客队数据对比(100字内)","deep_report":"攻防对比/数据支撑(200字内)"}}"""
+    {{"win":"主胜|平局|客胜","win_pct":"本场预测信心百分比,如85%","score":"三个最可能比分用逗号分隔如2-1,1-1,3-0","handicap_num":"让球数,负数=主队让,正数=客队让,如-1","handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%","ou_line":"大小球线如2.5(优先取赔率中最均衡盘口线)","ou_type":"大或小","ou_pct":"大小球概率百分比如60%","brief_analysis":"一句话结论(20字内)","core_data":"主客队数据对比(100字内)","deep_report":"攻防对比/数据支撑(200字内)"}}"""
 
 
 def predict_fixture(fixture_id: int, db=None) -> dict | None:
@@ -478,6 +595,12 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
         # 3. 赔率
         odds = _fetch_odds(fixture_id)
         odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
+        # 预测时抓取到的赔率同步落库（每次覆盖旧数据），供前端「查看赔率」读取
+        if odds and odds.get("odds_data"):
+            try:
+                _save_odds(db, fixture_id, odds)
+            except Exception as e:
+                logger.warning(f"赔率保存失败 fixture={fixture_id}: {e}")
 
         # 4. 全量数据
         home_stats = _fetch_team_recent_via_api(fixture['home_id'])
@@ -574,23 +697,30 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
 
 
 def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
-    """将赔率数据写入 odds 表，每次点击都覆盖旧数据（仅保存 odds_data）。"""
+    """将赔率数据追加写入 odds 表（增加模式：每次抓取都新增一条记录，保留历史）。"""
     odds_data = odds_result.get("odds_data")
     now = datetime.now()
-    # 确保表存在（与现有 raw SQL 管理表的方式保持一致）
+    # 兼容旧表结构（fixture_id 为主键的覆盖式表）：检测到旧结构则重建为追加式
+    try:
+        if db.execute(text("SHOW TABLES LIKE 'odds'")).fetchone():
+            if not db.execute(text("SHOW COLUMNS FROM odds LIKE 'id'")).fetchone():
+                db.execute(text("DROP TABLE odds"))
+                db.commit()
+    except Exception:
+        pass
+    # 确保表存在（追加式：每条抓取记录一行）
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS odds (
-            fixture_id INT PRIMARY KEY,
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            fixture_id INT NOT NULL,
             odds_data JSON,
-            updated_at DATETIME
+            created_at DATETIME,
+            INDEX (fixture_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """))
     db.execute(text("""
-        INSERT INTO odds (fixture_id, odds_data, updated_at)
+        INSERT INTO odds (fixture_id, odds_data, created_at)
         VALUES (:fid, :odata, :now)
-        ON DUPLICATE KEY UPDATE
-            odds_data = :odata,
-            updated_at = :now
     """), {
         "fid": fixture_id,
         "odata": json.dumps(odds_data, ensure_ascii=False),

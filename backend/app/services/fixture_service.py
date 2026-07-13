@@ -13,6 +13,47 @@ from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStat
 
 LIVE_SYNC_INTERVAL = 120  # 秒
 
+# TLS 握手/连接超时重试配置
+API_CONNECT_TIMEOUT = 10.0   # 连接(含 TLS 握手)超时
+API_READ_TIMEOUT = 30.0      # 读取响应超时
+API_RETRY_MAX = 3            # 瞬时故障重试次数
+API_RETRY_BASE_DELAY = 1.5   # 退避基数(秒)
+
+
+def _api_get_http(endpoint: str, params: dict) -> httpx.Response:
+    """带 TLS/连接超时重试的 API GET 请求 (返回 httpx.Response)
+
+    仅对瞬时故障重试: TLS 握手超时、连接错误、网络中断、以及
+    429/5xx 等服务端瞬时错误。HTTP 4xx 业务错误(如 401/403)不重试。
+    """
+    url = f"{settings.api_football_base_url}/{endpoint}"
+    headers = {"x-apisports-key": settings.api_football_key}
+    timeout = httpx.Timeout(
+        connect=API_CONNECT_TIMEOUT,
+        read=API_READ_TIMEOUT,
+        write=API_CONNECT_TIMEOUT,
+        pool=API_CONNECT_TIMEOUT,
+    )
+    last_err: Exception | None = None
+    for attempt in range(API_RETRY_MAX):
+        try:
+            r = httpx.get(url, headers=headers, params=params, timeout=timeout)
+            if r.status_code in (429, 500, 502, 503, 504):
+                wait = API_RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    f"API {r.status_code} 瞬时错误 {endpoint}, {wait:.1f}s 后重试 #{attempt+1}"
+                )
+                time.sleep(wait)
+                continue
+            return r
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            last_err = e
+            wait = API_RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning(f"API 请求失败 {endpoint}: {e}, {wait:.1f}s 后重试 #{attempt+1}")
+            time.sleep(wait)
+    # 重试耗尽, 抛出最后一次错误(让调用方按现有逻辑处理)
+    raise last_err or httpx.TransportError(f"API 请求失败 {endpoint}")
+
 # ──────────── daily sync ────────────
 
 def _upsert_fixture(db: Session, row: dict) -> Fixture | None:
@@ -98,17 +139,11 @@ def _sync_one_league_by_season(db: Session, league_id: int, season_year: int) ->
 
     while True:
         try:
-            url = f"{settings.api_football_base_url}/fixtures"
             params = {"league": str(league_id), "season": str(season_year), "page": page_num}
-            response = httpx.get(
-                url,
-                headers={"x-apisports-key": settings.api_football_key},
-                params=params,
-                timeout=30.0,
-            )
+            response = _api_get_http("fixtures", params)
             remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
             limit = response.headers.get("x-ratelimit-requests-limit", "?")
-            logger.debug(f"API[{response.status_code}] {url} league={league_id} season={season_year} page={page_num}  remaining={remaining}/{limit}")
+            logger.debug(f"API[{response.status_code}] fixtures league={league_id} season={season_year} page={page_num}  remaining={remaining}/{limit}")
             response.raise_for_status()
             data = response.json()
         except Exception as e:
@@ -151,12 +186,7 @@ def _sync_one_league_by_season(db: Session, league_id: int, season_year: int) ->
 def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
     """通用 API 请求，返回 (data, error_msg)"""
     try:
-        response = httpx.get(
-            f"{settings.api_football_base_url}/fixtures",
-            headers={"x-apisports-key": settings.api_football_key},
-            params=params,
-            timeout=30.0,
-        )
+        response = _api_get_http("fixtures", params)
         remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
         logger.debug(f"API[{response.status_code}] fixtures params={params}  remaining={remaining}")
         response.raise_for_status()
@@ -339,31 +369,42 @@ API_BASE_DELAY = 1.5       # API 基础延迟(秒)
 
 
 def _api_get(endpoint: str, params: dict) -> dict:
-    """带 429 重试和退避的 API GET 请求"""
+    """带 429 / TLS 超时重试和退避的 API GET 请求 (返回解析后的 json dict)"""
     url = f"{settings.api_football_base_url}/{endpoint}"
     headers = {"x-apisports-key": settings.api_football_key}
+    timeout = httpx.Timeout(
+        connect=API_CONNECT_TIMEOUT,
+        read=API_READ_TIMEOUT,
+        write=API_CONNECT_TIMEOUT,
+        pool=API_CONNECT_TIMEOUT,
+    )
+    r: httpx.Response | None = None
     for attempt in range(API_RETRY_MAX):
         try:
-            r = httpx.get(url, headers=headers, params=params, timeout=30.0)
-            if r.status_code == 429:
+            r = httpx.get(url, headers=headers, params=params, timeout=timeout)
+            if r.status_code in (429, 500, 502, 503, 504):
                 wait = API_BASE_DELAY * (2 ** attempt)
-                logger.debug(f"429 限流, 等待 {wait:.1f}s 后重试 #{attempt+1}")
+                logger.debug(f"{r.status_code} 瞬时错误, 等待 {wait:.1f}s 后重试 #{attempt+1}")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
+            if e.response.status_code in (429, 500, 502, 503, 504):
                 wait = API_BASE_DELAY * (2 ** attempt)
-                logger.debug(f"429 限流, 等待 {wait:.1f}s 后重试 #{attempt+1}")
+                logger.debug(f"{e.response.status_code} 瞬时错误, 等待 {wait:.1f}s 后重试 #{attempt+1}")
                 time.sleep(wait)
                 continue
             raise
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            wait = API_BASE_DELAY * (2 ** attempt)
+            logger.debug(f"TLS/连接错误 {endpoint}: {e}, 等待 {wait:.1f}s 后重试 #{attempt+1}")
+            time.sleep(wait)
     # 所有重试均失败
     raise httpx.HTTPStatusError(
-        f"429 Too Many Requests after {API_RETRY_MAX} retries for {endpoint}",
-        request=r.request if 'r' in dir() else None,
-        response=r if 'r' in dir() else None,
+        f"请求失败 after {API_RETRY_MAX} retries for {endpoint}",
+        request=r.request if r is not None else None,
+        response=r if r is not None else None,
     )
 
 
@@ -493,6 +534,45 @@ def sync_completed_sub_data(db: Session) -> None:
 
     db.expire_all()
     logger.info(f"子数据同步完成 ({total_ok}/{len(ids)}, 失败 {total_fail})")
+
+
+def refresh_fixture(db: Session, fixture_id: int) -> bool:
+    """手动刷新单场比赛: 重新从 API-Football 拉取主表与子数据并覆盖更新。
+
+    与每日同步不同，这里**强制覆盖**已有子数据（先删除再重新抓取），
+    因此无论本地是否已有数据，都会拿到最新比分/状态/事件/阵容/统计。
+    返回 True 表示主表刷新成功（子数据失败不影响主表）。
+    """
+    if not settings.api_football_key:
+        logger.warning("API_FOOTBALL_KEY 未配置，跳过比赛刷新")
+        return False
+
+    # 1. 刷新主表（比分 / 状态 / 时间等）
+    data, err = _fetch_fixtures_by_params({"id": fixture_id})
+    if data is not None:
+        items = data.get("response", [])
+        if items:
+            _upsert_fixture(db, items[0])
+            db.commit()
+        else:
+            logger.warning(f"刷新主表: 未找到 fixture={fixture_id} 的 API 数据")
+            return False
+    else:
+        logger.warning(f"刷新主表失败 fixture={fixture_id}: {err}")
+        return False
+
+    # 2. 清空旧子数据后重新抓取（覆盖式更新）
+    for model in (FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat):
+        db.query(model).filter(model.fixture_id == fixture_id).delete(synchronize_session=False)
+    db.commit()
+
+    try:
+        _do_fetch(db, fixture_id)
+    except Exception as e:
+        # 主表已更新；子数据刷新失败不影响主表展示
+        logger.warning(f"刷新子数据失败 fixture={fixture_id}: {e}")
+
+    return True
 
 
 def _fetch_events(db: Session, fixture_id: int) -> None:
@@ -648,12 +728,7 @@ def sync_live_fixtures(db: Session) -> None:
     all_items = []
     for date_str in [today, yesterday]:
         try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/fixtures",
-                headers={"x-apisports-key": settings.api_football_key},
-                params={"date": date_str},
-                timeout=30.0,
-            )
+            response = _api_get_http("fixtures", {"date": date_str})
             response.raise_for_status()
             data = response.json()
             items = data.get("response", [])

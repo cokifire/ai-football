@@ -6,9 +6,10 @@ interface ModalProps {
   title: string
   children: React.ReactNode
   size?: 'sm' | 'md' | 'lg' | 'xl'
+  headerExtra?: React.ReactNode
 }
 
-export default function Modal({ open, onClose, title, children, size = 'lg' }: ModalProps) {
+export default function Modal({ open, onClose, title, children, size = 'lg', headerExtra }: ModalProps) {
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -34,12 +35,15 @@ export default function Modal({ open, onClose, title, children, size = 'lg' }: M
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold">{title}</h2>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            {headerExtra}
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <div className="overflow-y-auto px-6 py-4">{children}</div>
       </div>

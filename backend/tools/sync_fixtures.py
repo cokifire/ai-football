@@ -1,4 +1,6 @@
-"""补完赛子数据，断点续跑，抗网络波动"""
+"""补完赛子数据，断点续跑，抗网络波动
+    免费的api-football api 不能获取当前日期前两天的比赛数据，包括比赛 fixture_id
+"""
 from datetime import datetime
 import time
 from app.db.session import SessionLocal

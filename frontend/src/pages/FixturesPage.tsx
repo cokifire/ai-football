@@ -86,6 +86,18 @@ interface OddsEntry {
   home_raw?: number | null
   draw_raw?: number | null
   away_raw?: number | null
+  // 亚盘（Asian Handicap）
+  ah_line?: number | null
+  ah_home_odd?: number | null
+  ah_away_odd?: number | null
+  ah_home_raw?: number | null
+  ah_away_raw?: number | null
+  // 大小球（Goals Over/Under）
+  ou_line?: number | null
+  ou_over_odd?: number | null
+  ou_under_odd?: number | null
+  ou_over_raw?: number | null
+  ou_under_raw?: number | null
 }
 
 interface BookmakerOdds {
@@ -148,6 +160,7 @@ export default function FixturesPage() {
   const [date, setDate] = useState('')
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
+  const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
   const [oddsFixture, setOddsFixture] = useState<Fixture | null>(null)
@@ -193,6 +206,22 @@ export default function FixturesPage() {
       .get(`/fixtures/${fixture.id}`)
       .then((res) => setFixtureDetail(res.data))
       .catch(() => setFixtureDetail(fixture as FixtureDetail))
+  }
+
+  const refreshFixtureDetail = () => {
+    if (!selectedFixture) return
+    setRefreshingFixtureId(selectedFixture.id)
+    apiClient
+      .post(`/fixtures/${selectedFixture.id}/refresh`)
+      .then((res) => setFixtureDetail(res.data))
+      .catch(() => {
+        // 刷新失败（如 API 限额/网络异常）时回退到本地 DB 数据
+        apiClient
+          .get(`/fixtures/${selectedFixture.id}`)
+          .then((res) => setFixtureDetail(res.data))
+          .catch(() => setFixtureDetail(selectedFixture as FixtureDetail))
+      })
+      .finally(() => setRefreshingFixtureId(null))
   }
 
   const handlePredict = (fixture: Fixture) => {
@@ -393,6 +422,15 @@ export default function FixturesPage() {
             ? `${selectedFixture.home_name || ''} vs ${selectedFixture.away_name || ''}`
             : '比赛详情'
         }
+        headerExtra={
+          <button
+            className="btn btn-secondary btn-xs"
+            disabled={refreshingFixtureId !== null}
+            onClick={refreshFixtureDetail}
+          >
+            {refreshingFixtureId !== null ? '刷新中...' : '刷新'}
+          </button>
+        }
         size="xl"
       >
         {fixtureDetail ? (
@@ -553,6 +591,8 @@ export default function FixturesPage() {
                           <th>主胜</th>
                           <th>平局</th>
                           <th>客胜</th>
+                          <th>亚盘</th>
+                          <th>大小球</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -567,6 +607,34 @@ export default function FixturesPage() {
                             </td>
                             <td className="text-center">
                               {e.away_odd != null ? `${(e.away_odd * 100).toFixed(0)}% (${e.away_raw})` : '-'}
+                            </td>
+                            <td className="text-center">
+                              {e.ah_home_raw != null ? (
+                                <div>
+                                  <div className="font-medium">
+                                    {e.ah_line != null ? `${e.ah_line} ` : ''}主{e.ah_home_raw}/客{e.ah_away_raw}
+                                  </div>
+                                  {e.ah_home_odd != null && (
+                                    <span className="text-xs text-gray-400">
+                                      主{(e.ah_home_odd * 100).toFixed(0)}% 客{(e.ah_away_odd * 100).toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                              ) : '-'}
+                            </td>
+                            <td className="text-center">
+                              {e.ou_over_raw != null ? (
+                                <div>
+                                  <div className="font-medium">
+                                    {e.ou_line != null ? `${e.ou_line} ` : ''}大{e.ou_over_raw}/小{e.ou_under_raw}
+                                  </div>
+                                  {e.ou_over_odd != null && (
+                                    <span className="text-xs text-gray-400">
+                                      大{(e.ou_over_odd * 100).toFixed(0)}% 小{(e.ou_under_odd * 100).toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                              ) : '-'}
                             </td>
                           </tr>
                         ))}

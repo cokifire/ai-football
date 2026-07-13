@@ -8,6 +8,8 @@ from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStat
 from app.schemas.fixture import FixtureSchema, FixtureDetailSchema
 from app.schemas.league import PaginatedResponse
 from app.core.zh import zh_swap, fixtures_apply_denorm_zh
+from app.core.config import settings
+from loguru import logger
 
 router = APIRouter()
 
@@ -63,6 +65,23 @@ def _get_sync(db, fixture_id):
     fixtures_apply_denorm_zh(db, [fixture])
     for e in fixture.events: zh_swap(e)
     for s in fixture.statistics: zh_swap(s)
+    return fixture
+
+
+@router.post("/fixtures/{fixture_id}/refresh", response_model=FixtureDetailSchema)
+async def refresh_fixture_endpoint(fixture_id: int, db: Session = Depends(get_db)):
+    """手动刷新: 重新从 API-Football 拉取并更新该场比赛主表与子数据，返回最新详情。"""
+    if not settings.api_football_key:
+        raise HTTPException(status_code=503, detail="未配置 API_FOOTBALL_KEY，无法刷新")
+    from app.services.fixture_service import refresh_fixture
+    try:
+        ok = await asyncio.to_thread(refresh_fixture, db, fixture_id)
+    except Exception as e:
+        logger.error(f"刷新比赛失败 fixture={fixture_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"刷新失败: {e}")
+    if not ok:
+        raise HTTPException(status_code=502, detail="刷新失败：API-Football 未返回该比赛数据")
+    fixture = await asyncio.to_thread(_get_sync, db, fixture_id)
     return fixture
 
 

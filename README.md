@@ -2,7 +2,7 @@
 
 基于 FastAPI + MySQL + XGBoost + Poisson + DeepSeek LLM 的足球比赛数据同步与智能预测系统。
 
-系统负责赛事数据采集、数据落库、特征工程、机器学习预测、比分分布建模、LLM 深度分析、预测结果查询与赛后复盘。当前 `mini` 分支保留后端服务、同步任务、预测逻辑、命令行工具和已训练模型文件，不包含前端工程。
+系统负责赛事数据采集、数据落库、特征工程、机器学习预测、比分分布建模、LLM 深度分析、赔率市场共识分析、预测结果查询与赛后复盘。当前包含后端服务、同步任务、预测逻辑、命令行工具、已训练模型文件以及基于 React 的前端可视化工程。
 
 <div align="center">
 
@@ -86,9 +86,24 @@
 | XGBoost | 输出胜平负概率、大小球概率、主客队进球期望 |
 | Poisson | 基于进球期望生成 Top 3 参考比分 |
 | DeepSeek LLM | 输出最终胜负方向、比分、让球、大小球、摘要和深度分析 |
+| 亚盘 / 大小球 | LLM 综合亚洲让球（Asian Handicap）与大小球（Over/Under）实时赔率，校准让球方向与大小球判断（默认取庄家认为最均衡的盘口线） |
+| 赔率分析（Odds）| 抓取多家博彩公司实时赔率，去除抽水得到市场共识概率，并用 Poisson 反解比分分布 |
 | 批量预测 | 扫描符合条件的比赛并批量生成预测结果 |
 | 结果查询 | 统一返回基础信息、模型输出、LLM 输出和赛后命中情况 |
 | 赛后回填 | 完赛后回填真实比分与命中结果，便于复盘 |
+
+### 赔率（Odds）与市场共识
+
+系统支持基于实时赔率的市场共识分析，作为模型预测的补充视角：
+
+| 能力 | 说明 |
+|------|------|
+| 赔率抓取 | 通过 `POST /api/odds/{fixture_id}` 从 API-Football 拉取各博彩公司 1X2、亚洲让球、大小球赔率并落库（按抓取时间逐条保存） |
+| 赔率查询 | `GET /api/odds/{fixture_id}` 返回该比赛全部抓取记录（按抓取时间升序，数据库有几条显示几条），前端弹窗可逐条查看 |
+| 市场共识 | `POST /api/predict-from-odds/{fixture_id}` 调用 API-Football 实时查询赔率，去除抽水得到各庄家隐含概率，再取中位数得到市场共识概率 |
+| 比分反解 | 用 Poisson 模型反解主客队预期进球 λ，使 1X2 概率与市场共识一致，并生成最可能 Top 3 比分 |
+| 综合研判 | 结合亚洲让球（主让 1.5）与大小球（2.5）市场给出倾向，与 XGBoost / LLM 结论相互印证 |
+| 命令行工具 | `python tools/predict_from_odds.py <fixture_id>` 走实时 API 查询赔率并输出完整分析 |
 
 ## 技术栈
 
@@ -121,6 +136,17 @@
 | Rich | 命令行美化输出 |
 | requests / httpx / aiohttp | HTTP 请求 |
 | Typer | CLI 工具支持 |
+
+### 前端
+
+| 技术 | 说明 |
+|------|------|
+| React 18 | 前端 UI 框架 |
+| TypeScript | 类型安全 |
+| Vite | 开发服务器与构建工具 |
+| Tailwind CSS | 样式方案 |
+| Axios | 与后端 `/api` 交互的 HTTP 客户端 |
+| EventSource (SSE) | 调度任务实时日志流 |
 
 ## 系统要求
 
@@ -156,15 +182,25 @@ api-football/
 │   ├── prediction/
 │   │   ├── models/              # 已训练模型文件
 │   │   ├── features.py          # 特征生成
-│   │   ├── predict.py           # 单场预测逻辑
+│   │   ├── predict.py           # 单场预测逻辑（含亚盘/大小球解析）
 │   │   ├── train.py             # 模型训练入口
 │   │   └── training/            # 训练、评估、数据处理
-│   └── tools/
-│       ├── manual_predict.py    # 交互式手动预测
-│       ├── batch_predict.py     # 批量预测
-│       ├── sync_fixtures.py     # 赛程同步工具
-│       ├── sync_players.py      # 球员同步工具
-│       └── async_sync_subdata.py
+│   ├── tools/
+│   │   ├── manual_predict.py    # 交互式手动预测
+│   │   ├── batch_predict.py     # 批量预测
+│   │   ├── sync_fixtures.py     # 赛程同步工具
+│   │   ├── sync_players.py      # 球员同步工具
+│   │   ├── async_sync_subdata.py
+│   │   ├── predict_from_odds.py # 基于实时赔率的市场共识预测
+│   │   └── backfill_fixtures_by_id.py # 按 id 区间回填历史比赛
+│   └── static/                  # Swagger UI 等静态资源
+├── frontend/                    # React + TypeScript + Vite 前端
+│   ├── src/
+│   │   ├── pages/               # FixturesPage / PredictionsPage / SchedulerPage
+│   │   ├── components/          # Modal 等通用组件
+│   │   └── api/                 # axios 客户端（baseURL=/api）
+│   ├── vite.config.ts           # 开发代理 /api -> backend:8000
+│   └── package.json
 ├── .gitignore
 └── README.md
 ```
@@ -324,6 +360,7 @@ CACHE_TTL=3600
 | GET | `/api/standings` | 积分榜 |
 | GET | `/api/fixtures` | 比赛列表 |
 | GET | `/api/fixtures/{fixture_id}` | 比赛详情 |
+| POST | `/api/fixtures/{fixture_id}/refresh` | 手动从 API-Football 重新拉取并更新该场比赛（覆盖式刷新子数据） |
 
 ### 预测与调度
 
@@ -331,6 +368,9 @@ CACHE_TTL=3600
 |------|------|------|
 | POST | `/api/predict/{fixture_id}` | 执行单场预测 |
 | GET | `/api/predictions` | 查询预测结果 |
+| GET | `/api/odds/{fixture_id}` | 查询该比赛全部赔率抓取记录（按时间升序） |
+| POST | `/api/odds/{fixture_id}` | 手动抓取并保存该比赛赔率 |
+| POST | `/api/predict-from-odds/{fixture_id}` | 基于实时赔率的市场共识预测 |
 | PATCH | `/api/fixtures/{fixture_id}/category` | 设置比赛分类 |
 | GET | `/api/scheduler/status` | 调度任务状态 |
 | POST | `/api/scheduler/{task_id}/trigger` | 手动触发任务 |
@@ -392,6 +432,28 @@ curl -X POST http://127.0.0.1:8000/api/scheduler/backfill_pred/trigger
 | `python tools/batch_predict.py` | 批量预测 |
 | `python prediction/features.py` | 重新生成特征 |
 | `python prediction/train.py` | 重新训练模型 |
+| `python tools/predict_from_odds.py <fixture_id>` | 基于实时赔率做市场共识预测 |
+| `python tools/backfill_fixtures_by_id.py --start-id <id>` | 按 id 区间回填历史比赛 |
+
+## 前端 Web 界面
+
+项目包含基于 React + TypeScript + Vite 的可视化前端，开发时代理把 `/api` 转发到后端 `8000` 端口。
+
+| 页面 | 主要功能 |
+|------|----------|
+| 赛程（Fixtures） | 比赛列表与详情，支持手动「刷新」从 API-Football 拉取最新比分 / 状态；赔率弹窗展示 1X2、亚盘、大小球（含庄家原始赔率与隐含概率） |
+| 预测中心（Predictions） | 预测结果列表；「详情」查看完整分析；「赔率预测」调用实时赔率市场共识分析（共识概率、Poisson λ、Top3 比分、亚盘 / 大小球研判）；「查看赔率」按抓取时间逐条展示历史赔率记录 |
+| 调度（Scheduler） | 手动触发同步 / 预测任务，并通过 SSE 实时展示后台执行日志 |
+
+启动前端（需先启动后端）：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+开发服务器默认代理 `/api` 到 `http://127.0.0.1:8000`。
 
 ## 预测结果结构
 
@@ -415,6 +477,7 @@ curl -X POST http://127.0.0.1:8000/api/scheduler/backfill_pred/trigger
 - 对应联赛是否已启用。
 - `prediction/models/` 下模型文件是否存在。
 - 如果需要 LLM 分析，确认 `DEEPSEEK_API_KEY` 可用。
+- 赔率相关接口（`/api/odds`、`/api/predict-from-odds`）依赖 API-Football 实时赔率；若该比赛暂无赔率、Key 受限或额度耗尽，会返回 400 / 404。
 
 ### 数据库连接失败？
 

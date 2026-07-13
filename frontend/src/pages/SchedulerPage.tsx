@@ -14,16 +14,6 @@ interface SchedulerTask {
   next_run: string | null
 }
 
-interface LogEntry {
-  id: number
-  task_id: string
-  task_name: string
-  status: string
-  message: string | null
-  started_at: string | null
-  finished_at: string | null
-}
-
 // 前端 key -> 后端 task_id 映射
 const TRIGGER_MAP: Record<string, string> = {
   leagues:     'league_sync',
@@ -51,10 +41,8 @@ export default function SchedulerPage() {
   const [tasks, setTasks] = useState<SchedulerTask[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState<string | null>(null)
-  const [logs, setLogs] = useState<LogEntry[]>([])
   const [message, setMessage] = useState('')
   const [streamLines, setStreamLines] = useState<string[]>([])  // SSE 实时日志行
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const esRef = useRef<EventSource | null>(null)
 
   const fetchTasks = useCallback(() => {
@@ -65,17 +53,9 @@ export default function SchedulerPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  const fetchLogs = useCallback(() => {
-    apiClient
-      .get('/scheduler/logs')
-      .then((res) => setLogs(res.data.data || []))
-      .catch(() => {})
-  }, [])
-
   useEffect(() => {
     fetchTasks()
-    fetchLogs()
-  }, [fetchTasks, fetchLogs])
+  }, [fetchTasks])
 
   // 触发后 SSE 自动推送日志，不再需要轮询
   const triggerSync = async (key: string) => {
@@ -101,7 +81,6 @@ export default function SchedulerPage() {
       esRef.current = null
       setSyncing(null)
       fetchTasks()
-      fetchLogs()
     }
 
     try {
@@ -127,7 +106,6 @@ export default function SchedulerPage() {
   useEffect(() => {
     return () => {
       if (esRef.current) esRef.current.close()
-      if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [])
 
@@ -148,33 +126,6 @@ export default function SchedulerPage() {
           message.startsWith('✅') ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
         }`}>
           {message}
-        </div>
-      )}
-
-      {/* 实时执行日志 */}
-      {syncing && (
-        <div className="card mb-6 border-l-4 border-l-blue-500">
-          <div className="card-header flex items-center justify-between">
-            <h2 className="font-semibold flex items-center gap-2">
-              <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-              实时执行日志 — {taskActions.find((a) => a.key === syncing)?.label}
-            </h2>
-            <span className="text-xs text-gray-400">{streamLines.length} 行</span>
-          </div>
-          <div className="card-body p-0">
-            <div
-              ref={logContainerRef}
-              className="bg-gray-950 text-green-400 font-mono text-xs p-4 max-h-96 overflow-y-auto leading-relaxed"
-            >
-              {streamLines.length === 0 ? (
-                <span className="text-gray-500">等待后台输出...</span>
-              ) : (
-                streamLines.map((line, i) => (
-                  <div key={i} className="whitespace-pre-wrap">{line}</div>
-                ))
-              )}
-            </div>
-          </div>
         </div>
       )}
 
@@ -262,31 +213,29 @@ export default function SchedulerPage() {
         </div>
       )}
 
-      {/* 同步日志 */}
+      {/* 实时执行日志（始终显示） */}
       <div className="card">
         <div className="card-header flex items-center justify-between">
-          <h2 className="font-semibold">执行日志</h2>
-          <button className="btn btn-secondary btn-sm" onClick={fetchLogs}>
-            刷新
-          </button>
+          <h2 className="font-semibold flex items-center gap-2">
+            <span className={`inline-block w-2 h-2 rounded-full ${syncing ? 'bg-blue-500 animate-pulse' : 'bg-gray-400'}`} />
+            实时执行日志
+            {syncing && <span className="text-xs font-normal text-blue-500">— {taskActions.find((a) => a.key === syncing)?.label} 执行中</span>}
+          </h2>
+          <span className="text-xs text-gray-400">{streamLines.length} 行</span>
         </div>
-        <div className="card-body">
-          {logs.length > 0 ? (
-            <div className="bg-gray-900 text-green-400 rounded-lg p-4 max-h-80 overflow-y-auto font-mono text-xs">
-              {logs.map((log) => (
-                <div key={log.id} className="mb-0.5 whitespace-pre-wrap">
-                  <span className={log.status === 'failed' ? 'text-red-400' : log.status === 'running' ? 'text-yellow-400' : ''}>
-                    [{log.status}]
-                  </span>{' '}
-                  {log.started_at?.replace('T', ' ').substring(0, 19)}{' '}
-                  <span className="text-gray-400">{log.task_name}</span>
-                  {log.message && <span className="text-gray-500"> — {log.message}</span>}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-gray-400 py-8 text-center">暂无日志</p>
-          )}
+        <div className="card-body p-0">
+          <div
+            ref={logContainerRef}
+            className="bg-gray-950 text-green-400 font-mono text-xs p-4 max-h-96 overflow-y-auto leading-relaxed"
+          >
+            {streamLines.length === 0 ? (
+              <span className="text-gray-500">暂无实时日志，点击上方按钮触发同步即可查看后台输出</span>
+            ) : (
+              streamLines.map((line, i) => (
+                <div key={i} className="whitespace-pre-wrap">{line}</div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

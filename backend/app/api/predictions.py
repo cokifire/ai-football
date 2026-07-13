@@ -46,6 +46,52 @@ async def predict_match(fixture_id: int):
     return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
 
 
+@router.get("/odds/{fixture_id}")
+async def get_odds(fixture_id: int, db: Session = Depends(get_db)):
+    """从 odds 表读取该 fixture 的全部抓取记录（按抓取时间升序逐条返回）；无数据时 404。"""
+    def _query():
+        try:
+            rows = db.execute(text(
+                "SELECT odds_data, created_at FROM odds "
+                "WHERE fixture_id = :fid ORDER BY created_at ASC, id ASC"
+            ), {"fid": fixture_id}).fetchall()
+        except Exception as e:
+            # odds 表可能尚未创建（从未抓取过赔率）
+            logger.debug(f"读取赔率失败 fixture_id={fixture_id}: {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return None
+        return rows
+
+    rows = await asyncio.to_thread(_query)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="暂无赔率数据")
+    if not rows:
+        raise HTTPException(status_code=404, detail="暂无赔率数据")
+
+    import json
+    records = []
+    for row in rows:
+        odds_data = row[0]
+        if isinstance(odds_data, (str, bytes, bytearray)):
+            try:
+                odds_data = json.loads(odds_data)
+            except Exception:
+                odds_data = None
+        created_at = row[1]
+        records.append({
+            "created_at": created_at.isoformat() if created_at else None,
+            "odds_data": odds_data,
+        })
+    return {
+        "status": "ok",
+        "fixture_id": fixture_id,
+        "records": records,
+    }
+
+
 @router.post("/odds/{fixture_id}")
 async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
     """手动触发赔率抓取，保存到 odds 表（每次点击都覆盖旧数据）。"""
@@ -74,6 +120,31 @@ async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
         "fixture_id": fixture_id,
         "updated_at": datetime.now().isoformat(),
         "data": result,
+    }
+
+
+@router.post("/predict-from-odds/{fixture_id}")
+async def predict_from_odds_endpoint(fixture_id: int):
+    """基于实时赔率（调用 API-Football 查询）进行市场共识预测。"""
+    logger.info(f"收到赔率预测请求: fixture_id={fixture_id}")
+
+    def _run():
+        from tools.predict_from_odds import predict_from_odds
+        return predict_from_odds(fixture_id)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.error(f"赔率预测异常 fixture_id={fixture_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"赔率预测异常: {str(e)}")
+
+    if result is None or result.get("error"):
+        raise HTTPException(status_code=400, detail="未获取到赔率数据（可能该比赛暂无赔率或接口受限）")
+
+    return {
+        "status": "ok",
+        "fixture_id": fixture_id,
+        "result": result,
     }
 
 

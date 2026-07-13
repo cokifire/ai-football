@@ -59,6 +59,18 @@ export default function PredictionsPage() {
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const pageSize = 20
 
+  // 赔率弹窗状态（支持多条历史记录逐条展示）
+  const [oddsFixture, setOddsFixture] = useState<PredictionDetail | null>(null)
+  const [oddsRecords, setOddsRecords] = useState<any[]>([])
+  const [oddsLoading, setOddsLoading] = useState(false)
+  const [oddsError, setOddsError] = useState('')
+
+  // 赔率预测弹窗状态
+  const [oddsPredFixture, setOddsPredFixture] = useState<PredictionDetail | null>(null)
+  const [oddsPredData, setOddsPredData] = useState<any>(null)
+  const [oddsPredLoading, setOddsPredLoading] = useState(false)
+  const [oddsPredError, setOddsPredError] = useState('')
+
   const fetchPredictions = () => {
     setLoading(true)
     apiClient
@@ -85,6 +97,62 @@ export default function PredictionsPage() {
   const handleSearch = () => {
     setPage(1)
     fetchPredictions()
+  }
+
+  const loadOdds = (pred: PredictionDetail) => {
+    setOddsFixture(pred)
+    setOddsRecords([])
+    setOddsError('')
+    setOddsLoading(true)
+    apiClient
+      .get(`/odds/${pred.basic.fixture_id}`)
+      .then((res) => {
+        setOddsRecords(res.data.records || [])
+      })
+      .catch((err) => {
+        if (err.response?.status === 404) {
+          setOddsError('暂无可查看的赔率，可点击下方按钮抓取。')
+        } else {
+          setOddsError('赔率加载失败，请稍后重试。')
+        }
+      })
+      .finally(() => setOddsLoading(false))
+  }
+
+  const openOddsPred = (pred: PredictionDetail) => {
+    setOddsPredFixture(pred)
+    setOddsPredData(null)
+    setOddsPredError('')
+    setOddsPredLoading(true)
+    apiClient
+      .post(`/predict-from-odds/${pred.basic.fixture_id}`)
+      .then((res) => {
+        setOddsPredData(res.data.result || null)
+      })
+      .catch((err) => {
+        if (err.response?.status === 404) {
+          setOddsPredError('暂无实时赔率数据（可能该比赛暂无赔率或接口受限）。')
+        } else {
+          setOddsPredError('赔率预测失败，请稍后重试。')
+        }
+      })
+      .finally(() => setOddsPredLoading(false))
+  }
+
+  const fetchOdds = () => {
+    if (!oddsFixture) return
+    setOddsLoading(true)
+    setOddsError('')
+    apiClient
+      .post(`/odds/${oddsFixture.basic.fixture_id}`)
+      .then(() => {
+        // 重新拉取全部记录（含本次新抓取的），保持逐条展示
+        loadOdds(oddsFixture)
+      })
+      .catch(() => {
+        setOddsLoading(false)
+        setOddsError('赔率抓取失败（可能该比赛暂无赔率或接口受限）。')
+      })
   }
 
   return (
@@ -161,9 +229,17 @@ export default function PredictionsPage() {
                       </td>
                       <td className="text-xs">{x?.top3?.[0]?.score || p.llm?.score || '-'}</td>
                       <td>
-                        <button className="btn btn-secondary btn-xs" onClick={() => setSelectedPred(p)}>
-                          详情
-                        </button>
+                        <div className="flex gap-2">
+                          <button className="btn btn-secondary btn-xs" onClick={() => setSelectedPred(p)}>
+                            详情
+                          </button>
+                          <button className="btn btn-xs" onClick={() => openOddsPred(p)}>
+                            赔率预测
+                          </button>
+                          <button className="btn btn-xs" onClick={() => loadOdds(p)}>
+                            查看赔率
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -390,6 +466,338 @@ export default function PredictionsPage() {
           </div>
         ) : (
           <Loading />
+        )}
+      </Modal>
+
+      {/* 赔率弹窗 */}
+      <Modal
+        open={!!oddsFixture}
+        onClose={() => setOddsFixture(null)}
+        title={
+          oddsFixture
+            ? `赔率 - ${oddsFixture.basic.home_name || '主队'} vs ${oddsFixture.basic.away_name || '客队'}`
+            : '赔率'
+        }
+        size="lg"
+      >
+        {oddsLoading ? (
+          <Loading />
+        ) : oddsError ? (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">{oddsError}</p>
+            <button className="btn btn-primary" onClick={fetchOdds}>
+              抓取赔率
+            </button>
+          </div>
+        ) : oddsRecords.length > 0 ? (
+          <div className="space-y-6">
+            {oddsRecords.map((rec: any, idx: number) => (
+              <div key={idx} className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>第 {idx + 1} 次抓取</span>
+                  {rec.created_at && (
+                    <span>· {rec.created_at.replace('T', ' ').substring(0, 19)}</span>
+                  )}
+                </div>
+                {(rec.odds_data || []).map((bm: any, i: number) => (
+                  <div key={i} className="card">
+                    <div className="card-header">
+                      <h3 className="font-semibold">{bm.bookmaker}</h3>
+                    </div>
+                    <div className="card-body">
+                      <div className="table-container">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>日期</th>
+                              <th>主胜</th>
+                              <th>平局</th>
+                              <th>客胜</th>
+                              <th>亚盘</th>
+                              <th>大小球</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(bm.entries || []).map((e: any, j: number) => (
+                              <tr key={j}>
+                                <td className="text-xs text-gray-500">{e.date || '-'}</td>
+                                <td>
+                                  {e.home_raw != null ? (
+                                    <div>
+                                      <span className="font-medium">{e.home_raw}</span>
+                                      {e.home_odd != null && (
+                                        <span className="text-xs text-gray-400 ml-1">{(e.home_odd * 100).toFixed(1)}%</span>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                                <td>
+                                  {e.draw_raw != null ? (
+                                    <div>
+                                      <span className="font-medium">{e.draw_raw}</span>
+                                      {e.draw_odd != null && (
+                                        <span className="text-xs text-gray-400 ml-1">{(e.draw_odd * 100).toFixed(1)}%</span>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                                <td>
+                                  {e.away_raw != null ? (
+                                    <div>
+                                      <span className="font-medium">{e.away_raw}</span>
+                                      {e.away_odd != null && (
+                                        <span className="text-xs text-gray-400 ml-1">{(e.away_odd * 100).toFixed(1)}%</span>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                                <td>
+                                  {e.ah_home_raw != null ? (
+                                    <div>
+                                      <div className="font-medium">
+                                        {e.ah_line != null ? `${e.ah_line} ` : ''}主{e.ah_home_raw}/客{e.ah_away_raw}
+                                      </div>
+                                      {e.ah_home_odd != null && (
+                                        <span className="text-xs text-gray-400">
+                                          主{(e.ah_home_odd * 100).toFixed(0)}% 客{(e.ah_away_odd * 100).toFixed(0)}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                                <td>
+                                  {e.ou_over_raw != null ? (
+                                    <div>
+                                      <div className="font-medium">
+                                        {e.ou_line != null ? `${e.ou_line} ` : ''}大{e.ou_over_raw}/小{e.ou_under_raw}
+                                      </div>
+                                      {e.ou_over_odd != null && (
+                                        <span className="text-xs text-gray-400">
+                                          大{(e.ou_over_odd * 100).toFixed(0)}% 小{(e.ou_under_odd * 100).toFixed(0)}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : '-'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">暂无赔率数据。</p>
+        )}
+      </Modal>
+
+      {/* 赔率预测弹窗（基于实时赔率市场共识） */}
+      <Modal
+        open={!!oddsPredFixture}
+        onClose={() => setOddsPredFixture(null)}
+        title={
+          oddsPredFixture
+            ? `赔率预测 - ${oddsPredFixture.basic.home_name || '主队'} vs ${oddsPredFixture.basic.away_name || '客队'}`
+            : '赔率预测'
+        }
+        size="xl"
+      >
+        {oddsPredLoading ? (
+          <Loading />
+        ) : oddsPredError ? (
+          <p className="text-sm text-gray-500">{oddsPredError}</p>
+        ) : oddsPredData ? (
+          <div className="space-y-6">
+            {/* 基本信息 */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+              {oddsPredData.league && <span>{oddsPredData.league}{oddsPredData.country ? `（${oddsPredData.country}）` : ''}</span>}
+              {oddsPredData.match_date && <span>· {String(oddsPredData.match_date).replace('T', ' ').substring(0, 19)}</span>}
+              {oddsPredData.n_bookmakers != null && <span>· 样本 {oddsPredData.n_bookmakers} 家博彩公司</span>}
+            </div>
+
+            {/* 市场共识概率 */}
+            <div className="card">
+              <div className="card-header">
+                <h3 className="font-semibold">市场共识概率（去除抽水）</h3>
+              </div>
+              <div className="card-body space-y-3">
+                {[
+                  { label: '主胜', val: oddsPredData.consensus?.home, cls: 'bg-green-600' },
+                  { label: '平局', val: oddsPredData.consensus?.draw, cls: 'bg-yellow-500' },
+                  { label: '客胜', val: oddsPredData.consensus?.away, cls: 'bg-red-600' },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center gap-3">
+                    <div className="w-12 text-sm text-gray-500">{row.label}</div>
+                    <div className="flex-1 h-4 rounded bg-gray-100 overflow-hidden">
+                      {row.val != null && (
+                        <div className={`h-full ${row.cls}`} style={{ width: `${(row.val * 100).toFixed(1)}%` }} />
+                      )}
+                    </div>
+                    <div className="w-14 text-right text-sm font-medium">
+                      {row.val != null ? `${(row.val * 100).toFixed(1)}%` : '-'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Poisson + 比分 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="font-semibold">预期进球（Poisson 反解）</h3>
+                </div>
+                <div className="card-body grid grid-cols-3 gap-3 text-center">
+                  <div className="p-3 rounded-lg bg-green-50">
+                    <div className="text-xs text-gray-500">主队 λ</div>
+                    <div className="text-xl font-bold text-green-700">
+                      {oddsPredData.poisson?.lambda_home != null ? oddsPredData.poisson.lambda_home.toFixed(2) : '-'}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-red-50">
+                    <div className="text-xs text-gray-500">客队 λ</div>
+                    <div className="text-xl font-bold text-red-600">
+                      {oddsPredData.poisson?.lambda_away != null ? oddsPredData.poisson.lambda_away.toFixed(2) : '-'}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-blue-50">
+                    <div className="text-xs text-gray-500">预期总进球</div>
+                    <div className="text-xl font-bold text-blue-600">
+                      {oddsPredData.poisson?.total_goals != null ? oddsPredData.poisson.total_goals.toFixed(2) : '-'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="font-semibold">最可能比分 Top 3</h3>
+                </div>
+                <div className="card-body">
+                  <div className="grid grid-cols-3 gap-3">
+                    {(oddsPredData.top3 || []).map((s: any, i: number) => (
+                      <div key={i} className="p-3 rounded-lg bg-gray-50 text-center">
+                        <div className="text-lg font-bold text-primary-700">{s.score}</div>
+                        <div className="text-xs text-gray-500">{(s.prob * 100).toFixed(1)}%</div>
+                      </div>
+                    ))}
+                    {(!oddsPredData.top3 || oddsPredData.top3.length === 0) && (
+                      <div className="col-span-3 text-center text-gray-400 text-sm py-4">无数据</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 综合研判 */}
+            {oddsPredData.verdict && (
+              <div className="card border-primary-200">
+                <div className="card-header bg-primary-50">
+                  <h3 className="font-semibold">综合研判</h3>
+                </div>
+                <div className="card-body grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-3 rounded-lg bg-gray-50">
+                    <div className="text-xs text-gray-500">胜负倾向</div>
+                    <div className="text-lg font-bold">
+                      {oddsPredData.verdict.favorite || '-'}
+                      {oddsPredData.verdict.favorite_pct != null && (
+                        <span className="text-sm font-normal text-gray-500 ml-1">
+                          {(oddsPredData.verdict.favorite_pct * 100).toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-gray-50">
+                    <div className="text-xs text-gray-500">大小球（2.5）</div>
+                    <div className="text-lg font-bold">
+                      {oddsPredData.verdict.over_under_25 ? (
+                        <>
+                          {oddsPredData.verdict.over_under_25.type}
+                          <span className="text-sm font-normal text-gray-500 ml-1">
+                            {(oddsPredData.verdict.over_under_25.prob * 100).toFixed(1)}%
+                          </span>
+                        </>
+                      ) : '-'}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-gray-50">
+                    <div className="text-xs text-gray-500">让球（主让1.5）</div>
+                    <div className="text-lg font-bold">
+                      {oddsPredData.verdict.asian_handicap_15 ? (
+                        <>
+                          赔率 {oddsPredData.verdict.asian_handicap_15.odd}
+                          <span className="text-sm font-normal text-gray-500 ml-1">
+                            赢2球+ {(oddsPredData.verdict.asian_handicap_15.implied_win * 100).toFixed(1)}%
+                          </span>
+                        </>
+                      ) : '-'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 亚盘 / 大小球共识赔率 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="font-semibold">亚洲让球共识赔率</h3>
+                </div>
+                <div className="card-body">
+                  <div className="table-container">
+                    <table>
+                      <thead>
+                        <tr><th>盘口</th><th>中位赔率</th></tr>
+                      </thead>
+                      <tbody>
+                        {(oddsPredData.asian_handicap || []).map((m: any, i: number) => (
+                          <tr key={i}>
+                            <td className="text-xs text-gray-500">{m.line}</td>
+                            <td className="font-medium">{m.odd}</td>
+                          </tr>
+                        ))}
+                        {(!oddsPredData.asian_handicap || oddsPredData.asian_handicap.length === 0) && (
+                          <tr><td colSpan={2} className="text-center text-gray-400 py-4">无数据</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="font-semibold">大小球共识赔率</h3>
+                </div>
+                <div className="card-body">
+                  <div className="table-container">
+                    <table>
+                      <thead>
+                        <tr><th>盘口</th><th>中位赔率</th></tr>
+                      </thead>
+                      <tbody>
+                        {(oddsPredData.over_under || []).map((m: any, i: number) => (
+                          <tr key={i}>
+                            <td className="text-xs text-gray-500">{m.line}</td>
+                            <td className="font-medium">{m.odd}</td>
+                          </tr>
+                        ))}
+                        {(!oddsPredData.over_under || oddsPredData.over_under.length === 0) && (
+                          <tr><td colSpan={2} className="text-center text-gray-400 py-4">无数据</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">暂无赔率预测数据。</p>
         )}
       </Modal>
     </div>
