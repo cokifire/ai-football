@@ -310,10 +310,9 @@ def _fetch_odds(fixture_id: int) -> dict | None:
             for day_offset in range(6, -1, -1):
                 key = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
                 o = dates.get(key)
+                # 仅保留有赔率数据的日期;无数据的日期不填充空行(查看赔率时隐藏)
                 if o:
                     entries.append(o)
-                else:
-                    entries.append({"date": key})
             odds_data.append({"bookmaker": bm_name, "entries": entries})
 
         return {"odds_data": odds_data}
@@ -696,9 +695,30 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
     db.commit()
 
 
+def _canonical_odds(obj) -> str:
+    """将赔率结构规范化为可比较字符串（排序键 + 关闭 ensure_ascii）。
+
+    用于快照去重时规避「键顺序不同」或「浮点文本表示略有差异」造成的误判：
+    只要语义内容一致就判定为同一快照。
+    """
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
-    """将赔率数据追加写入 odds 表（增加模式：每次抓取都新增一条记录，保留历史）。"""
+    """将赔率数据快照写入 odds 表（快照去重 + 复合索引）。
+
+    策略:
+    - 仅当本次抓取结果与同一 fixture 最近一次快照内容**不一致**时才插入新行,
+      内容相同则跳过。既保留赔率变动历史,又避免每次点击都写入一份完全相同的大
+      JSON 导致表无谓膨胀。
+    - 建表时建立复合索引 (fixture_id, created_at),支撑「按 fixture 取最新/历史」
+      的高效回查。
+    """
     odds_data = odds_result.get("odds_data")
+    if odds_data is None:
+        # 无有效赔率,不写入空快照
+        return
+
     now = datetime.now()
     # 兼容旧表结构（fixture_id 为主键的覆盖式表）：检测到旧结构则重建为追加式
     try:
@@ -708,16 +728,37 @@ def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
                 db.commit()
     except Exception:
         pass
-    # 确保表存在（追加式：每条抓取记录一行）
+    # 确保表存在（追加式 + 复合索引）
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS odds (
             id INT AUTO_INCREMENT PRIMARY KEY,
             fixture_id INT NOT NULL,
             odds_data JSON,
             created_at DATETIME,
-            INDEX (fixture_id)
+            INDEX ix_odds_fixture_created (fixture_id, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """))
+
+    # 去重：比较本次快照与最近一次快照的规范 JSON 是否一致
+    try:
+        last = db.execute(text(
+            "SELECT odds_data FROM odds WHERE fixture_id = :fid "
+            "ORDER BY created_at DESC, id DESC LIMIT 1"
+        ), {"fid": fixture_id}).fetchone()
+        if last is not None:
+            prev = last[0]
+            if isinstance(prev, (str, bytes, bytearray)):
+                try:
+                    prev = json.loads(prev)
+                except Exception:
+                    prev = None
+            if _canonical_odds(prev) == _canonical_odds(odds_data):
+                # 内容无变化,跳过插入
+                return
+    except Exception:
+        # 读不到旧数据（如表刚建）则直接插入
+        pass
+
     db.execute(text("""
         INSERT INTO odds (fixture_id, odds_data, created_at)
         VALUES (:fid, :odata, :now)

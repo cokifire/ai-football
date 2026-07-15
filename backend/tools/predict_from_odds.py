@@ -156,29 +156,93 @@ def _top3_scores(lh: float, la: float, max_goals: int = 8) -> list[dict]:
     return scores[:3]
 
 
+def _fmt_hcap(n: float) -> str:
+    """将让球数格式化为带符号字符串: 1.0->'+1', -0.5->'-0.5', 0->'+0', 1.25->'+1.25'."""
+    s = f"{n:g}"
+    return s if s.startswith("-") else f"+{s}"
+
+
+def _normalize_ah_value(value: str) -> str:
+    """将 API-Football 的亚盘标签统一到"各队自身视角"。
+
+    API-Football 的让球数始终以主队视角标注,因此 "Away -1" 实际表示
+    "主队 -1 盘口的客队一侧" = 客队受让 +1。若直接展示会让客队的 +/- 看起来
+    与赔率相反(受让盘反而比让球盘贵)。这里把客队标签的符号翻转,使其反映
+    客队自身的让/受让方向;主队标签保持不变。
+    """
+    try:
+        team, hcap = value.rsplit(" ", 1)
+        num = float(hcap)
+    except (ValueError, AttributeError):
+        return value
+    if team == "Away":
+        num = -num
+        return f"{team} {_fmt_hcap(num)}"
+    return value
+
+
 def _collect_markets(fixture: dict) -> dict:
-    """聚合亚洲让球与大小球市场的共识(取中位数)."""
+    """聚合亚洲让球与大小球市场的共识(取中位数),输出可按三列展示的结构。
+
+    返回:
+    - asian_handicap: [{line(主队视角让球数), home_odd(主赔), away_odd(客赔)}]
+      让球线统一以「主队视角」表示: line<0 主队让球, line>0 主队受让, line=0 平手。
+    - over_under:     [{line(大小球线), over_odd(大), under_odd(小)}]
+    两侧赔率分别取各庄家中位数;若某侧缺失则该侧为 None。
+    """
     ah, ou = [], []
     for bm in fixture.get("bookmakers", []):
         for bet in bm.get("bets", []):
             name = bet.get("name")
             if name == "Asian Handicap":
-                vals = {v["value"]: float(v["odd"]) for v in bet.get("values", [])}
-                for k, odd in vals.items():
-                    ah.append({"line": k, "odd": odd})
+                for v in bet.get("values", []):
+                    key = _normalize_ah_value(v["value"])
+                    try:
+                        team, hcap = key.rsplit(" ", 1)
+                        num = float(hcap)
+                    except (ValueError, AttributeError):
+                        continue
+                    # 统一到主队视角: 客队标签已翻转符号,故客队一侧取相反数
+                    line = -num if team == "Away" else num
+                    ah.append({"line": round(line, 2), "side": "away" if team == "Away" else "home",
+                               "odd": float(v["odd"])})
             elif name == "Goals Over/Under":
-                vals = {v["value"]: float(v["odd"]) for v in bet.get("values", [])}
-                for k, odd in vals.items():
-                    ou.append({"line": k, "odd": odd})
-    # 按让球线/大小球线分组,取中位数赔率
-    def _median_by_key(items: list[dict], key: str):
-        out = {}
-        for it in items:
-            out.setdefault(it[key], []).append(it["odd"])
-        return {k: round(median(v), 3) for k, v in out.items()}
+                for v in bet.get("values", []):
+                    key = v["value"]  # e.g. "Over 2.5" / "Under 2.5"
+                    try:
+                        kind, hcap = key.split(" ", 1)
+                        num = float(hcap)
+                    except (ValueError, AttributeError):
+                        continue
+                    side = "over" if kind == "Over" else "under"
+                    ou.append({"line": num, "side": side, "odd": float(v["odd"])})
 
-    return {"asian_handicap": _median_by_key(ah, "line"),
-            "over_under": _median_by_key(ou, "line")}
+    def _median(vals: list[float]):
+        return round(median(vals), 3) if vals else None
+
+    # 亚盘: 按主队视角让球线分组,分别取主/客两侧中位赔率
+    ah_groups: dict[float, dict] = {}
+    for it in ah:
+        g = ah_groups.setdefault(it["line"], {"home": [], "away": []})
+        g[it["side"]].append(it["odd"])
+    asian = [{
+        "line": line,
+        "home_odd": _median(g["home"]),
+        "away_odd": _median(g["away"]),
+    } for line, g in sorted(ah_groups.items())]
+
+    # 大小球: 按线分组,分别取大/小中位赔率
+    ou_groups: dict[float, dict] = {}
+    for it in ou:
+        g = ou_groups.setdefault(it["line"], {"over": [], "under": []})
+        g[it["side"]].append(it["odd"])
+    over_under = [{
+        "line": line,
+        "over_odd": _median(g["over"]),
+        "under_odd": _median(g["under"]),
+    } for line, g in sorted(ou_groups.items())]
+
+    return {"asian_handicap": asian, "over_under": over_under}
 
 
 def analyze(fixture: dict) -> dict:
@@ -193,6 +257,10 @@ def analyze(fixture: dict) -> dict:
     lh, la = _fit_poisson(cons)
     top3 = _top3_scores(lh, la)
     markets = _collect_markets(fixture)
+    ah_list = markets["asian_handicap"]
+    ou_list = markets["over_under"]
+    ah_by_line = {m["line"]: m for m in ah_list}
+    ou_by_line = {m["line"]: m for m in ou_list}
 
     # 胜负倾向
     fav_name, fav_p = max(
@@ -201,22 +269,22 @@ def analyze(fixture: dict) -> dict:
     )
 
     # 大小球(2.5)倾向
-    ou25 = markets["over_under"]
-    over25 = ou25.get("Over 2.5")
-    under25 = ou25.get("Under 2.5")
+    ou25 = ou_by_line.get(2.5)
+    over25 = ou25["over_odd"] if ou25 else None
+    under25 = ou25["under_odd"] if ou25 else None
     ou_verdict = None
     if over25 and under25:
         p_over = (1 / over25) / (1 / over25 + 1 / under25)
         ou_verdict = {"type": "大球" if p_over > 0.5 else "小球", "prob": round(p_over, 3)}
 
-    # 让球(主让1.5)倾向
-    ah_home_15 = markets["asian_handicap"].get("Home -1.5")
+    # 让球(主让1.5)倾向: 主队视角 line=-1.5 即"主让1.5"
+    ah_home_15 = ah_by_line.get(-1.5)
     ah_verdict = None
-    if ah_home_15:
+    if ah_home_15 and ah_home_15["home_odd"]:
         ah_verdict = {
-            "line": "Home -1.5",
-            "odd": ah_home_15,
-            "implied_win": round(1 / ah_home_15, 3),
+            "line": "主让1.5",
+            "odd": ah_home_15["home_odd"],
+            "implied_win": round(1 / ah_home_15["home_odd"], 3),
         }
 
     return {
@@ -237,8 +305,8 @@ def analyze(fixture: dict) -> dict:
             "total_goals": round(lh + la, 3),
         },
         "top3": [{"score": t["score"], "prob": t["prob"]} for t in top3],
-        "asian_handicap": [{"line": k, "odd": v} for k, v in sorted(markets["asian_handicap"].items())],
-        "over_under": [{"line": k, "odd": v} for k, v in sorted(markets["over_under"].items())],
+        "asian_handicap": ah_list,
+        "over_under": ou_list,
         "verdict": {
             "favorite": fav_name,
             "favorite_pct": round(fav_p, 3),
@@ -284,12 +352,12 @@ def _print_result(r: dict):
     for t in r["top3"]:
         print(f"  {t['score']:<6} {t['prob']:.1%}")
 
-    print("\n【亚洲让球共识赔率】")
+    print("\n【亚洲让球共识赔率】(主赔 / 盘口(主队视角) / 客赔)")
     for item in r["asian_handicap"]:
-        print(f"  {item['line']:<12} {item['odd']}")
-    print("\n【大小球共识赔率】")
+        print(f"  主{item['home_odd']}  盘口{_fmt_hcap(item['line'])}  客{item['away_odd']}")
+    print("\n【大小球共识赔率】(大 / 盘口 / 小)")
     for item in r["over_under"]:
-        print(f"  {item['line']:<12} {item['odd']}")
+        print(f"  大{item['over_odd']}  盘口{item['line']}  小{item['under_odd']}")
 
     v = r["verdict"]
     print("\n" + "=" * 60)

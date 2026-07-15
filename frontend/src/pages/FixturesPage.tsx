@@ -110,6 +110,13 @@ interface OddsData {
   odds_data?: BookmakerOdds[]
 }
 
+// 判断某条按日期的赔率记录是否含有任何赔率数据（用于隐藏无数据日期）
+const hasOddsData = (e: any): boolean =>
+  !!e && (
+    e.home_raw != null || e.draw_raw != null || e.away_raw != null ||
+    e.ah_home_raw != null || e.ou_over_raw != null
+  )
+
 const statusLabels: Record<string, string> = {
   TBD: '待定',
   NS: '未开始',
@@ -149,6 +156,16 @@ function StatusBadge({ status }: { status: string }) {
 
 const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN'])
 
+// 返回北京时间当天的日期字符串 (YYYY-MM-DD)，与后端 date 参数约定一致
+function getBeijingToday(): string {
+  const now = new Date()
+  const beijing = new Date(now.getTime() + now.getTimezoneOffset() * 60000 + 8 * 3600000)
+  const y = beijing.getUTCFullYear()
+  const m = String(beijing.getUTCMonth() + 1).padStart(2, '0')
+  const d = String(beijing.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 export default function FixturesPage() {
   const [fixtures, setFixtures] = useState<Fixture[]>([])
   const [loading, setLoading] = useState(true)
@@ -157,7 +174,7 @@ export default function FixturesPage() {
   const [leagueId, setLeagueId] = useState('')
   const [season, setSeason] = useState('')
   const [status, setStatus] = useState('')
-  const [date, setDate] = useState('')
+  const [date, setDate] = useState(getBeijingToday())
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
@@ -580,7 +597,10 @@ export default function FixturesPage() {
         ) : oddsData ? (
           <div className="space-y-5">
             {oddsData.odds_data && oddsData.odds_data.length > 0 ? (
-              oddsData.odds_data.map((bm) => (
+              oddsData.odds_data.map((bm) => {
+                const rows = (bm.entries || []).filter(hasOddsData)
+                if (rows.length === 0) return null
+                return (
                 <div key={bm.bookmaker}>
                   <h4 className="font-semibold mb-2">{bm.bookmaker}</h4>
                   <div className="table-container">
@@ -596,7 +616,7 @@ export default function FixturesPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {bm.entries.map((e) => (
+                        {rows.map((e) => (
                           <tr key={e.date}>
                             <td className="text-xs text-gray-500">{e.date}</td>
                             <td className="text-center">
@@ -642,7 +662,8 @@ export default function FixturesPage() {
                     </table>
                   </div>
                 </div>
-              ))
+                )
+              })
             ) : null}
             {oddsData.text && (
               <div>

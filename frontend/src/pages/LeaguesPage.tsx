@@ -26,7 +26,7 @@ export default function LeaguesPage() {
   const [leagues, setLeagues] = useState<League[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [filterEnabled, setFilterEnabled] = useState<string>('')
+  const [filterEnabled, setFilterEnabled] = useState<string>('true')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [selectedLeague, setSelectedLeague] = useState<League | null>(null)

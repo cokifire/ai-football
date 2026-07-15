@@ -35,6 +35,11 @@ def sync_standings(db: Session) -> None:
             )
             response.raise_for_status()
             data = response.json()
+            if data.get("errors"):
+                logger.warning(
+                    f"联赛 {season.league_id} 赛季 {season.year} 积分榜被拒绝: {data['errors']}"
+                )
+                continue
         except Exception as e:
             logger.error(f"拉取联赛 {season.league_id} 积分榜失败: {e}")
             continue

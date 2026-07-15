@@ -59,6 +59,19 @@ export default function PredictionsPage() {
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const pageSize = 20
 
+  // 亚盘盘口以「主队视角」展示: line<0 主队让球, line>0 主队受让, 0 平手
+  const fmtAhLine = (line: number) => {
+    if (line === 0) return '平手'
+    return line > 0 ? `主 +${line}` : `主 ${line}`
+  }
+
+  // 判断某条按日期的赔率记录是否含有任何赔率数据（用于隐藏无数据日期）
+  const hasOddsData = (e: any): boolean =>
+    !!e && (
+      e.home_raw != null || e.draw_raw != null || e.away_raw != null ||
+      e.ah_home_raw != null || e.ou_over_raw != null
+    )
+
   // 赔率弹窗状态（支持多条历史记录逐条展示）
   const [oddsFixture, setOddsFixture] = useState<PredictionDetail | null>(null)
   const [oddsRecords, setOddsRecords] = useState<any[]>([])
@@ -478,7 +491,7 @@ export default function PredictionsPage() {
             ? `赔率 - ${oddsFixture.basic.home_name || '主队'} vs ${oddsFixture.basic.away_name || '客队'}`
             : '赔率'
         }
-        size="lg"
+        size="xl"
       >
         {oddsLoading ? (
           <Loading />
@@ -499,7 +512,10 @@ export default function PredictionsPage() {
                     <span>· {rec.created_at.replace('T', ' ').substring(0, 19)}</span>
                   )}
                 </div>
-                {(rec.odds_data || []).map((bm: any, i: number) => (
+                {(rec.odds_data || []).map((bm: any, i: number) => {
+                  const rows = (bm.entries || []).filter(hasOddsData)
+                  if (rows.length === 0) return null
+                  return (
                   <div key={i} className="card">
                     <div className="card-header">
                       <h3 className="font-semibold">{bm.bookmaker}</h3>
@@ -518,7 +534,7 @@ export default function PredictionsPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {(bm.entries || []).map((e: any, j: number) => (
+                            {rows.map((e: any, j: number) => (
                               <tr key={j}>
                                 <td className="text-xs text-gray-500">{e.date || '-'}</td>
                                 <td>
@@ -586,7 +602,8 @@ export default function PredictionsPage() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             ))}
           </div>
@@ -751,17 +768,18 @@ export default function PredictionsPage() {
                   <div className="table-container">
                     <table>
                       <thead>
-                        <tr><th>盘口</th><th>中位赔率</th></tr>
+                        <tr><th>主赔率</th><th>盘口</th><th>客赔率</th></tr>
                       </thead>
                       <tbody>
                         {(oddsPredData.asian_handicap || []).map((m: any, i: number) => (
                           <tr key={i}>
-                            <td className="text-xs text-gray-500">{m.line}</td>
-                            <td className="font-medium">{m.odd}</td>
+                            <td className="font-medium">{m.home_odd != null ? m.home_odd : '-'}</td>
+                            <td className="text-xs text-gray-500">{fmtAhLine(m.line)}</td>
+                            <td className="font-medium">{m.away_odd != null ? m.away_odd : '-'}</td>
                           </tr>
                         ))}
                         {(!oddsPredData.asian_handicap || oddsPredData.asian_handicap.length === 0) && (
-                          <tr><td colSpan={2} className="text-center text-gray-400 py-4">无数据</td></tr>
+                          <tr><td colSpan={3} className="text-center text-gray-400 py-4">无数据</td></tr>
                         )}
                       </tbody>
                     </table>
@@ -777,17 +795,18 @@ export default function PredictionsPage() {
                   <div className="table-container">
                     <table>
                       <thead>
-                        <tr><th>盘口</th><th>中位赔率</th></tr>
+                        <tr><th>大</th><th>盘口</th><th>小</th></tr>
                       </thead>
                       <tbody>
                         {(oddsPredData.over_under || []).map((m: any, i: number) => (
                           <tr key={i}>
+                            <td className="font-medium">{m.over_odd != null ? m.over_odd : '-'}</td>
                             <td className="text-xs text-gray-500">{m.line}</td>
-                            <td className="font-medium">{m.odd}</td>
+                            <td className="font-medium">{m.under_odd != null ? m.under_odd : '-'}</td>
                           </tr>
                         ))}
                         {(!oddsPredData.over_under || oddsPredData.over_under.length === 0) && (
-                          <tr><td colSpan={2} className="text-center text-gray-400 py-4">无数据</td></tr>
+                          <tr><td colSpan={3} className="text-center text-gray-400 py-4">无数据</td></tr>
                         )}
                       </tbody>
                     </table>
