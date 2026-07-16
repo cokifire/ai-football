@@ -123,10 +123,12 @@ export default function PredictionsPage() {
         setOddsRecords(res.data.records || [])
       })
       .catch((err) => {
-        if (err.response?.status === 404) {
+        const status = err.response?.status
+        if (status === 404) {
           setOddsError('暂无可查看的赔率，可点击下方按钮抓取。')
         } else {
-          setOddsError('赔率加载失败，请稍后重试。')
+          const detail = err.response?.data?.detail || err.message || '未知错误'
+          setOddsError(`赔率加载失败（${status ?? '网络错误'}）：${detail}`)
         }
       })
       .finally(() => setOddsLoading(false))

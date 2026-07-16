@@ -369,30 +369,3 @@ def _print_result(r: dict):
         ah = v["asian_handicap_15"]
         print(f"  让球(主让1.5): 赔率 {ah['odd']} -> 隐含主队赢2球以上概率 {ah['implied_win']:.1%}")
     print("=" * 60)
-
-
-def main():
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        if arg.isdigit():
-            fixture_id = int(arg)
-            data = fetch_odds_via_api(fixture_id)
-            if data is None:
-                print("未获取到实时赔率数据（可能该比赛暂无赔率或接口受限）")
-                return
-        else:
-            data = _load(arg)
-    else:
-        data = _load(ODDS_PATH)
-
-    if not data:
-        print("未找到赔率数据")
-        return
-
-    fixture = data[0]
-    result = analyze(fixture)
-    _print_result(result)
-
-
-if __name__ == "__main__":
-    main()
