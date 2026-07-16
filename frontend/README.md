@@ -40,7 +40,7 @@
 frontend/
 ├── index.html              # HTML 模板入口
 ├── package.json           # 依赖与脚本
-├── dev.ps1                # 一键启动前后端开发服务器（Windows PowerShell）
+├── dev.ps1                # Windows 一键启动前后端（PowerShell），Linux/macOS 无需使用
 ├── vite.config.ts         # Vite 配置，含 /api 代理
 ├── tailwind.config.js      # Tailwind 主题（primary 色板）
 ├── postcss.config.js
@@ -74,7 +74,8 @@ frontend/
 ### 环境要求
 
 - Node.js 18+（建议 20+）
-- 后端 FastAPI 服务已在 `http://127.0.0.1:8000` 启动并配置好数据库
+- Python 3.10+ 与 `pip`，用于后端虚拟环境
+- **MySQL / MariaDB**（后端强依赖）：默认连接 `localhost:3306`，库名 `football`，用户 `root`，密码为空。需在启动前确保数据库已运行且已初始化（建库、表结构，见后端主仓库说明）。连接参数可通过后端目录下的 `.env` 覆盖（`db_host` / `db_port` / `db_user` / `db_password` / `db_name`）。
 
 ### 安装依赖
 
@@ -85,16 +86,19 @@ npm install
 
 ### 本地开发
 
-方式一：一键启动前后端（Windows PowerShell）
+方式一：一键启动前后端（跨平台，Windows / Linux / macOS 通用）
 
-```powershell
+```bash
 npm run dev
 ```
 
-`dev.ps1` 会：
-1. 自动释放 3000（前端）与 8000（后端）端口上的旧进程；
-2. 在新窗口启动后端 `uvicorn`（端口 8000）与前端 `vite`（端口 3000）；
-3. 自动打开浏览器访问 `http://localhost:3000`。
+该命令通过 `concurrently` 同时拉起后端 `uvicorn`（端口 8000）与前端 `vite`（端口 3000）：
+
+- 后端由 `node ../scripts/run-backend.mjs` 启动，脚本会自动探测项目根目录 `venv` 内的 Python 解释器（Windows: `venv/Scripts/python.exe`，Linux/macOS: `venv/bin/python`），无需手动激活虚拟环境，也避免了系统 `python` 别名缺失的问题；
+- 若后端因数据库未就绪等原因退出，前端不会被连带关闭，可单独查看后端日志排查；
+- 访问地址：前端 `http://localhost:3000`，后端 `http://localhost:8000`，API 文档 `http://localhost:8000/docs`。
+
+> Windows 下也可继续使用 `dev.ps1`（`npm run dev` 在该平台同样生效），它会额外释放旧端口进程并自动打开浏览器。
 
 方式二：仅启动前端（需自行启动后端）
 
@@ -107,6 +111,24 @@ npm run dev:frontend
 ```bash
 npm run dev:backend
 ```
+
+### 后端虚拟环境
+
+`npm run dev:backend`（即 `scripts/run-backend.mjs`）会自动查找项目根目录的 `venv`，因此**无需手动激活**虚拟环境。首次使用请先创建虚拟环境并安装依赖（Windows 与 Linux/macOS 的 venv 不通用，迁移系统后需重新创建）：
+
+```bash
+# 在项目根目录（ai-football/）执行
+python3 -m venv venv
+source venv/bin/activate        # Linux / macOS
+# Windows: venv\Scripts\activate
+pip install -r backend/requirements.txt   # 安装后端依赖（若后端无该文件，请按实际依赖安装）
+
+# 确保 MySQL 已启动且 football 库已初始化，然后启动开发服务
+cd frontend
+npm run dev
+```
+
+> 注意：Windows 创建的 `venv` 不能直接在 Linux/macOS 上复用，迁移系统后需重新创建虚拟环境。`run-backend.mjs` 在找不到 `venv` 时会回退到系统 `python`（Linux/macOS）或 `python`（Windows），但需确保该解释器已安装 `uvicorn`/`fastapi` 等后端依赖。
 
 ### 接口代理
 

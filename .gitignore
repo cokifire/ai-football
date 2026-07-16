@@ -1,14 +1,20 @@
-node_modules/
-.venv/
+# Error / log files
+*.err
+*.log
+
+# Secrets / env
+.env
+
+# Local logs & caches
+logs/
+.vite/
+
+# Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
 dist/
-.vite/
-*.egg-info/
-.env
-.env.*
-!.env.example
-logs/
-*.log
-*.sql
-venv

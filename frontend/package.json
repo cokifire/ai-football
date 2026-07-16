@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "powershell -ExecutionPolicy Bypass -File dev.ps1",
-    "dev:frontend": "vite",
-    "dev:backend": "..\\venv\\Scripts\\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload --app-dir ..\\backend",
+    "dev": "concurrently -n BACKEND,FRONTEND -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:frontend": "vite --host 0.0.0.0 --port 3000",
+    "dev:backend": "node ../scripts/run-backend.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
