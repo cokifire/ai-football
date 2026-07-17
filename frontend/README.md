@@ -94,7 +94,7 @@ npm run dev
 
 该命令通过 `concurrently` 同时拉起后端 `uvicorn`（端口 8000）与前端 `vite`（端口 3000）：
 
-- 后端由 `node ../scripts/run-backend.mjs` 启动，脚本会自动探测项目根目录 `venv` 内的 Python 解释器（Windows: `venv/Scripts/python.exe`，Linux/macOS: `venv/bin/python`），无需手动激活虚拟环境，也避免了系统 `python` 别名缺失的问题；
+- 后端由 `dev:backend` 内联的 Node 命令启动，它会自动探测项目根目录 `venv` 内的 Python 解释器（Windows: `venv/Scripts/python.exe`，Linux/macOS: `venv/bin/python` 或 `venv/bin/python3`），无需手动激活虚拟环境，也避免了系统 `python` 别名缺失的问题；
 - 若后端因数据库未就绪等原因退出，前端不会被连带关闭，可单独查看后端日志排查；
 - 访问地址：前端 `http://localhost:3000`，后端 `http://localhost:8000`，API 文档 `http://localhost:8000/docs`。
 
@@ -114,7 +114,7 @@ npm run dev:backend
 
 ### 后端虚拟环境
 
-`npm run dev:backend`（即 `scripts/run-backend.mjs`）会自动查找项目根目录的 `venv`，因此**无需手动激活**虚拟环境。首次使用请先创建虚拟环境并安装依赖（Windows 与 Linux/macOS 的 venv 不通用，迁移系统后需重新创建）：
+`npm run dev:backend` 会自动查找项目根目录的 `venv`，因此**无需手动激活**虚拟环境。首次使用请先创建虚拟环境并安装依赖（Windows 与 Linux/macOS 的 venv 不通用，迁移系统后需重新创建）：
 
 ```bash
 # 在项目根目录（ai-football/）执行
@@ -128,7 +128,7 @@ cd frontend
 npm run dev
 ```
 
-> 注意：Windows 创建的 `venv` 不能直接在 Linux/macOS 上复用，迁移系统后需重新创建虚拟环境。`run-backend.mjs` 在找不到 `venv` 时会回退到系统 `python`（Linux/macOS）或 `python`（Windows），但需确保该解释器已安装 `uvicorn`/`fastapi` 等后端依赖。
+> 注意：Windows 创建的 `venv` 不能直接在 Linux/macOS 上复用，迁移系统后需重新创建虚拟环境。`dev:backend` 在找不到 `venv` 时会回退到系统 `python3`（Linux/macOS）或 `python`（Windows），但需确保该解释器已安装 `uvicorn`/`fastapi` 等后端依赖。
 
 ### 接口代理
 

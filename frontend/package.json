@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n BACKEND,FRONTEND -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:frontend": "vite --host 0.0.0.0 --port 3000",
-    "dev:backend": "node ../scripts/run-backend.mjs",
+    "dev:backend": "node -e \"const cp=require('child_process'),fs=require('fs'),path=require('path');const root=path.resolve(process.cwd(),'..');const cands=[path.join(root,'venv/Scripts/python.exe'),path.join(root,'venv/bin/python'),path.join(root,'venv/bin/python3')];const py=cands.find(f=>fs.existsSync(f))||(process.platform==='win32'?'python':'python3');const b=path.join(root,'backend');const ch=cp.spawn(py,['-m','uvicorn','main:app','--host','0.0.0.0','--port','8000','--reload'],{cwd:b,stdio:'inherit'});ch.on('exit',c=>process.exit(c===null?0:c));\"",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
