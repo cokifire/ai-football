@@ -5,11 +5,40 @@ import pickle
 import numpy as np
 import pandas as pd
 from xgboost import XGBClassifier, XGBRegressor
+import xgboost as xgb
 from sklearn.model_selection import cross_val_score
 from loguru import logger
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')
 os.makedirs(MODELS_DIR, exist_ok=True)
+
+
+class _XGBClassifierPortable:
+    """跨平台分类模型包装：直接用 Booster API 预测，规避 pickle 在 Windows/Linux 间
+    保存的原生 booster 字节不兼容（加载时会 segfault，导致后端进程崩溃）。"""
+    def __init__(self, booster, n_classes: int):
+        self.booster = booster
+        self.n_classes_ = n_classes
+
+    def predict_proba(self, X):
+        d = xgb.DMatrix(np.asarray(X, dtype=np.float32))
+        if self.n_classes_ > 2:
+            return np.asarray(self.booster.predict(d))  # softmax 概率 (n, n_classes)
+        p1 = np.asarray(self.booster.predict(d)).reshape(-1, 1)
+        return np.column_stack([1 - p1, p1])
+
+    def predict(self, X):
+        return np.argmax(self.predict_proba(X), axis=1)
+
+
+class _XGBRegressorPortable:
+    """跨平台回归模型包装（lambda_home / lambda_away）。"""
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict(self, X):
+        d = xgb.DMatrix(np.asarray(X, dtype=np.float32))
+        return np.asarray(self.booster.predict(d)).ravel()
 
 
 def _fill_na(X: pd.DataFrame) -> pd.DataFrame:
@@ -122,21 +151,34 @@ def train_group(group_key: str, df_train: pd.DataFrame,
 
 
 def save_models(group_key: str, models: dict):
+    """保存为 XGBoost 原生跨平台 JSON 格式（UBJSON），避免 pickle 在
+    不同 OS / 编译器间不兼容导致加载时 segfault。"""
     for name, model in models.items():
-        path = os.path.join(MODELS_DIR, f'{group_key}_{name}.pkl')
-        with open(path, 'wb') as f:
-            pickle.dump(model, f)
+        path = os.path.join(MODELS_DIR, f'{group_key}_{name}.json')
+        model.save_model(path)
 
 
 def load_models(group_key: str) -> dict | None:
+    """优先加载跨平台 .json；若只有 .pkl（且位于同 OS）则回退以兼容旧环境。"""
     names = ['win', 'over25', 'goals_range', 'lambda_home', 'lambda_away']
     models = {}
     for name in names:
-        path = os.path.join(MODELS_DIR, f'{group_key}_{name}.pkl')
-        if not os.path.exists(path):
+        json_path = os.path.join(MODELS_DIR, f'{group_key}_{name}.json')
+        pkl_path = os.path.join(MODELS_DIR, f'{group_key}_{name}.pkl')
+        if os.path.exists(json_path):
+            booster = xgb.Booster()
+            booster.load_model(json_path)
+            if name in ('lambda_home', 'lambda_away'):
+                models[name] = _XGBRegressorPortable(booster)
+            else:
+                nc = booster.num_class
+                models[name] = _XGBClassifierPortable(booster, nc if nc and nc > 1 else 2)
+        elif os.path.exists(pkl_path):
+            # 同 OS 下的旧格式回退（跨 OS 加载 .pkl 可能 segfault）
+            with open(pkl_path, 'rb') as f:
+                models[name] = pickle.load(f)
+        else:
             return None
-        with open(path, 'rb') as f:
-            models[name] = pickle.load(f)
     return models
 
 
