@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "concurrently -n BACKEND,FRONTEND -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:frontend": "vite --host 0.0.0.0 --port 3000",
-    "dev:backend": "node -e \"const cp=require('child_process'),fs=require('fs'),path=require('path');const root=path.resolve(process.cwd(),'..');const cands=[path.join(root,'venv/Scripts/python.exe'),path.join(root,'venv/bin/python'),path.join(root,'venv/bin/python3')];const py=cands.find(f=>fs.existsSync(f))||(process.platform==='win32'?'python':'python3');const b=path.join(root,'backend');const ch=cp.spawn(py,['-m','uvicorn','main:app','--host','0.0.0.0','--port','8000','--reload'],{cwd:b,stdio:'inherit'});ch.on('exit',c=>process.exit(c===null?0:c));\"",
+    "dev:backend": "node ../scripts/run-backend.mjs",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "axios": "^1.7.2",
@@ -20,8 +21,9 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
-    "concurrently": "^8.2.2",
     "autoprefixer": "^10.4.19",
+    "concurrently": "^8.2.2",
+    "patch-package": "^8.0.1",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.2",

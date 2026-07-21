@@ -61,18 +61,60 @@ def _throttle_api_football():
         _api_timestamps.append(time.monotonic())
 
 
+def _http_with_deadline(method: str, url: str, *, headers=None, params=None,
+                        json=None, timeout: float = 30.0, label: str = "HTTP"):
+    """发起 HTTP 请求并强制「墙钟超时」上限，超时/异常返回 None。
+
+    httpx 同步客户端的 timeout 不约束 DNS 解析阶段：若服务器无法访问外网
+    （DNS/连接被防火墙黑洞），请求会无限阻塞，导致后端 worker 被永久挂起
+    （表现为前端 socket hang up、curl 永久等待）。这里改用独立线程 + join 超时
+    强制设上限，让请求快速失败而非卡死进程。
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
+
+    def _do():
+        import httpx
+        return httpx.request(
+            method, url,
+            headers=headers or {}, params=params, json=json,
+            timeout=timeout,
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(_do)
+        try:
+            return fut.result(timeout=timeout + 5)
+        except _FuturesTimeout:
+            logger.error(
+                f"{label} 请求在 {timeout + 5:.0f}s 内无响应"
+                f"（疑似服务器无法访问外网 / DNS 解析挂起）: {url}"
+            )
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"{label} 请求异常: {e}")
+            return None
+
+
 def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
     """带节流地请求 API-Football 的指定接口，返回解析后的 JSON。"""
     _throttle_api_football()
-    import httpx
-    r = httpx.get(
-        f"{settings.api_football_base_url}/{path}",
+    if not settings.api_football_base_url:
+        logger.debug("api_football_base_url 未配置，跳过 API-Football 请求")
+        return {}
+    url = f"{settings.api_football_base_url.rstrip('/')}/{path.lstrip('/')}"
+    resp = _http_with_deadline(
+        "GET", url,
         headers={"x-apisports-key": settings.api_football_key},
-        params=params,
-        timeout=timeout,
+        params=params, timeout=timeout, label="API-Football",
     )
-    r.raise_for_status()
-    return r.json()
+    if resp is None:
+        return {}
+    try:
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"API-Football 响应解析失败: {e}")
+        return {}
 
 
 def _load_feature_cols() -> list[str]:
@@ -120,8 +162,8 @@ def _normalize_llm_fields(parsed: dict) -> dict:
 
 def _call_llm(prompt: str) -> dict | None:
     try:
-        import httpx
-        resp = httpx.post(
+        resp = _http_with_deadline(
+            "POST",
             f"{settings.deepseek_base_url}/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.deepseek_api_key}",
@@ -135,8 +177,12 @@ def _call_llm(prompt: str) -> dict | None:
                 # 关闭推理模型的 thinking，使其直接输出最终 JSON（content 不再为空）
                 "enable_thinking": False,
             },
-            timeout=40.0,
+            timeout=60.0,
+            label="DeepSeek",
         )
+        if resp is None:
+            logger.warning("DeepSeek 请求失败或超时，无法生成 LLM 预测")
+            return None
         resp.raise_for_status()
         message = resp.json()['choices'][0]['message']
         content = message.get('content') or ''

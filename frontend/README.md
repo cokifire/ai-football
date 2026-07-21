@@ -74,8 +74,8 @@ frontend/
 ### 环境要求
 
 - Node.js 18+（建议 20+）
-- Python 3.10+ 与 `pip`，用于后端虚拟环境
-- **MySQL / MariaDB**（后端强依赖）：默认连接 `localhost:3306`，库名 `football`，用户 `root`，密码为空。需在启动前确保数据库已运行且已初始化（建库、表结构，见后端主仓库说明）。连接参数可通过后端目录下的 `.env` 覆盖（`db_host` / `db_port` / `db_user` / `db_password` / `db_name`）。
+- Python **3.11+** 与 `pip`（后端依赖 `scikit-learn==1.8.0`/`torch==2.12.0` 等仅提供 3.11+ 的 wheel，3.10 会报 `No matching distribution`）
+- **MySQL / MariaDB**（后端强依赖）：默认连接 `localhost:3306`，库名 `football`，用户 `root`，密码为空。两点注意：(1) 后端**不会自动建表**，必须手动执行 `alembic upgrade head` 初始化表结构（见下方「数据库初始化」）；(2) Ubuntu 上 MySQL 8 的 `root`@`localhost` 默认用 `auth_socket`/`caching_sha2_password`，pymysql 经 TCP 连接易报 `2013 Lost connection`，**推荐新建一个 `mysql_native_password` 用户**并在后端目录 `.env` 中配置（`db_host` / `db_port` / `db_user` / `db_password` / `db_name`）。
 
 ### 安装依赖
 
@@ -83,6 +83,36 @@ frontend/
 cd frontend
 npm install
 ```
+
+### 数据库初始化
+
+后端**不会**在启动时自动建表（`main.py` 已禁用 alembic 自动迁移），必须先初始化库与表结构，否则启动会因缺少表而失败。
+
+```bash
+# 1) 启动 MySQL（Ubuntu）
+sudo service mysql start
+
+# 2) 创建 football 库（如不存在）
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS football CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 3) 新建专用账号并改用 mysql_native_password（规避 caching_sha2_password 在 TCP 下的 2013 报错）
+sudo mysql -e "CREATE USER IF NOT EXISTS 'football'@'%' IDENTIFIED WITH mysql_native_password BY 'football123'; GRANT ALL PRIVILEGES ON football.* TO 'football'@'%'; FLUSH PRIVILEGES;"
+
+# 4) 在后端目录创建 .env，写入连接参数（config.py 会自动读取）
+cat > ../backend/.env <<'EOF'
+db_host=127.0.0.1
+db_port=3306
+db_user=football
+db_password=football123
+db_name=football
+EOF
+
+# 5) 执行迁移建表（在 venv 中）
+cd ../backend
+alembic upgrade head
+```
+
+> 若坚持使用 `root` 空密码，请把 `root`@`127.0.0.1`（注意是 TCP 账号，非 `localhost` 的 socket 账号）也改为 `mysql_native_password`，否则 pymysql 在 Ubuntu 上大概率报 `2013 Lost connection to MySQL server during query`。
 
 ### 本地开发
 
@@ -94,7 +124,7 @@ npm run dev
 
 该命令通过 `concurrently` 同时拉起后端 `uvicorn`（端口 8000）与前端 `vite`（端口 3000）：
 
-- 后端由 `dev:backend` 内联的 Node 命令启动，它会自动探测项目根目录 `venv` 内的 Python 解释器（Windows: `venv/Scripts/python.exe`，Linux/macOS: `venv/bin/python` 或 `venv/bin/python3`），无需手动激活虚拟环境，也避免了系统 `python` 别名缺失的问题；
+- 后端由 `node ../scripts/run-backend.mjs` 启动，脚本会自动探测项目根目录 `venv` 内的 Python 解释器（Windows: `venv/Scripts/python.exe`，Linux/macOS: `venv/bin/python`），无需手动激活虚拟环境，也避免了系统 `python` 别名缺失的问题；
 - 若后端因数据库未就绪等原因退出，前端不会被连带关闭，可单独查看后端日志排查；
 - 访问地址：前端 `http://localhost:3000`，后端 `http://localhost:8000`，API 文档 `http://localhost:8000/docs`。
 
@@ -114,11 +144,11 @@ npm run dev:backend
 
 ### 后端虚拟环境
 
-`npm run dev:backend` 会自动查找项目根目录的 `venv`，因此**无需手动激活**虚拟环境。首次使用请先创建虚拟环境并安装依赖（Windows 与 Linux/macOS 的 venv 不通用，迁移系统后需重新创建）：
+`npm run dev:backend`（即 `scripts/run-backend.mjs`）会自动查找项目根目录的 `venv`，因此**无需手动激活**虚拟环境。首次使用请先创建虚拟环境并安装依赖（Windows 与 Linux/macOS 的 venv 不通用，迁移系统后需重新创建）：
 
 ```bash
 # 在项目根目录（ai-football/）执行
-python3 -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate        # Linux / macOS
 # Windows: venv\Scripts\activate
 pip install -r backend/requirements.txt   # 安装后端依赖（若后端无该文件，请按实际依赖安装）
@@ -128,7 +158,7 @@ cd frontend
 npm run dev
 ```
 
-> 注意：Windows 创建的 `venv` 不能直接在 Linux/macOS 上复用，迁移系统后需重新创建虚拟环境。`dev:backend` 在找不到 `venv` 时会回退到系统 `python3`（Linux/macOS）或 `python`（Windows），但需确保该解释器已安装 `uvicorn`/`fastapi` 等后端依赖。
+> 注意：Windows 创建的 `venv` 不能直接在 Linux/macOS 上复用，迁移系统后需重新创建虚拟环境。`run-backend.mjs` 会**按当前平台筛选** venv 内的解释器（Linux/macOS 只用 `venv/bin/python`，绝不会误用 Windows 的 `venv/Scripts/python.exe`），因此即便 Windows 的 `venv` 整个被拷过来也不会出现 `EACCES` 错误；若仍找不到可用的 `venv`，会回退到系统 `python3`/`python`，但需确保该解释器已安装 `uvicorn`/`fastapi` 等后端依赖。
 
 ### 接口代理
 

@@ -1,0 +1,34 @@
+[Unit]
+Description=AI Football Service (frontend + backend)
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=cokifire
+Group=cokifire
+WorkingDirectory=/home/cokifire/project/ai-football/frontend
+
+# node/npm 由 apt 安装，位于 /usr/bin（已在 systemd 默认 PATH 中）。
+# 这里仍显式声明 PATH，避免某些最小化环境下缺省 PATH 不含 /usr/bin。
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/npm run dev
+
+# 数据库/依赖未就绪时避免无限快速重启风暴
+Restart=on-failure
+RestartSec=5
+
+# 后端连接参数来自 backend/.env（由 run-backend.mjs 在 cwd=backend 下读取）。
+# 如需用 systemd 环境变量覆盖，可在此取消注释并修改：
+# Environment=DB_HOST=127.0.0.1
+# Environment=DB_USER=football
+# Environment=DB_PASSWORD=football123
+# Environment=DB_NAME=football
+
+# 停止时连同 vite/uvicorn 子进程一起结束（默认即为 control-group）
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
