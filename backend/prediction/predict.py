@@ -111,10 +111,15 @@ def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
         return {}
     try:
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
     except Exception as e:  # noqa: BLE001
         logger.debug(f"API-Football 响应解析失败: {e}")
         return {}
+    # 即便 HTTP 200，接口也可能在 errors 字段返回限流/配额等错误（如当日请求数耗尽）
+    if isinstance(data, dict) and data.get("errors"):
+        _msg = data["errors"].get("requests") or data["errors"].get("message") or str(data["errors"])
+        logger.warning(f"API-Football 返回错误 [{path}]: {_msg}")
+    return data
 
 
 def _load_feature_cols() -> list[str]:
@@ -312,17 +317,49 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
         return None
 
 
-def _fetch_odds(fixture_id: int) -> dict | None:
-    """拉取近7天至少5个庄家的赔率（含 1X2 / 亚盘 / 大小球）。"""
+def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
+    """拉取赔率（含 1X2 / 亚盘 / 大小球）。
+
+    搜索窗口锚定在「比赛日期」当天及前 3 天（match-3 .. match），按离比赛日由近到远
+    逐个尝试，集满 5 个庄家即停止。免费 API 通常只开放近期一小段时间窗，且每日配额
+    有限，因此只在比赛日附近查询，避免无谓请求、耗尽配额。仅保留真正抓到赔率的日期，
+    不再用「今天」硬性填充空行。
+    """
     try:
         from datetime import datetime, timedelta
-        # 收集所有庄家数据: {bookmaker_name: {date: entry}}
-        bookmaker_odds = {}
         today = datetime.now()
 
-        for day_offset in range(7):
-            date_str = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
-            data = _api_get("odds", {"fixture": fixture_id, "date": date_str}).get("response", [])
+        # 候选日期集合: 仅以「比赛日」为锚点(当天 + 前 3 天)
+        candidate_dates: set = set()
+        md = None
+        if match_date:
+            try:
+                md = match_date if isinstance(match_date, datetime) else datetime.strptime(
+                    str(match_date)[:19], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                md = None
+        anchors = [md] if md else [today]
+        for anc in anchors:
+            for off in range(-3, 1):  # match-3 .. match（当天及前三天）
+                candidate_dates.add((anc + timedelta(days=off)).strftime("%Y-%m-%d"))
+
+        # 按离「比赛日(无则今天)」由近到远排序, 优先查最可能命中的日期
+        ref = md or today
+        ordered = sorted(
+            candidate_dates,
+            key=lambda d: abs((datetime.strptime(d, "%Y-%m-%d") - ref).days),
+        )
+
+        # 收集所有庄家数据: {bookmaker_name: {date: entry}}
+        bookmaker_odds = {}
+        first_api_error = None  # 记录首个 API-Football 错误（如当日配额耗尽），用于向上游暴露
+        for date_str in ordered:
+            resp = _api_get("odds", {"fixture": fixture_id, "date": date_str})
+            if isinstance(resp, dict) and resp.get("errors"):
+                if first_api_error is None:
+                    first_api_error = resp["errors"]
+                continue  # 该日期无赔率数据
+            data = resp.get("response", []) if isinstance(resp, dict) else []
             if not data:
                 continue
 
@@ -345,22 +382,27 @@ def _fetch_odds(fixture_id: int) -> dict | None:
                         base["date"] = date_str
                         bm_dict[date_str] = base
 
+            # 集满 5 个庄家即可停止, 减少无效 API 请求
+            if len(bookmaker_odds) >= 5:
+                break
+
         if not bookmaker_odds:
+            # 优先返回真实的接口错误（如限流），让上层给出明确的 429 而非误判为「无赔率」
+            if first_api_error is not None:
+                return {"__api_error__": first_api_error}
             return None
 
-        # 取数据最多的前5个庄家，组织为结构化数据（仅返回 odds_data）
+        # 取数据最多的前5个庄家, 按「实际抓到赔率的日期」组织 entries(时间升序)
         sorted_bms = sorted(bookmaker_odds.items(), key=lambda x: -len(x[1]))[:5]
+        all_dates = sorted({d for _, dates in sorted_bms for d in dates.keys()})
         odds_data = []
         for bm_name, dates in sorted_bms:
-            entries = []
-            for day_offset in range(6, -1, -1):
-                key = (today - timedelta(days=day_offset)).strftime("%Y-%m-%d")
-                o = dates.get(key)
-                # 仅保留有赔率数据的日期;无数据的日期不填充空行(查看赔率时隐藏)
-                if o:
-                    entries.append(o)
-            odds_data.append({"bookmaker": bm_name, "entries": entries})
+            entries = [dates[d] for d in all_dates if d in dates]
+            if entries:
+                odds_data.append({"bookmaker": bm_name, "entries": entries})
 
+        if not odds_data:
+            return None
         return {"odds_data": odds_data}
     except Exception as e:
         logger.debug(f"赔率获取失败: {e}")
@@ -595,7 +637,17 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
             return None
         fixture = dict(row._mapping)
 
-        # 2. 特征 + XGBoost
+        # 2. 赔率（尽早抓取并落库，独立于后续特征/模型/LLM 是否成功，
+        #        确保点击「预测」即把可用赔率写入 odds 表）
+        odds = _fetch_odds(fixture_id, fixture.get('date'))
+        odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
+        if odds and odds.get("odds_data"):
+            try:
+                _save_odds(db, fixture_id, odds)
+            except Exception as e:
+                logger.error(f"赔率保存失败 fixture={fixture_id}: {e}")
+
+        # 3. 特征 + XGBoost
         feat = extract_features_for_fixture(db, fixture)
         if feat is None:
             return None
@@ -636,16 +688,6 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
             'lambda_away': lambda_away,
             'handicap': hc,
         }
-
-        # 3. 赔率
-        odds = _fetch_odds(fixture_id)
-        odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
-        # 预测时抓取到的赔率同步落库（每次覆盖旧数据），供前端「查看赔率」读取
-        if odds and odds.get("odds_data"):
-            try:
-                _save_odds(db, fixture_id, odds)
-            except Exception as e:
-                logger.warning(f"赔率保存失败 fixture={fixture_id}: {e}")
 
         # 4. 全量数据
         home_stats = _fetch_team_recent_via_api(fixture['home_id'])

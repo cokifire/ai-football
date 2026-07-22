@@ -99,7 +99,16 @@ async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
 
     def _run():
         from prediction.predict import _fetch_odds, _save_odds
-        result = _fetch_odds(fixture_id)
+        # 读取比赛日期, 用于锚定赔率搜索窗口(与预测路径保持一致)
+        row = db.execute(text("SELECT date FROM fixtures WHERE id = :fid"), {"fid": fixture_id}).fetchone()
+        match_date = row[0] if row else None
+
+        # 每次点击都调用 API 抓取最新赔率; _save_odds 内部会比对与已存快照的差异,
+        # 仅当赔率发生变动时才写入数据库, 避免重复写入完全相同的数据。
+        result = _fetch_odds(fixture_id, match_date)
+        # _fetch_odds 在无赔率且存在接口错误时返回 {"__api_error__": ...} 哨兵
+        if isinstance(result, dict) and result.get("__api_error__") is not None:
+            return result
         if result is None:
             return None
         _save_odds(db, fixture_id, result)
@@ -110,6 +119,12 @@ async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"赔率抓取异常 fixture_id={fixture_id}: {e}")
         raise HTTPException(status_code=500, detail=f"赔率抓取异常: {str(e)}")
+
+    if isinstance(result, dict) and "__api_error__" in result:
+        api_err = result["__api_error__"]
+        msg = (api_err.get("requests") or api_err.get("message") or str(api_err)) if isinstance(api_err, dict) else str(api_err)
+        logger.warning(f"赔率抓取受限 fixture_id={fixture_id}: {msg}")
+        raise HTTPException(status_code=429, detail=f"赔率接口受限: {msg}")
 
     if result is None:
         raise HTTPException(status_code=400, detail="未获取到赔率数据（可能该比赛暂无赔率）")

@@ -162,6 +162,10 @@
 - 最低 2 核 CPU / 4GB 内存
 - 推荐 4 核 CPU / 8GB 内存
 - 如果重新训练模型，建议准备更高内存和更完整的数据集
+- 加载 xgboost 的 C++ 动态库（libxgboost.so）时，CPU 需支持以下指令集{avx
+avx2
+sse4_2
+fma}
 
 ## 项目结构
 
