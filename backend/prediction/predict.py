@@ -505,6 +505,74 @@ def _fetch_team_recent_via_api(team_id: int) -> str:
         return "无"
 
 
+def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
+    """从本地 fixtures 表聚合球队近10场真实战绩（不依赖外部 API，绕开免费版限制）。
+
+    before_date: 只统计该日期之前的比赛，用于计算某场比赛前的真实状态；
+                 为 None 时取数据库中最新的10场。
+    """
+    try:
+        if before_date is not None:
+            sql = text("""
+                SELECT home_id, away_id, home_name, away_name, league_name,
+                       goals_home, goals_away, status_short, date
+                FROM fixtures
+                WHERE (home_id = :tid OR away_id = :tid)
+                  AND goals_home IS NOT NULL AND goals_away IS NOT NULL
+                  AND status_short IN ('FT', 'AET', 'PEN')
+                  AND date < :bdate
+                ORDER BY date DESC
+                LIMIT 10
+            """)
+            params = {"tid": team_id, "bdate": before_date}
+        else:
+            sql = text("""
+                SELECT home_id, away_id, home_name, away_name, league_name,
+                       goals_home, goals_away, status_short, date
+                FROM fixtures
+                WHERE (home_id = :tid OR away_id = :tid)
+                  AND goals_home IS NOT NULL AND goals_away IS NOT NULL
+                  AND status_short IN ('FT', 'AET', 'PEN')
+                ORDER BY date DESC
+                LIMIT 10
+            """)
+            params = {"tid": team_id}
+
+        rows = db.execute(sql, params).fetchall()
+        if not rows:
+            return "无"
+
+        wins = draws = losses = gf = ga = 0
+        details = []
+        for r in reversed(rows):  # 由旧到新输出明细
+            rm = dict(r._mapping)
+            is_home = rm["home_id"] == team_id
+            gh = int(rm["goals_home"] or 0)
+            ga_ = int(rm["goals_away"] or 0)
+            tg = gh if is_home else ga_
+            ta = ga_ if is_home else gh
+            opp = rm["away_name"] if is_home else rm["home_name"]
+            gf += tg
+            ga += ta
+            if tg > ta:
+                w, wins = "胜", wins + 1
+            elif tg < ta:
+                w, losses = "负", losses + 1
+            else:
+                w, draws = "平", draws + 1
+            score = f"{gh}-{ga_}" if is_home else f"{ga_}-{gh}"
+            details.append(f"  {opp}({rm['league_name']}) {score} {w}")
+
+        n = len(rows)
+        detail_text = "\n".join(details)
+        return (f"{wins}胜{draws}平{losses}负 进{gf}球失{ga}球 "
+                f"场均进{gf/n:.1f}失{ga/n:.1f}\n"
+                f"近10场明细:\n{detail_text}")
+    except Exception as e:
+        logger.debug(f"本地聚合球队近况失败 team={team_id}: {e}")
+        return "无"
+
+
 def _fetch_lineups_text(fixture_id: int, home_id: int, away_id: int) -> str:
     """拉取确认首发；未公布时返回阵容不确定提示。"""
     try:
@@ -613,10 +681,21 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     7. 置信度要反映真实不确定性；数据冲突、杯赛、友谊赛、世界杯、阵容未确认或样本不足时应降低置信度。
     8. 必须参考市场赔率中的【亚盘】与【大小球】来校准结论：
        - 让球(handicap)：handicap_num/handicap_team 应与市场亚盘方向一致（亚盘主胜概率高则主队让球、客胜概率高则客队让球），handicap_pct 与市场亚盘隐含概率对齐。
-       - 大小球(ou)：ou_line 优先取赔率中最均衡（双方赔率最相近）的盘口线，ou_type 与 ou_pct 须与市场大小球隐含概率方向一致（大球隐含概率高则选"大"，否则选"小"）。
+       - 大小球(ou)：ou_line 优先取赔率中双方赔率最相近的盘口线，ou_type 与 ou_pct 须与市场大小球隐含概率方向一致（大球隐含概率高则选"大"，否则选"小"）。
 
     请严格输出JSON格式:
-    {{"win":"主胜|平局|客胜","win_pct":"本场预测信心百分比,如85%","score":"三个最可能比分用逗号分隔如2-1,1-1,3-0","handicap_num":"让球数,负数=主队让,正数=客队让,如-1","handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%","ou_line":"大小球线如2.5(优先取赔率中最均衡盘口线)","ou_type":"大或小","ou_pct":"大小球概率百分比如60%","brief_analysis":"一句话结论(20字内)","core_data":"主客队数据对比(100字内)","deep_report":"攻防对比/数据支撑(200字内)"}}"""
+    {{"win":"主胜|平局|客胜",
+    "win_pct":"本场预测信心百分比,如85%",
+    "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
+    "handicap_num":"让球数,负数=主队让,正数=客队让,如-1",
+    "handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%",
+    "ou_line":"大小球线如2.5(优先取赔率中最均衡盘口线)",
+    "ou_type":"大或小",
+    "ou_pct":"大小球概率百分比如60%",
+    "brief_analysis":"一句话结论(20字内)",
+    "core_data":"主客队数据对比(100字内)",
+    "deep_report":"攻防对比/数据支撑(200字内)"}}
+    """
 
 
 def predict_fixture(fixture_id: int, db=None) -> dict | None:
@@ -690,8 +769,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
         }
 
         # 4. 全量数据
-        home_stats = _fetch_team_recent_via_api(fixture['home_id'])
-        away_stats = _fetch_team_recent_via_api(fixture['away_id'])
+        home_stats = _fetch_team_recent_via_db(db, fixture['home_id'], fixture['date'])
+        away_stats = _fetch_team_recent_via_db(db, fixture['away_id'], fixture['date'])
         home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'])
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
@@ -856,6 +935,7 @@ def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
         "now": now,
     })
     db.commit()
+
 
 
 

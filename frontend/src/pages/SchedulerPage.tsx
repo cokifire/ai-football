@@ -26,9 +26,9 @@ const TRIGGER_MAP: Record<string, string> = {
 const taskActions = [
   { key: 'leagues',   label: '联赛同步', desc: '从 API 同步联赛和赛季数据' },
   { key: 'teams',     label: '球队同步', desc: '从 API 同步球队数据' },
-  { key: 'fixtures',  label: '赛程同步', desc: '从 API 同步比赛赛程数据' },
-  { key: 'standings', label: '积分榜同步', desc: '从 API 同步各联赛积分榜数据' },
   { key: 'players',   label: '球员同步', desc: '从 API 同步球员数据' },
+  { key: 'standings', label: '积分榜同步', desc: '从 API 同步各联赛积分榜数据' },
+  { key: 'fixtures',  label: '赛程同步', desc: '从 API 同步比赛赛程数据' },
 ]
 
 function taskStatus(t: SchedulerTask): 'running' | 'paused' | 'idle' {

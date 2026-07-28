@@ -470,30 +470,27 @@ def main():
     print(f"  小组数: {len(groups)} → {sorted(groups)}")
     print(f"  状态分布: {dict(statuses)}")
 
-    # 2. 清理旧数据
-    db = SessionLocal()
-    try:
-        print("\n⏳ 清理旧的 2026 WC 数据...")
-        from sqlalchemy import text
-        # 删除旧的 fixtures (league_id=1, season=2026)
-        del_f = db.execute(text(
-            "DELETE FROM fixtures WHERE league_id=:lid AND season=:s"
-        ), {"lid": LEAGUE_ID, "s": SEASON_YEAR})
-        # 删除旧的 standings (league_id=1, season=2026)
-        del_s = db.execute(text(
-            "DELETE FROM standings WHERE league_id=:lid AND season=:s"
-        ), {"lid": LEAGUE_ID, "s": SEASON_YEAR})
-        db.commit()
-        print(f"  已清除 fixtures {del_f.rowcount} 条, standings {del_s.rowcount} 条")
+        # 2. 清理旧数据（仅清理 standings；fixtures 用 upsert 保留，
+        #    避免源不再返回的历史比赛被删除后，已生成的 predictions 变成孤儿记录）
+        db = SessionLocal()
+        try:
+            print("\n⏳ 清理旧的 2026 WC standings 数据...")
+            from sqlalchemy import text
+            # 删除旧的 standings (league_id=1, season=2026)
+            del_s = db.execute(text(
+                "DELETE FROM standings WHERE league_id=:lid AND season=:s"
+            ), {"lid": LEAGUE_ID, "s": SEASON_YEAR})
+            db.commit()
+            print(f"  已清除 standings {del_s.rowcount} 条")
 
-        print("\n⏳ 写入 fixtures 表...")
-        fixture_count = 0
-        for m in matches:
-            obj = upsert_fixture(db, m)
-            if obj:
-                fixture_count += 1
-        db.commit()
-        print(f"✅ fixtures 写入/更新: {fixture_count} 条")
+            print("\n⏳ 写入/更新 fixtures 表（upsert，保留源不再返回的历史比赛）...")
+            fixture_count = 0
+            for m in matches:
+                obj = upsert_fixture(db, m)
+                if obj:
+                    fixture_count += 1
+            db.commit()
+            print(f"✅ fixtures 写入/更新: {fixture_count} 条")
 
         # 3. 同步 teams 表 (把 FIFA 球队写入 teams 表并设置 name_zh)
         print("\n⏳ 同步 teams 表...")

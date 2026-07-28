@@ -55,3 +55,7 @@ tqdm==4.67.3
 typer==0.25.1
 orjson==3.11.9
 watchfiles==1.2.0
+
+# ── Web Scraping (Flashscore 备用积分榜源) ──
+# 安装后还需执行: python -m playwright install chromium (下载浏览器二进制)
+playwright==1.48.0

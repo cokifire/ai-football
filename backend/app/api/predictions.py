@@ -8,6 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.value_bet_service import compute_value_bets
+from app.services.calibration_service import get_diagnostics
 
 router = APIRouter()
 
@@ -94,7 +96,7 @@ async def get_odds(fixture_id: int, db: Session = Depends(get_db)):
 
 @router.post("/odds/{fixture_id}")
 async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
-    """手动触发赔率抓取，保存到 odds 表（每次点击都覆盖旧数据）。"""
+    """手动触发赔率抓取，保存到 odds 表。"""
     logger.info(f"收到赔率抓取请求: fixture_id={fixture_id}")
 
     def _run():
@@ -176,6 +178,91 @@ async def get_predictions(
     )
 
 
+@router.get("/predictions/accuracy")
+async def get_predictions_accuracy(
+    date: str | None = Query(None),
+    category: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """整体分类预测准确率：胜负 / 大小球 / 盘口 / 比分Top3。"""
+    return await asyncio.to_thread(_get_accuracy_sync, db, date, category)
+
+
+@router.get("/predictions/value-bets/{fixture_id}")
+async def get_value_bets(
+    fixture_id: int,
+    refresh: bool = Query(False, description="true 时先实时抓取赔率再分析"),
+    margin: float = Query(0.03, description="判定为正价值的最小 edge 阈值"),
+    db: Session = Depends(get_db),
+):
+    """价值投注筛选：比较模型隐含概率与市场赔率隐含概率，输出有正 edge 的下注建议。
+
+    返回各市场（胜负平/大小球/让盘）的模型概率、市场隐含概率、edge、Kelly 比例与推荐方向。
+    """
+    return await asyncio.to_thread(compute_value_bets, db, fixture_id, refresh, margin)
+
+
+@router.get("/predictions/calibration")
+async def get_calibration_report():
+    """概率校准诊断：返回各市场校准参数与校准前后 Brier 分数对比。
+
+    说明：模型原始概率经 Platt scaling 校准后用于价值投注的 edge/Kelly 计算，
+    以消除未校准导致的极端 Kelly 误导（如 95% 自信被夸大为 90% 注码）。
+    """
+    return {"report": get_diagnostics()}
+
+
+def _get_accuracy_sync(db, date, category):
+    conditions = ["(p.actual_home_goals IS NOT NULL OR f.goals_home IS NOT NULL)"]
+    params: dict = {}
+    if date:
+        utc_start, utc_end = _date_to_utc_range(date)
+        conditions.append("p.match_date >= :utc_start AND p.match_date < :utc_end")
+        params["utc_start"] = utc_start
+        params["utc_end"] = utc_end
+    if category:
+        conditions.append("f.category = :category")
+        params["category"] = category
+
+    where = "WHERE " + " AND ".join(conditions)
+
+    row = db.execute(text(f"""
+        SELECT
+            COUNT(p.win_correct)      AS win_total,
+            SUM(p.win_correct)        AS win_correct_cnt,
+            COUNT(p.over25_correct)   AS over_total,
+            SUM(p.over25_correct)     AS over_correct_cnt,
+            COUNT(p.handicap_correct) AS hand_total,
+            SUM(p.handicap_correct)   AS hand_correct_cnt,
+            COUNT(p.score_in_top3)    AS score_total,
+            SUM(p.score_in_top3)      AS score_correct_cnt
+        FROM predictions p
+        LEFT JOIN fixtures f ON p.fixture_id = f.id
+        {where}
+    """), params).fetchone()
+
+    d = dict(row._mapping)
+
+    def item(key: str, label: str, total, correct):
+        total = int(total or 0)
+        correct = int(correct or 0)
+        return {
+            "key": key,
+            "label": label,
+            "total": total,
+            "correct": correct,
+            "accuracy": None if total == 0 else round(correct / total, 4),
+        }
+
+    data = [
+        item("win", "胜负", d["win_total"], d["win_correct_cnt"]),
+        item("over25", "大小球", d["over_total"], d["over_correct_cnt"]),
+        item("handicap", "盘口", d["hand_total"], d["hand_correct_cnt"]),
+        item("score", "比分Top3", d["score_total"], d["score_correct_cnt"]),
+    ]
+    return {"data": data}
+
+
 def _get_predictions_sync(db, date, category, page, page_size):
     try:
         conditions = []
@@ -201,6 +288,7 @@ def _get_predictions_sync(db, date, category, page, page_size):
             SELECT p.fixture_id, p.match_date, p.model_group,
                    p.win_home, p.win_draw, p.win_away, p.over25_prob,
                    p.top3_scores, p.lambda_home, p.lambda_away, p.handicap,
+                   p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
                    p.llm_win, p.llm_score, p.llm_win_pct,
                    p.llm_brief, p.llm_core_data, p.llm_deep_report,
                    p.llm_handicap, p.llm_over_under,
@@ -211,7 +299,8 @@ def _get_predictions_sync(db, date, category, page, page_size):
                    COALESCE(at.name_zh, p.away_name) AS away_name,
                    COALESCE(lg.name_zh, p.league_name) AS league_name,
                    f.status_short, f.category,
-                   f.goals_home AS actual_h, f.goals_away AS actual_a
+                   f.goals_home AS actual_h, f.goals_away AS actual_a,
+                   p.actual_home_goals AS p_ah, p.actual_away_goals AS p_aa
             FROM predictions p
             LEFT JOIN fixtures f ON p.fixture_id = f.id
             LEFT JOIN teams ht ON f.home_id = ht.id
@@ -232,6 +321,11 @@ def _get_predictions_sync(db, date, category, page, page_size):
                         d[field] = _json.loads(d[field])
                     except Exception:
                         pass
+
+            # 实际比分优先取 predictions 表已回填的值，回退 fixtures
+            actual_h = d.get("p_ah") if d.get("p_ah") is not None else d.get("actual_h")
+            actual_a = d.get("p_aa") if d.get("p_aa") is not None else d.get("actual_a")
+            has_result = actual_h is not None
 
             record = {
                 "basic": {
@@ -280,12 +374,12 @@ def _get_predictions_sync(db, date, category, page, page_size):
                     "deep_report": d.get("llm_deep_report"),
                 },
                 "result": {
-                    "score": f"{d['actual_h']}-{d['actual_a']}" if d.get("actual_h") is not None else None,
+                    "score": f"{actual_h}-{actual_a}" if (has_result and actual_a is not None) else None,
                     "win_correct": d.get("win_correct"),
                     "over25_correct": d.get("over25_correct"),
                     "handicap_correct": d.get("handicap_correct"),
-                    "top3_correct": d.get("score_in_top3"),
-                } if d.get("actual_h") is not None else None,
+                    "score_in_top3": d.get("score_in_top3"),
+                } if has_result else None,
             }
             data.append(record)
 

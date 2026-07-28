@@ -1,10 +1,37 @@
 from sqlalchemy.orm import Session
 from loguru import logger
 import httpx
+import random
+import sys
+import time
+from pathlib import Path
 
 from app.core.config import settings
 from app.models.league import League, Season
 from app.models.standing import Standing
+
+# 允许从 tools/ 导入 Flashscore 抓取脚本, 作为 API-Football 的备用数据源
+_TOOLS_DIR = str(Path(__file__).resolve().parent.parent.parent / "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+# Flashscore 连续爬取之间的随机等待区间(秒), 降低被反爬封锁的概率
+FLASHSCORE_SCRAPE_INTERVAL = (5, 12)
+
+
+def _sync_from_flashscore(db: Session, league_id: int) -> bool:
+    """用 Flashscore 抓取并写入该联赛积分榜。返回是否成功触发抓取。"""
+    try:
+        from fetch_flashscore_standings import run as flashscore_run
+    except Exception as e:
+        logger.error(f"无法导入 Flashscore 抓取脚本, 跳过联赛 {league_id}: {e}")
+        return False
+    try:
+        flashscore_run(league_id, db=db)
+        return True
+    except Exception as e:
+        logger.error(f"Flashscore 同步联赛 {league_id} 失败: {e}")
+        return False
 
 
 def sync_standings(db: Session) -> None:
@@ -23,6 +50,7 @@ def sync_standings(db: Session) -> None:
         logger.warning("没有找到当前赛季，跳过积分榜同步")
         return
 
+    scraped_flashscore = False
     for season in seasons:
         logger.info(f"拉取联赛 {season.league_id} 赛季 {season.year} 的积分榜...")
 
@@ -37,8 +65,16 @@ def sync_standings(db: Session) -> None:
             data = response.json()
             if data.get("errors"):
                 logger.warning(
-                    f"联赛 {season.league_id} 赛季 {season.year} 积分榜被拒绝: {data['errors']}"
+                    f"联赛 {season.league_id} 赛季 {season.year} 积分榜被 API-Football 拒绝"
+                    f"(套餐限制): {data['errors']}, 改用 Flashscore 备用源"
                 )
+                # 多次 Flashscore 爬取之间设置随机等待, 避免被反爬封锁
+                if scraped_flashscore:
+                    wait = random.uniform(*FLASHSCORE_SCRAPE_INTERVAL)
+                    logger.info(f"Flashscore 爬取间隔等待 {wait:.1f}s")
+                    time.sleep(wait)
+                _sync_from_flashscore(db, season.league_id)
+                scraped_flashscore = True
                 continue
         except Exception as e:
             logger.error(f"拉取联赛 {season.league_id} 积分榜失败: {e}")

@@ -3,6 +3,8 @@ import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import Pagination from '../components/Pagination'
 import Modal from '../components/Modal'
+import AccuracyPanel, { AccuracyItem } from '../components/AccuracyPanel'
+import ValueBetPanel from '../components/ValueBetPanel'
 
 interface PredictionDetail {
   basic: {
@@ -45,7 +47,7 @@ interface PredictionDetail {
     win_correct: boolean | null
     over25_correct: boolean | null
     handicap_correct: boolean | null
-    top3_correct: boolean | null
+    score_in_top3: boolean | null
   } | null
 }
 
@@ -57,12 +59,22 @@ export default function PredictionsPage() {
   const [date, setDate] = useState('')
   const [category, setCategory] = useState('')
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
+  const [accuracy, setAccuracy] = useState<AccuracyItem[]>([])
   const pageSize = 20
 
   // 亚盘盘口以「主队视角」展示: line<0 主队让球, line>0 主队受让, 0 平手
   const fmtAhLine = (line: number) => {
     if (line === 0) return '平手'
     return line > 0 ? `主 +${line}` : `主 ${line}`
+  }
+
+  // 将 LLM 胜平负结论映射为简短标签 主/平/客
+  const winLabel = (w: string | null | undefined): string => {
+    if (!w) return ''
+    if (w.includes('主')) return '主'
+    if (w.includes('平')) return '平'
+    if (w.includes('客')) return '客'
+    return w
   }
 
   // 判断某条按日期的赔率记录是否含有任何赔率数据（用于隐藏无数据日期）
@@ -84,8 +96,21 @@ export default function PredictionsPage() {
   const [oddsPredLoading, setOddsPredLoading] = useState(false)
   const [oddsPredError, setOddsPredError] = useState('')
 
+  const fetchAccuracy = () => {
+    apiClient
+      .get('/predictions/accuracy', {
+        params: {
+          date: date || undefined,
+          category: category || undefined,
+        },
+      })
+      .then((res) => setAccuracy(res.data.data || []))
+      .catch(() => setAccuracy([]))
+  }
+
   const fetchPredictions = () => {
     setLoading(true)
+    fetchAccuracy()
     apiClient
       .get('/predictions', {
         params: {
@@ -208,7 +233,7 @@ export default function PredictionsPage() {
                   <th>平%</th>
                   <th>负%</th>
                   <th>大小球</th>
-                  <th>比分预测</th>
+                  <th>结果对比</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -236,13 +261,56 @@ export default function PredictionsPage() {
                         {a != null ? `${(a * 100).toFixed(1)}%` : '-'}
                       </td>
                       <td>
-                        {x?.over25 ? (
-                          <span className={x.over25.over != null && x.over25.over > 0.5 ? 'badge-yellow' : 'badge-blue'}>
-                            大{x.over25.over != null ? x.over25.over.toFixed(2) : '-'}
+                        {p.llm?.ou_type && p.llm?.ou_line != null ? (
+                          <span className={p.llm.ou_type.includes('大') ? 'badge-yellow' : 'badge-blue'}>
+                            {p.llm.ou_type} {p.llm.ou_line}
                           </span>
                         ) : '-'}
                       </td>
-                      <td className="text-xs">{x?.top3?.[0]?.score || p.llm?.score || '-'}</td>
+                      <td>
+                        {p.result ? (
+                          <div className="flex flex-wrap gap-1">
+                            <span
+                              className={p.result.win_correct ? 'badge-green' : 'badge-red'}
+                              title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
+                            >
+                              {p.result.win_correct != null
+                                ? `${winLabel(p.llm?.win)}${p.result.win_correct ? '✓' : '✗'}`
+                                : '-'}
+                            </span>
+                            <span
+                              className={p.result.over25_correct != null
+                                ? (p.result.over25_correct ? 'badge-green' : 'badge-red')
+                                : 'badge-yellow'}
+                              title="大小球：模型判断的大/小方向是否与实际总进球一致"
+                            >
+                              {p.result.over25_correct != null
+                                ? (p.result.over25_correct
+                                    ? `${p.llm?.ou_type ?? ''}✓`
+                                    : `${p.llm?.ou_type ?? ''}✗`)
+                                : `${p.llm?.ou_type ?? ''}(-)`}
+                            </span>
+                            <span
+                              className={p.result.handicap_correct != null
+                                ? (p.result.handicap_correct ? 'badge-green' : 'badge-red')
+                                : 'badge-yellow'}
+                              title="盘口：模型看好的让球方（主队/客队）是否赢盘"
+                            >
+                              {p.result.handicap_correct != null
+                                ? `${p.llm?.handicap_team ?? ''}${p.result.handicap_correct ? '✓' : '✗'}`
+                                : `${p.llm?.handicap_team ?? ''}(-)`}
+                            </span>
+                            <span
+                              className={p.result.score_in_top3 ? 'badge-green' : 'badge-red'}
+                              title="比分：模型 Top3 比分预测是否命中真实比分"
+                            >
+                              {p.result.score != null && p.result.score_in_top3 != null
+                                ? `${p.result.score}${p.result.score_in_top3 ? '✓' : '✗'}`
+                                : '-'}
+                            </span>
+                          </div>
+                        ) : '-'}
+                      </td>
                       <td>
                         <div className="flex gap-2">
                           <button className="btn btn-secondary btn-xs" onClick={() => setSelectedPred(p)}>
@@ -274,6 +342,9 @@ export default function PredictionsPage() {
           </div>
         </div>
       )}
+
+      {/* 预测准确率分析（底部图表） */}
+      <AccuracyPanel data={accuracy} />
 
       {/* 预测详情弹窗 - 直接从列表数据中获取 */}
       <Modal
@@ -448,36 +519,68 @@ export default function PredictionsPage() {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="p-3 rounded-lg bg-gray-50">
                       <div className="text-xs text-gray-500">胜负预测</div>
-                      <span className={selectedPred.result.win_correct ? 'badge-green' : 'badge-red'}>
-                        胜负{selectedPred.result.win_correct ? '✓' : '✗'}
+                      <span
+                        className={selectedPred.result.win_correct ? 'badge-green' : 'badge-red'}
+                        title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
+                      >
+                        {selectedPred.result.win_correct != null
+                          ? `${winLabel(selectedPred.llm?.win)}${selectedPred.result.win_correct ? '✓' : '✗'}`
+                          : '-'}
                       </span>
                     </div>
                     <div className="p-3 rounded-lg bg-gray-50">
-                      <div className="text-xs text-gray-500">大小球</div>
-                      <span className={selectedPred.result.over25_correct ? 'badge-green' : 'badge-red'}>
+                      <div className="text-xs text-gray-500">大小球{selectedPred.llm?.ou_line ?? 2.5}</div>
+                      <span
+                        className={selectedPred.result.over25_correct != null
+                          ? (selectedPred.result.over25_correct ? 'badge-green' : 'badge-red')
+                          : 'badge-yellow'}
+                        title="大小球：模型判断的大/小方向是否与实际总进球一致"
+                      >
                         {selectedPred.result.over25_correct != null
-                          ? (selectedPred.result.over25_correct ? '对✓' : '错✗')
-                          : '-'}
+                          ? (selectedPred.result.over25_correct
+                              ? `${selectedPred.llm?.ou_type ?? ''}✓`
+                              : `${selectedPred.llm?.ou_type ?? ''}✗`)
+                          : `${selectedPred.llm?.ou_type ?? ''}(-)`}
                       </span>
                     </div>
                     <div className="p-3 rounded-lg bg-gray-50">
-                      <div className="text-xs text-gray-500">盘口</div>
-                      <span className={selectedPred.result.handicap_correct ? 'badge-green' : 'badge-red'}>
+                      <div className="text-xs text-gray-500">盘口{selectedPred.llm?.handicap_num ?? ''}</div>
+                      <span
+                        className={selectedPred.result.handicap_correct != null
+                          ? (selectedPred.result.handicap_correct ? 'badge-green' : 'badge-red')
+                          : 'badge-yellow'}
+                        title="盘口：模型看好的让球方（主队/客队）是否赢盘"
+                      >
                         {selectedPred.result.handicap_correct != null
-                          ? (selectedPred.result.handicap_correct ? '对✓' : '错✗')
-                          : '-'}
+                          ? `${selectedPred.llm?.handicap_team ?? ''}${selectedPred.result.handicap_correct ? '✓' : '✗'}`
+                          : `${selectedPred.llm?.handicap_team ?? ''}(-)`}
                       </span>
                     </div>
                     {selectedPred.result.score && (
                       <div className="p-3 rounded-lg bg-gray-50">
                         <div className="text-xs text-gray-500">实际比分</div>
-                        <div className="text-lg font-bold">{selectedPred.result.score}</div>
+                        <span
+                          className={selectedPred.result.score_in_top3 ? 'badge-green' : 'badge-red'}
+                          title="比分：模型 Top3 比分预测是否命中真实比分"
+                        >
+                          {`${selectedPred.result.score}${selectedPred.result.score_in_top3 ? '✓' : '✗'}`}
+                        </span>
                       </div>
                     )}
                   </div>
                 </div>
               </div>
             )}
+
+            {/* 价值投注分析 */}
+            <div className="card border-green-200">
+              <div className="card-header bg-green-50">
+                <h3 className="font-semibold">价值投注分析</h3>
+              </div>
+              <div className="card-body">
+                <ValueBetPanel fixtureId={selectedPred.basic.fixture_id} />
+              </div>
+            </div>
           </div>
         ) : (
           <Loading />

@@ -1,6 +1,5 @@
 """赛后验证回填：扫描 predictions 表，回填实际结果并计算正确性"""
 
-import json
 from sqlalchemy import text
 from loguru import logger
 import httpx
@@ -90,9 +89,11 @@ def _backfill_one(db, fid: int) -> bool:
     else:
         actual_win = "客胜"
 
-    # 读取 LLM 预测
+    # 读取 LLM 预测（含让球盘结构化字段、大小球盘口类型与盘口线）
     pred = db.execute(text(
-        "SELECT llm_win, llm_over_under, llm_handicap, llm_score FROM predictions WHERE fixture_id=:fid"
+        "SELECT llm_win, llm_over_under, llm_handicap, llm_handicap_num, llm_handicap_team, "
+        "llm_score, over25_prob, llm_ou_type, llm_ou_line "
+        "FROM predictions WHERE fixture_id=:fid"
     ), {"fid": fid}).fetchone()
     if not pred:
         return False
@@ -100,42 +101,73 @@ def _backfill_one(db, fid: int) -> bool:
     # 胜平负正确性
     win_correct = 1 if pred[0] == actual_win else 0
 
-    # 大小球正确性
-    actual_over = "大球" if total >= 3 else "小球"
-    llm_over_under = pred[1] or ""
-    if "大" in llm_over_under:
-        over25_correct = 1 if actual_over == "大球" else 0
-    elif "小" in llm_over_under:
-        over25_correct = 1 if actual_over == "小球" else 0
-    else:
-        over25_correct = 0
-
-    # 让球盘正确性
-    handicap_correct = None
-    llm_handicap = pred[2] or ""
-    if llm_handicap:
+    # 大小球正确性：依据 LLM 盘口类型(llm_ou_type)与盘口线(llm_ou_line)，基准为 llm_ou_line
+    ou_type = pred[7] or ""
+    ou_line = pred[8]
+    if ou_type and ou_line is not None:
         try:
-            # 格式: -1.5 主队86% 或 0.5 客队70%
-            parts = llm_handicap.split()
-            if len(parts) >= 2:
+            line = float(ou_line)
+            if total > line:
+                actual_over = "大球"
+            elif total < line:
+                actual_over = "小球"
+            else:
+                actual_over = None  # 走水
+            if actual_over is None:
+                over25_correct = None  # 走水显示 -
+            elif "大" in ou_type:
+                over25_correct = 1 if actual_over == "大球" else 0
+            elif "小" in ou_type:
+                over25_correct = 1 if actual_over == "小球" else 0
+            else:
+                over25_correct = 0
+        except (ValueError, TypeError):
+            over25_correct = None
+    else:
+        over25_correct = None
+
+    # 让球盘正确性：优先用结构化字段 llm_handicap_num（负数=主队让，正值=客队让），
+    # 回退兼容旧的自由文本 llm_handicap
+    handicap_correct = None
+    hc_val = None
+    if pred[3] is not None:
+        try:
+            hc_val = float(pred[3])
+        except (ValueError, TypeError):
+            hc_val = None
+    elif pred[2]:
+        try:
+            parts = (pred[2] or "").split()
+            if parts:
                 hc_val = float(parts[0])
-                # 负值=主队让，正值=客队让
-                adjusted_home = (gh or 0) + hc_val
-                if adjusted_home > (ga or 0):
-                    handicap_correct = 1
-                elif adjusted_home < (ga or 0):
-                    handicap_correct = 0
-                else:
-                    handicap_correct = 1  # 走水也算正确
-        except Exception:
-            pass
+        except (ValueError, TypeError):
+            hc_val = None
+
+    if hc_val is not None:
+        # 以「主队视角」计算主队是否赢盘
+        adjusted_home = (gh or 0) + hc_val
+        if adjusted_home > (ga or 0):
+            home_covers = True
+        elif adjusted_home < (ga or 0):
+            home_covers = False
+        else:
+            home_covers = None  # 走水
+
+        team = (pred[4] or "").strip()
+        if home_covers is None:
+            handicap_correct = None
+        elif team == "客队":
+            # 预测方为客队，结果与主队视角相反
+            handicap_correct = 0 if home_covers else 1
+        else:
+            handicap_correct = 1 if home_covers else 0
 
     # Top3 比分（基于 llm_score）
     actual_score = f"{gh}-{ga}"
     score_in_top3 = 0
-    if pred[3]:
+    if pred[5]:
         try:
-            llm_scores = (pred[3] or '').split(',')
+            llm_scores = (pred[5] or '').split(',')
             for s in llm_scores:
                 s = s.strip().replace(':', '-').replace('：', '-')
                 if s == actual_score:
