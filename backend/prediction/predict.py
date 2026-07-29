@@ -165,47 +165,49 @@ def _normalize_llm_fields(parsed: dict) -> dict:
     return parsed
 
 
-def _call_llm(prompt: str) -> dict | None:
-    try:
-        resp = _http_with_deadline(
-            "POST",
-            f"{settings.deepseek_base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.deepseek_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.deepseek_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 1200,
-                # 关闭推理模型的 thinking，使其直接输出最终 JSON（content 不再为空）
-                "enable_thinking": False,
-            },
-            timeout=60.0,
-            label="DeepSeek",
-        )
-        if resp is None:
-            logger.warning("DeepSeek 请求失败或超时，无法生成 LLM 预测")
-            return None
-        resp.raise_for_status()
-        message = resp.json()['choices'][0]['message']
-        content = message.get('content') or ''
-        # 兜底：部分推理模型把结果放在 reasoning_content
-        if not content.strip() and message.get('reasoning_content'):
-            content = message['reasoning_content']
-        parsed = _parse_llm_json(content)
-        if parsed and _has_required_llm_fields(parsed):
-            return _normalize_llm_fields(parsed)
-        logger.warning("LLM 返回缺少必要预测字段")
-    except Exception as e:
-        detail = str(e)
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                detail += f" | body: {e.response.text[:500]}"
-            except Exception:
-                pass
-        logger.warning(f"LLM 失败: {detail}")
+def _call_llm(prompt: str, retries: int = 2) -> dict | None:
+    # 多次重试：LLM 偶有返回非标准 JSON 或漏字段，重试可显著提升稳定性。
+    for attempt in range(1, retries + 2):
+        try:
+            resp = _http_with_deadline(
+                "POST",
+                f"{settings.deepseek_base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.deepseek_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.deepseek_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 1200,
+                    # 关闭推理模型的 thinking，使其直接输出最终 JSON（content 不再为空）
+                    "enable_thinking": False,
+                },
+                timeout=60.0,
+                label="DeepSeek",
+            )
+            if resp is None:
+                logger.warning("DeepSeek 请求失败或超时，无法生成 LLM 预测")
+                return None
+            resp.raise_for_status()
+            message = resp.json()['choices'][0]['message']
+            content = message.get('content') or ''
+            # 兜底：部分推理模型把结果放在 reasoning_content
+            if not content.strip() and message.get('reasoning_content'):
+                content = message['reasoning_content']
+            parsed = _parse_llm_json(content)
+            if parsed and _has_required_llm_fields(parsed):
+                return _normalize_llm_fields(parsed)
+            logger.warning("LLM 返回缺少必要预测字段（第 %d 次）", attempt)
+        except Exception as e:
+            detail = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    detail += f" | body: {e.response.text[:500]}"
+                except Exception:
+                    pass
+            logger.warning("LLM 失败（第 %d 次）: %s", attempt, detail)
     return None
 
 
@@ -235,7 +237,13 @@ def _has_required_llm_fields(data: dict) -> bool:
         "handicap_num", "handicap_team", "handicap_pct",
         "ou_line", "ou_type", "ou_pct",
     )
-    return all(str(data.get(k) or "").strip() for k in required)
+    # 注意：handicap_num 可能为 0（平手盘），不能用 `or ""` 的布尔判断，
+    # 否则合法值 0 会被误判为“缺失”，导致整场预测被丢弃。
+    for k in required:
+        v = data.get(k)
+        if v is None or str(v).strip() == "":
+            return False
+    return True
 
 
 def _parse_1x2(values) -> dict | None:
@@ -698,7 +706,17 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     """
 
 
-def predict_fixture(fixture_id: int, db=None) -> dict | None:
+class PredictionDataError(Exception):
+    """数据缺失/不足：比赛不存在、特征缺失或模型缺失，属于「数据问题」而非模型/外部服务问题。"""
+    pass
+
+
+class PredictionLLMError(Exception):
+    """LLM 校验失败：模型未返回完整/合规的预测结果（解析失败或字段缺失）。"""
+    pass
+
+
+def predict_fixture(fixture_id: int, db=None) -> dict:
     own_db = db is None
     if own_db:
         db = SessionLocal()
@@ -713,7 +731,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
             FROM fixtures f WHERE f.id = :fid
         """), {"fid": fixture_id}).fetchone()
         if not row:
-            return None
+            raise PredictionDataError(f"比赛不存在 fixture_id={fixture_id}")
         fixture = dict(row._mapping)
 
         # 2. 赔率（尽早抓取并落库，独立于后续特征/模型/LLM 是否成功，
@@ -729,12 +747,12 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
         # 3. 特征 + XGBoost
         feat = extract_features_for_fixture(db, fixture)
         if feat is None:
-            return None
+            raise PredictionDataError("特征数据不足，无法构建预测特征（历史/阵容等数据缺失）")
 
         feature_cols = _load_feature_cols()
         models, model_group = _load_best_models(fixture['league_id'])
         if models is None:
-            return None
+            raise PredictionDataError(f"未加载到可用模型（league_id={fixture['league_id']}，请先训练/导入模型）")
 
         X = pd.DataFrame([feat])[feature_cols]
         X_filled = _fill_na(X)
@@ -787,7 +805,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict | None:
             logger.debug(f"LLM失败: {e}")
         if llm_result is None:
             logger.warning(f"预测失败 fixture={fixture_id}: LLM 未返回完整预测，跳过入库")
-            return None
+            raise PredictionLLMError("LLM 未返回完整/合规的预测结果（解析失败或字段缺失）")
 
         # 6. 写库
         _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group)

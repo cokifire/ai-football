@@ -180,6 +180,7 @@ export default function FixturesPage() {
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
+  const [predictResult, setPredictResult] = useState<{ fixture: Fixture; result: any } | null>(null)
   const [oddsFixture, setOddsFixture] = useState<Fixture | null>(null)
   const [oddsData, setOddsData] = useState<OddsData | null>(null)
   const [oddsError, setOddsError] = useState<string | null>(null)
@@ -247,7 +248,7 @@ export default function FixturesPage() {
     apiClient
       .post(`/predict/${fixture.id}`, {}, { timeout: 120000 })
       .then((res) => {
-        setPredictMsg(`${fixture.home_name || ''} vs ${fixture.away_name || ''} 预测完成`)
+        setPredictResult({ fixture, result: res.data.result })
       })
       .catch((err: any) => {
         console.error('[Predict Error]', err)
@@ -699,11 +700,193 @@ export default function FixturesPage() {
           <p className="text-sm text-gray-400 text-center py-4">暂无赔率数据</p>
         )}
       </Modal>
+
+      {/* 预测结果弹窗 */}
+      <Modal
+        open={!!predictResult}
+        onClose={() => setPredictResult(null)}
+        title={
+          predictResult
+            ? `${predictResult.fixture.home_name || ''} vs ${predictResult.fixture.away_name || ''} 预测结果`
+            : '预测结果'
+        }
+        size="xl"
+      >
+        {predictResult && <PredictionResult result={predictResult.result} />}
+      </Modal>
     </div>
   )
 }
 
 // ──── 辅助组件 ────
+
+// 概率格式化：0~1 之间视为概率转百分比，否则按已为百分比处理
+const fmtPct = (v: any): string => {
+  if (v === null || v === undefined || v === '') return '-'
+  const n = Number(v)
+  if (isNaN(n)) return String(v)
+  if (n > 0 && n <= 1) return (n * 100).toFixed(1) + '%'
+  return n.toFixed(1) + '%'
+}
+// 概率转进度条占比（0~1）
+const frac = (v: any): number => {
+  if (v === null || v === undefined) return 0
+  const n = Number(v)
+  if (isNaN(n)) return 0
+  return n > 0 && n <= 1 ? n : Math.min(Math.max(n / 100, 0), 1)
+}
+const winnerLabel = (w: any): string => {
+  if (w === 'home' || w === 'H' || w === '主') return '主胜'
+  if (w === 'away' || w === 'A' || w === '客') return '客胜'
+  if (w === 'draw' || w === 'D' || w === '平') return '平局'
+  return w || '-'
+}
+
+function PredictionResult({ result }: { result: any }) {
+  if (!result) return null
+  const xgb = result
+  const llm = result.llm || {}
+
+  return (
+    <div className="space-y-6">
+      {/* 总览 */}
+      <div className="flex items-center justify-center gap-10 py-2">
+        <div className="text-center">
+          <p className="text-xs text-gray-400">推荐赛果</p>
+          <p className="text-2xl font-bold text-primary-600">{winnerLabel(llm.win)}</p>
+          {llm.score && <p className="text-sm text-gray-500 mt-1">比分 {llm.score}</p>}
+        </div>
+        {llm.win_pct != null && (
+          <div className="text-center">
+            <p className="text-xs text-gray-400">置信度</p>
+            <p className="text-2xl font-bold">{fmtPct(llm.win_pct)}</p>
+          </div>
+        )}
+      </div>
+
+      {/* 胜平负概率（模型） */}
+      <div>
+        <h4 className="font-semibold mb-2">胜平负概率（模型）</h4>
+        <div className="space-y-2">
+          {[
+            { label: '主胜', v: xgb.win_home, cls: 'bg-primary-500' },
+            { label: '平局', v: xgb.win_draw, cls: 'bg-gray-400' },
+            { label: '客胜', v: xgb.win_away, cls: 'bg-green-500' },
+          ].map((r) => (
+            <div key={r.label} className="flex items-center gap-3">
+              <span className="w-12 text-sm text-gray-500">{r.label}</span>
+              <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                <div className={`${r.cls} h-full`} style={{ width: `${frac(r.v) * 100}%` }} />
+              </div>
+              <span className="w-14 text-right text-sm font-medium">{fmtPct(r.v)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 大小球 + 让球 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="border border-gray-100 rounded-lg p-3">
+          <h4 className="font-semibold mb-2">大小球</h4>
+          <div className="text-sm space-y-1">
+            <div className="flex justify-between">
+              <span className="text-gray-500">大2.5球概率(模型)</span>
+              <span className="font-medium">{fmtPct(xgb.over25_prob)}</span>
+            </div>
+            {(llm.over_under || (llm.ou_line != null && llm.ou_type)) && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">推荐</span>
+                <span className="font-medium">
+                  {llm.over_under || `${llm.ou_line} ${llm.ou_type} (${fmtPct(llm.ou_pct)})`}
+                </span>
+              </div>
+            )}
+            {llm.ou_line != null && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">盘口</span>
+                <span className="font-medium">{llm.ou_line}</span>
+              </div>
+            )}
+            {llm.ou_pct != null && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">概率</span>
+                <span className="font-medium">{fmtPct(llm.ou_pct)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="border border-gray-100 rounded-lg p-3">
+          <h4 className="font-semibold mb-2">让球</h4>
+          <div className="text-sm space-y-1">
+            <div className="flex justify-between">
+              <span className="text-gray-500">模型盘口</span>
+              <span className="font-medium">{xgb.handicap || '-'}</span>
+            </div>
+            {(llm.handicap || (llm.handicap_team && llm.handicap_num != null)) && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">推荐</span>
+                <span className="font-medium">
+                  {llm.handicap || `${llm.handicap_team} ${llm.handicap_num} (${fmtPct(llm.handicap_pct)})`}
+                </span>
+              </div>
+            )}
+            {llm.handicap_team && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">方向</span>
+                <span className="font-medium">{llm.handicap_team}</span>
+              </div>
+            )}
+            {llm.handicap_pct != null && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">概率</span>
+                <span className="font-medium">{fmtPct(llm.handicap_pct)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 比分 Top3 */}
+      {Array.isArray(xgb.top3) && xgb.top3.length > 0 && (
+        <div>
+          <h4 className="font-semibold mb-2">比分概率 Top3（泊松模型）</h4>
+          <div className="flex flex-wrap gap-2">
+            {xgb.top3.map((t: any, i: number) => (
+              <div key={i} className="px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-100 text-sm">
+                <span className="font-bold">{Array.isArray(t) ? t[0] : t}</span>
+                <span className="text-gray-400 ml-2">{fmtPct(Array.isArray(t) ? t[1] : null)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 文本分析 */}
+      {llm.brief_analysis && (
+        <div>
+          <h4 className="font-semibold mb-2">简析</h4>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.brief_analysis}</p>
+        </div>
+      )}
+      {llm.core_data && (
+        <div>
+          <h4 className="font-semibold mb-2">核心数据</h4>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.core_data}</p>
+        </div>
+      )}
+      {llm.deep_report && (
+        <div>
+          <h4 className="font-semibold mb-2">深度报告</h4>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.deep_report}</p>
+        </div>
+      )}
+
+      {result.model_group && (
+        <p className="text-xs text-gray-400 text-center">模型组: {result.model_group}</p>
+      )}
+    </div>
+  )
+}
 
 function FixtureCard({
   fixture,

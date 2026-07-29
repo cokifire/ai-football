@@ -16,7 +16,11 @@ from rich.table import Table
 from sqlalchemy import text
 
 from app.db.session import SessionLocal
-from prediction.predict import predict_fixture
+from prediction.predict import (
+    predict_fixture,
+    PredictionDataError,
+    PredictionLLMError,
+)
 
 
 console = Console()
@@ -242,9 +246,16 @@ def main() -> int:
             f"({f.get('league_name')}, {_fmt_date(f.get('date'))}, {f.get('status_short')})"
         )
 
-        result = predict_fixture(fixture_id, db=db)
+        try:
+            result = predict_fixture(fixture_id, db=db)
+        except PredictionDataError as e:
+            console.print(f"[red]预测失败（数据不足）：{e}[/red]")
+            return 2
+        except PredictionLLMError as e:
+            console.print(f"[red]预测失败（LLM 校验失败）：{e}（可重试）[/red]")
+            return 2
         if result is None:
-            console.print("[red]预测失败：数据不足、模型缺失、LLM 未返回完整预测，或比赛不存在。[/red]")
+            console.print("[red]预测失败：未知原因（返回为空）。[/red]")
             return 2
 
         data = _load_prediction(db, fixture_id)

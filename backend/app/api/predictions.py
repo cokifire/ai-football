@@ -30,19 +30,26 @@ async def predict_match(fixture_id: int):
     t0 = time.time()
 
     def _run():
-        from prediction.predict import predict_fixture
+        from prediction.predict import predict_fixture, PredictionDataError, PredictionLLMError
         return predict_fixture(fixture_id)
 
     try:
         result = await asyncio.to_thread(_run)
+    except PredictionDataError as e:
+        # 数据缺失：比赛不存在 / 特征不足 / 模型缺失
+        logger.warning(f"单场预测数据不足 fixture_id={fixture_id}: {e}")
+        raise HTTPException(status_code=400, detail=f"数据不足，无法预测：{e}")
+    except PredictionLLMError as e:
+        # LLM 校验失败：上游大模型未返回合规结果
+        logger.warning(f"单场预测 LLM 校验失败 fixture_id={fixture_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"LLM 预测生成失败：{e}（可重试）")
     except Exception as e:
         logger.error(f"单场预测异常 fixture_id={fixture_id}: {e}")
         raise HTTPException(status_code=500, detail=f"预测异常: {str(e)}")
 
     elapsed = time.time() - t0
-    if result is None:
-        logger.warning(f"单场预测返回空 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
-        raise HTTPException(status_code=400, detail="预测失败（数据不足或比赛不存在）")
+    logger.info(f"单场预测完成 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
+    return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
 
     logger.info(f"单场预测完成 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
     return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
