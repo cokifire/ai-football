@@ -68,15 +68,6 @@ export default function PredictionsPage() {
     return line > 0 ? `主 +${line}` : `主 ${line}`
   }
 
-  // 将 LLM 胜平负结论映射为简短标签 主/平/客
-  const winLabel = (w: string | null | undefined): string => {
-    if (!w) return ''
-    if (w.includes('主')) return '主'
-    if (w.includes('平')) return '平'
-    if (w.includes('客')) return '客'
-    return w
-  }
-
   // 判断某条按日期的赔率记录是否含有任何赔率数据（用于隐藏无数据日期）
   const hasOddsData = (e: any): boolean =>
     !!e && (
@@ -222,7 +213,8 @@ export default function PredictionsPage() {
         <Loading />
       ) : (
         <div className="card">
-          <div className="table-container">
+          {/* 桌面端：表格（隐藏于窄屏） */}
+          <div className="table-container hidden md:block">
             <table>
               <thead>
                 <tr>
@@ -268,48 +260,7 @@ export default function PredictionsPage() {
                         ) : '-'}
                       </td>
                       <td>
-                        {p.result ? (
-                          <div className="flex flex-wrap gap-1">
-                            <span
-                              className={p.result.win_correct ? 'badge-green' : 'badge-red'}
-                              title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
-                            >
-                              {p.result.win_correct != null
-                                ? `${winLabel(p.llm?.win)}${p.result.win_correct ? '✓' : '✗'}`
-                                : '-'}
-                            </span>
-                            <span
-                              className={p.result.over25_correct != null
-                                ? (p.result.over25_correct ? 'badge-green' : 'badge-red')
-                                : 'badge-yellow'}
-                              title="大小球：模型判断的大/小方向是否与实际总进球一致"
-                            >
-                              {p.result.over25_correct != null
-                                ? (p.result.over25_correct
-                                    ? `${p.llm?.ou_type ?? ''}✓`
-                                    : `${p.llm?.ou_type ?? ''}✗`)
-                                : `${p.llm?.ou_type ?? ''}(-)`}
-                            </span>
-                            <span
-                              className={p.result.handicap_correct != null
-                                ? (p.result.handicap_correct ? 'badge-green' : 'badge-red')
-                                : 'badge-yellow'}
-                              title="盘口：模型看好的让球方（主队/客队）是否赢盘"
-                            >
-                              {p.result.handicap_correct != null
-                                ? `${p.llm?.handicap_team ?? ''}${p.result.handicap_correct ? '✓' : '✗'}`
-                                : `${p.llm?.handicap_team ?? ''}(-)`}
-                            </span>
-                            <span
-                              className={p.result.score_in_top3 ? 'badge-green' : 'badge-red'}
-                              title="比分：模型 Top3 比分预测是否命中真实比分"
-                            >
-                              {p.result.score != null && p.result.score_in_top3 != null
-                                ? `${p.result.score}${p.result.score_in_top3 ? '✓' : '✗'}`
-                                : '-'}
-                            </span>
-                          </div>
-                        ) : '-'}
+                        <PredResultBadges p={p} />
                       </td>
                       <td>
                         <div className="flex gap-2">
@@ -337,6 +288,25 @@ export default function PredictionsPage() {
               </tbody>
             </table>
           </div>
+
+          {/* 手机端：卡片列表（隐藏于 md 及以上） */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {predictions.map((p) => (
+              <PredictionCard
+                key={p.basic.fixture_id}
+                p={p}
+                onDetail={setSelectedPred}
+                onOddsPred={openOddsPred}
+                onViewOdds={loadOdds}
+              />
+            ))}
+            {predictions.length === 0 && (
+              <div className="text-center text-gray-400 py-8">
+                暂无预测数据，请先执行预测
+              </div>
+            )}
+          </div>
+
           <div className="px-6 py-3">
             <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
           </div>
@@ -924,6 +894,137 @@ export default function PredictionsPage() {
           <p className="text-sm text-gray-500">暂无赔率预测数据。</p>
         )}
       </Modal>
+    </div>
+  )
+}
+
+// ──── 辅助组件 ────
+
+// 将 LLM 胜平负结论映射为简短标签 主/平/客（模块级，供组件与辅助组件共用）
+function winLabel(w: string | null | undefined): string {
+  if (!w) return ''
+  if (w.includes('主')) return '主'
+  if (w.includes('平')) return '平'
+  if (w.includes('客')) return '客'
+  return w
+}
+
+function PredResultBadges({ p }: { p: PredictionDetail }) {
+  const r = p.result
+  if (!r) return null
+  return (
+    <div className="flex flex-wrap gap-1">
+      <span
+        className={r.win_correct ? 'badge-green' : 'badge-red'}
+        title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
+      >
+        {r.win_correct != null ? `${winLabel(p.llm?.win)}${r.win_correct ? '✓' : '✗'}` : '-'}
+      </span>
+      <span
+        className={r.over25_correct != null
+          ? (r.over25_correct ? 'badge-green' : 'badge-red')
+          : 'badge-yellow'}
+        title="大小球：模型判断的大/小方向是否与实际总进球一致"
+      >
+        {r.over25_correct != null
+          ? (r.over25_correct ? `${p.llm?.ou_type ?? ''}✓` : `${p.llm?.ou_type ?? ''}✗`)
+          : `${p.llm?.ou_type ?? ''}(-)`}
+      </span>
+      <span
+        className={r.handicap_correct != null
+          ? (r.handicap_correct ? 'badge-green' : 'badge-red')
+          : 'badge-yellow'}
+        title="盘口：模型看好的让球方（主队/客队）是否赢盘"
+      >
+        {r.handicap_correct != null
+          ? `${p.llm?.handicap_team ?? ''}${r.handicap_correct ? '✓' : '✗'}`
+          : `${p.llm?.handicap_team ?? ''}(-)`}
+      </span>
+      <span
+        className={r.score_in_top3 ? 'badge-green' : 'badge-red'}
+        title="比分：模型 Top3 比分预测是否命中真实比分"
+      >
+        {r.score != null && r.score_in_top3 != null ? `${r.score}${r.score_in_top3 ? '✓' : '✗'}` : '-'}
+      </span>
+    </div>
+  )
+}
+
+function PredictionCard({
+  p,
+  onDetail,
+  onOddsPred,
+  onViewOdds,
+}: {
+  p: PredictionDetail
+  onDetail: (p: PredictionDetail) => void
+  onOddsPred: (p: PredictionDetail) => void
+  onViewOdds: (p: PredictionDetail) => void
+}) {
+  const b = p.basic
+  const x = p.xgb
+  const h = x?.prob?.home
+  const d = x?.prob?.draw
+  const a = x?.prob?.away
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-gray-500 truncate">
+          #{b.fixture_id} · {b.league_name || '-'}
+        </span>
+        <span className="text-xs text-gray-400 whitespace-nowrap">
+          {b.match_date?.substring(0, 10) || '-'}
+        </span>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {b.home_logo && <img src={b.home_logo} alt="" className="w-5 h-5 object-contain" />}
+            <span className="font-medium truncate">{b.home_name || '主队'}</span>
+          </div>
+        </div>
+        <div className="px-2 text-xs text-gray-400 whitespace-nowrap">VS</div>
+        <div className="flex-1 min-w-0 text-left">
+          <div className="flex items-center gap-2">
+            <span className="font-medium truncate">{b.away_name || '客队'}</span>
+            {b.away_logo && <img src={b.away_logo} alt="" className="w-5 h-5 object-contain" />}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-lg bg-green-50 py-1.5">
+          <div className="text-xs text-gray-500">主胜</div>
+          <div className="font-bold text-green-700">{h != null ? `${(h * 100).toFixed(1)}%` : '-'}</div>
+        </div>
+        <div className="rounded-lg bg-yellow-50 py-1.5">
+          <div className="text-xs text-gray-500">平局</div>
+          <div className="font-bold text-yellow-600">{d != null ? `${(d * 100).toFixed(1)}%` : '-'}</div>
+        </div>
+        <div className="rounded-lg bg-red-50 py-1.5">
+          <div className="text-xs text-gray-500">客胜</div>
+          <div className="font-bold text-red-600">{a != null ? `${(a * 100).toFixed(1)}%` : '-'}</div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {p.llm?.ou_type && p.llm?.ou_line != null ? (
+          <span className={p.llm.ou_type.includes('大') ? 'badge-yellow' : 'badge-blue'}>
+            {p.llm.ou_type} {p.llm.ou_line}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400">大小球 -</span>
+        )}
+      </div>
+
+      {p.result && <PredResultBadges p={p} />}
+
+      <div className="flex items-center gap-2">
+        <button className="btn btn-secondary btn-xs flex-1" onClick={() => onDetail(p)}>详情</button>
+        <button className="btn btn-xs flex-1" onClick={() => onOddsPred(p)}>赔率预测</button>
+        <button className="btn btn-xs flex-1" onClick={() => onViewOdds(p)}>查看赔率</button>
+      </div>
     </div>
   )
 }

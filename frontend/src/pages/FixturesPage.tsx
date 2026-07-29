@@ -351,7 +351,8 @@ export default function FixturesPage() {
         <Loading />
       ) : (
         <div className="card">
-          <div className="table-container">
+          {/* 桌面端：表格（隐藏于窄屏） */}
+          <div className="table-container hidden md:block">
             <table>
               <thead>
                 <tr>
@@ -424,6 +425,28 @@ export default function FixturesPage() {
               </tbody>
             </table>
           </div>
+
+          {/* 手机端：卡片列表（隐藏于 md 及以上） */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {fixtures.map((f) => (
+              <FixtureCard
+                key={f.id}
+                fixture={f}
+                onViewDetail={viewDetail}
+                onFetchOdds={handleFetchOdds}
+                onPredict={handlePredict}
+                fetchingOdds={fetchingOddsIds.has(f.id)}
+                predicting={predictingIds.has(f.id)}
+                finished={FINISHED_STATUSES.has(f.status_short)}
+              />
+            ))}
+            {fixtures.length === 0 && (
+              <div className="text-center text-gray-400 py-8">
+                暂无比赛数据，请先同步赛程
+              </div>
+            )}
+          </div>
+
           <div className="px-6 py-3">
             <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
           </div>
@@ -681,6 +704,80 @@ export default function FixturesPage() {
 }
 
 // ──── 辅助组件 ────
+
+function FixtureCard({
+  fixture,
+  onViewDetail,
+  onFetchOdds,
+  onPredict,
+  fetchingOdds,
+  predicting,
+  finished,
+}: {
+  fixture: Fixture
+  onViewDetail: (f: Fixture) => void
+  onFetchOdds: (f: Fixture) => void
+  onPredict: (f: Fixture) => void
+  fetchingOdds: boolean
+  predicting: boolean
+  finished: boolean
+}) {
+  const f = fixture
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500 truncate">
+          {f.league_name || f.league_id} · #{f.id}
+        </span>
+        <StatusBadge status={f.status_short} />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain" />}
+            <span className="font-medium truncate">{f.home_name || f.home_id}</span>
+          </div>
+        </div>
+
+        <div className="px-2 text-center whitespace-nowrap">
+          {f.status_short === 'NS' || f.status_short === 'TBD' ? (
+            <span className="text-gray-400 text-sm">vs</span>
+          ) : (
+            <span className="text-lg font-bold">{f.goals_home ?? '-'} - {f.goals_away ?? '-'}</span>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0 text-left">
+          <div className="flex items-center gap-2">
+            <span className="font-medium truncate">{f.away_name || f.away_id}</span>
+            {f.away_logo && <img src={f.away_logo} alt="" className="w-5 h-5 object-contain" />}
+          </div>
+        </div>
+      </div>
+
+      <div className="text-xs text-gray-400 mt-1 text-center">{f.date}</div>
+
+      <div className="flex items-center gap-2 mt-3">
+        <button className="btn btn-secondary btn-xs flex-1" onClick={() => onViewDetail(f)}>详情</button>
+        <button
+          className="btn btn-secondary btn-xs flex-1"
+          disabled={fetchingOdds}
+          onClick={() => onFetchOdds(f)}
+        >
+          {fetchingOdds ? '获取中...' : '赔率'}
+        </button>
+        <button
+          className="btn btn-primary btn-xs flex-1"
+          disabled={finished || predicting}
+          onClick={() => onPredict(f)}
+        >
+          {predicting ? '预测中...' : '预测'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function FixtureStats({ stats }: { stats: FixtureAPIStat[] }) {
   // 按 team_id 分组，第一个作为主队统计，第二个作为客队统计
