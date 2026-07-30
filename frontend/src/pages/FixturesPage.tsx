@@ -720,6 +720,18 @@ export default function FixturesPage() {
 
 // ──── 辅助组件 ────
 
+// 任意值安全转文本：避免把对象/数组直接作为 React 子节点渲染导致整页崩溃
+const toText = (v: any): string => {
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (Array.isArray(v)) return v.map(toText).join(', ')
+  try {
+    return JSON.stringify(v)
+  } catch {
+    return String(v)
+  }
+}
 // 概率格式化：0~1 之间视为概率转百分比，否则按已为百分比处理
 const fmtPct = (v: any): string => {
   if (v === null || v === undefined || v === '') return '-'
@@ -739,7 +751,8 @@ const winnerLabel = (w: any): string => {
   if (w === 'home' || w === 'H' || w === '主') return '主胜'
   if (w === 'away' || w === 'A' || w === '客') return '客胜'
   if (w === 'draw' || w === 'D' || w === '平') return '平局'
-  return w || '-'
+  if (typeof w === 'string') return w
+  return '-'
 }
 
 function PredictionResult({ result }: { result: any }) {
@@ -754,7 +767,7 @@ function PredictionResult({ result }: { result: any }) {
         <div className="text-center">
           <p className="text-xs text-gray-400">推荐赛果</p>
           <p className="text-2xl font-bold text-primary-600">{winnerLabel(llm.win)}</p>
-          {llm.score && <p className="text-sm text-gray-500 mt-1">比分 {llm.score}</p>}
+          {llm.score && <p className="text-sm text-gray-500 mt-1">比分 {toText(llm.score)}</p>}
         </div>
         {llm.win_pct != null && (
           <div className="text-center">
@@ -797,14 +810,14 @@ function PredictionResult({ result }: { result: any }) {
               <div className="flex justify-between">
                 <span className="text-gray-500">推荐</span>
                 <span className="font-medium">
-                  {llm.over_under || `${llm.ou_line} ${llm.ou_type} (${fmtPct(llm.ou_pct)})`}
+                  {toText(llm.over_under) || `${toText(llm.ou_line)} ${toText(llm.ou_type)} (${fmtPct(llm.ou_pct)})`}
                 </span>
               </div>
             )}
             {llm.ou_line != null && (
               <div className="flex justify-between">
                 <span className="text-gray-500">盘口</span>
-                <span className="font-medium">{llm.ou_line}</span>
+                <span className="font-medium">{toText(llm.ou_line)}</span>
               </div>
             )}
             {llm.ou_pct != null && (
@@ -826,14 +839,14 @@ function PredictionResult({ result }: { result: any }) {
               <div className="flex justify-between">
                 <span className="text-gray-500">推荐</span>
                 <span className="font-medium">
-                  {llm.handicap || `${llm.handicap_team} ${llm.handicap_num} (${fmtPct(llm.handicap_pct)})`}
+                  {toText(llm.handicap) || `${toText(llm.handicap_team)} ${toText(llm.handicap_num)} (${fmtPct(llm.handicap_pct)})`}
                 </span>
               </div>
             )}
             {llm.handicap_team && (
               <div className="flex justify-between">
                 <span className="text-gray-500">方向</span>
-                <span className="font-medium">{llm.handicap_team}</span>
+                <span className="font-medium">{toText(llm.handicap_team)}</span>
               </div>
             )}
             {llm.handicap_pct != null && (
@@ -851,12 +864,17 @@ function PredictionResult({ result }: { result: any }) {
         <div>
           <h4 className="font-semibold mb-2">比分概率 Top3（泊松模型）</h4>
           <div className="flex flex-wrap gap-2">
-            {xgb.top3.map((t: any, i: number) => (
-              <div key={i} className="px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-100 text-sm">
-                <span className="font-bold">{Array.isArray(t) ? t[0] : t}</span>
-                <span className="text-gray-400 ml-2">{fmtPct(Array.isArray(t) ? t[1] : null)}</span>
-              </div>
-            ))}
+            {xgb.top3.map((t: any, i: number) => {
+              // top3 为 [{score, prob}, ...] 字典列表（也可能退化为 [score, prob] 元组）
+              const score = t && typeof t === 'object' && !Array.isArray(t) ? t.score : Array.isArray(t) ? t[0] : t
+              const prob = t && typeof t === 'object' && !Array.isArray(t) ? t.prob : Array.isArray(t) ? t[1] : null
+              return (
+                <div key={i} className="px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-100 text-sm">
+                  <span className="font-bold">{toText(score)}</span>
+                  <span className="text-gray-400 ml-2">{fmtPct(prob)}</span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
