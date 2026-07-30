@@ -516,13 +516,16 @@ def _fetch_team_recent_via_api(team_id: int) -> str:
 def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
     """从本地 fixtures 表聚合球队近10场真实战绩（不依赖外部 API，绕开免费版限制）。
 
+    同时关联 fixture_statistics 表，附上每场比赛本队的 expected_goals(xG)，
+    用于交给 LLM 做高阶数据（xG）维度的分析。
+
     before_date: 只统计该日期之前的比赛，用于计算某场比赛前的真实状态；
                  为 None 时取数据库中最新的10场。
     """
     try:
         if before_date is not None:
             sql = text("""
-                SELECT home_id, away_id, home_name, away_name, league_name,
+                SELECT id, home_id, away_id, home_name, away_name, league_name,
                        goals_home, goals_away, status_short, date
                 FROM fixtures
                 WHERE (home_id = :tid OR away_id = :tid)
@@ -535,7 +538,7 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
             params = {"tid": team_id, "bdate": before_date}
         else:
             sql = text("""
-                SELECT home_id, away_id, home_name, away_name, league_name,
+                SELECT id, home_id, away_id, home_name, away_name, league_name,
                        goals_home, goals_away, status_short, date
                 FROM fixtures
                 WHERE (home_id = :tid OR away_id = :tid)
@@ -550,7 +553,25 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
         if not rows:
             return "无"
 
+        # 关联 fixture_statistics，批量拉取近10场本队的 expected_goals(xG)
+        fixture_ids = tuple(r._mapping["id"] for r in rows) or (-1,)
+        xg_rows = db.execute(text("""
+            SELECT fixture_id, stat_value
+            FROM fixture_statistics
+            WHERE team_id = :tid AND stat_type = 'expected_goals'
+              AND fixture_id IN :fids
+        """), {"tid": team_id, "fids": fixture_ids}).fetchall()
+        xg_map = {}
+        for r in xg_rows:
+            rm = dict(r._mapping)
+            try:
+                xg_map[rm["fixture_id"]] = float(str(rm["stat_value"]).replace('%', ''))
+            except (TypeError, ValueError):
+                xg_map[rm["fixture_id"]] = None
+
         wins = draws = losses = gf = ga = 0
+        xg_sum = 0.0
+        xg_cnt = 0
         details = []
         for r in reversed(rows):  # 由旧到新输出明细
             rm = dict(r._mapping)
@@ -569,12 +590,21 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
             else:
                 w, draws = "平", draws + 1
             score = f"{gh}-{ga_}" if is_home else f"{ga_}-{gh}"
-            details.append(f"  {opp}({rm['league_name']}) {score} {w}")
+
+            xg = xg_map.get(rm["id"])
+            if xg is not None:
+                xg_sum += xg
+                xg_cnt += 1
+                xg_str = f" xG{xg:.2f}"
+            else:
+                xg_str = ""
+            details.append(f"  {opp}({rm['league_name']}) {score} {w}{xg_str}")
 
         n = len(rows)
         detail_text = "\n".join(details)
+        avg_xg = f" 场均xG{xg_sum / xg_cnt:.2f}" if xg_cnt else ""
         return (f"{wins}胜{draws}平{losses}负 进{gf}球失{ga}球 "
-                f"场均进{gf/n:.1f}失{ga/n:.1f}\n"
+                f"场均进{gf / n:.1f}失{ga / n:.1f}{avg_xg}\n"
                 f"近10场明细:\n{detail_text}")
     except Exception as e:
         logger.debug(f"本地聚合球队近况失败 team={team_id}: {e}")
@@ -655,43 +685,44 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     model_top_pct = model_probs[model_top]
     competition_context = _competition_context(fixture)
 
-    return f"""你是一位专业足球分析师.请对以下比赛进行独立分析并给出最终预测.
+    return f"""# Role 你是一位资深足球量化分析师.擅长结合传统球探报告与高阶数据（xG、PPDA 等）进行赛事研判。你的分析风格严谨、冷静，拒绝主观臆断，注重数据背后的逻辑。
 
-    【比赛信息】
+    # 【比赛信息】
     {fixture['home_name']} vs {fixture['away_name']}
     联赛:{fixture['league_name']} 赛季:{fixture['season']}
     赛事属性:{competition_context}
     阵容信息:{lineups_text}
+    比赛场地:{fixture['venue']}
 
-    【{fixture['home_name']} 完整数据】
+    # 核心数据输入（请基于以下信息进行推理）
+
+    *【{fixture['home_name']} 数据】
     积分榜: {home_standings}
     近10场战绩: {home_stats}
 
-    【{fixture['away_name']} 完整数据】
+    *【{fixture['away_name']} 数据】
     积分榜: {away_standings}
     近10场战绩: {away_stats}
 
+    *【赔率数据】
     {"" if not odds_text else "【市场赔率】各庄家逐日行情(1X2 / 亚盘 / 大小球)，括号内为原始赔率、前面为隐含概率:" + odds_text}
 
-    【机器模型参考】仅作校准，不是结论
+    *【机器模型数据】仅作校准，不是结论
     胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
     让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
     模型最高项:{model_top}({model_top_pct:.0%})
 
-    【重要规则】
-    1. 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断，再参考机器模型与市场赔率做校准。
-    2. 不要因为模型最高项是{model_top}就默认选择它；如果球队数据、赛程背景或赔率信号不支持，应选择其他结果。
-    3. 重点检查平局和冷门可能性，不要为了迎合模型概率而排除低概率但合理的结果。
-    4. 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
-    5. 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
-    6. 世界杯/国家队比赛若没有确认首发，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
-    7. 置信度要反映真实不确定性；数据冲突、杯赛、友谊赛、世界杯、阵容未确认或样本不足时应降低置信度。
-    8. 必须参考市场赔率中的【亚盘】与【大小球】来校准结论：
-       - 让球(handicap)：handicap_num/handicap_team 应与市场亚盘方向一致（亚盘主胜概率高则主队让球、客胜概率高则客队让球），handicap_pct 与市场亚盘隐含概率对齐。
-       - 大小球(ou)：ou_line 优先取赔率中双方赔率最相近的盘口线，ou_type 与 ou_pct 须与市场大小球隐含概率方向一致（大球隐含概率高则选"大"，否则选"小"）。
+    # 【重要规则】
+    * 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断。
+    * 虚实辨析：对比比赛的“实际进球数”与“xG”差异，判断球队近期火力是否依赖门前的运气成分（Hot Shooting）。
+    * 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
+    * 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
+    * 如果没有首发阵容的数据，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
+    * 价值投注：基于你的数据分析，指出当前盘口是否存在与市场预期不符的价值洼地。
+       ** 让球(handicap)：handicap_num，大小球(ou)：ou_line 取赔率中双方赔率最相近的盘口线。
 
-    请严格输出JSON格式:
+    # 请严格输出JSON格式:
     {{"win":"主胜|平局|客胜",
     "win_pct":"本场预测信心百分比,如85%",
     "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
@@ -702,7 +733,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     "ou_pct":"大小球概率百分比如60%",
     "brief_analysis":"一句话结论(20字内)",
     "core_data":"主客队数据对比(100字内)",
-    "deep_report":"攻防对比/数据支撑(200字内)"}}
+    "deep_report":"攻防对比/数据支撑(300字内)"}}
     """
 
 
