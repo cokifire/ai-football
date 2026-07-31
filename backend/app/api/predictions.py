@@ -176,12 +176,15 @@ async def predict_from_odds_endpoint(fixture_id: int):
 async def get_predictions(
     date: str | None = Query(None),
     category: str | None = Query(None),
+    league_id: int | None = Query(None),
+    season: int | None = Query(None),
+    team: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     return await asyncio.to_thread(
-        _get_predictions_sync, db, date, category, page, page_size
+        _get_predictions_sync, db, date, category, league_id, season, team, page, page_size
     )
 
 
@@ -270,7 +273,7 @@ def _get_accuracy_sync(db, date, category):
     return {"data": data}
 
 
-def _get_predictions_sync(db, date, category, page, page_size):
+def _get_predictions_sync(db, date, category, league_id, season, team, page, page_size):
     try:
         conditions = []
         params: dict = {}
@@ -282,6 +285,15 @@ def _get_predictions_sync(db, date, category, page, page_size):
         if category:
             conditions.append("f.category = :category")
             params["category"] = category
+        if league_id is not None:
+            conditions.append("f.league_id = :league_id")
+            params["league_id"] = league_id
+        if season is not None:
+            conditions.append("f.season = :season")
+            params["season"] = season
+        if team:
+            conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
+            params["team"] = f"%{team.strip()}%"
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 

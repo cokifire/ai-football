@@ -175,6 +175,7 @@ export default function FixturesPage() {
   const [season, setSeason] = useState('')
   const [status, setStatus] = useState('')
   const [date, setDate] = useState(getBeijingToday())
+  const [teamName, setTeamName] = useState('')
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
@@ -195,6 +196,7 @@ export default function FixturesPage() {
       league_id: leagueId || undefined,
       season: season || undefined,
       status: status || undefined,
+      team_name: teamName.trim() || undefined,
     }
     // 后端接受 date 参数（北京时间日期）
     if (date) params.date = date
@@ -334,6 +336,10 @@ export default function FixturesPage() {
                   <option key={k} value={k}>{v}</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">球队名称</label>
+              <input className="input" placeholder="球队名称" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">日期</label>

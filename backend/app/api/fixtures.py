@@ -25,19 +25,23 @@ def _date_to_utc_range(date_str: str) -> tuple[str, str]:
 @router.get("/fixtures", response_model=PaginatedResponse[FixtureSchema])
 async def list_fixtures(
     league_id: int | None = Query(None), season: int | None = Query(None),
-    team_id: int | None = Query(None), date: str | None = Query(None),
+    team_id: int | None = Query(None), team_name: str | None = Query(None),
+    date: str | None = Query(None),
     status: str | None = Query(None),
     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    return await asyncio.to_thread(_list_sync, db, league_id, season, team_id, date, status, page, page_size)
+    return await asyncio.to_thread(_list_sync, db, league_id, season, team_id, team_name, date, status, page, page_size)
 
 
-def _list_sync(db, league_id, season, team_id, date, status, page, page_size):
+def _list_sync(db, league_id, season, team_id, team_name, date, status, page, page_size):
     query = db.query(Fixture)
     if league_id is not None: query = query.filter(Fixture.league_id == league_id)
     if season is not None: query = query.filter(Fixture.season == season)
     if team_id is not None: query = query.filter((Fixture.home_id == team_id) | (Fixture.away_id == team_id))
+    if team_name:
+        like = f"%{team_name.strip()}%"
+        query = query.filter((Fixture.home_name.ilike(like)) | (Fixture.away_name.ilike(like)))
     if date is not None:
         utc_start, utc_end = _date_to_utc_range(date)
         query = query.filter(Fixture.date >= utc_start)

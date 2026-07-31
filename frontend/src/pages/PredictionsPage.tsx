@@ -58,6 +58,9 @@ export default function PredictionsPage() {
   const [total, setTotal] = useState(0)
   const [date, setDate] = useState('')
   const [category, setCategory] = useState('')
+  const [leagueId, setLeagueId] = useState('')
+  const [season, setSeason] = useState('')
+  const [team, setTeam] = useState('')
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const [accuracy, setAccuracy] = useState<AccuracyItem[]>([])
   const pageSize = 20
@@ -109,6 +112,9 @@ export default function PredictionsPage() {
           page_size: pageSize,
           date: date || undefined,
           category: category || undefined,
+          league_id: leagueId.trim() || undefined,
+          season: season.trim() || undefined,
+          team: team.trim() || undefined,
         },
       })
       .then((res) => {
@@ -193,7 +199,7 @@ export default function PredictionsPage() {
       {/* 筛选 */}
       <div className="card mb-6">
         <div className="card-body">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">日期</label>
               <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -201,6 +207,18 @@ export default function PredictionsPage() {
             <div>
               <label className="block text-xs text-gray-500 mb-1">分类</label>
               <input className="input" placeholder="分类过滤" value={category} onChange={(e) => setCategory(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">联赛ID</label>
+              <input className="input" placeholder="联赛ID" value={leagueId} onChange={(e) => setLeagueId(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">赛季</label>
+              <input className="input" placeholder="例: 2024" value={season} onChange={(e) => setSeason(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">球队名称</label>
+              <input className="input" placeholder="球队名称" value={team} onChange={(e) => setTeam(e.target.value)} />
             </div>
             <div className="flex items-end">
               <button className="btn btn-primary w-full" onClick={handleSearch}>搜索</button>
