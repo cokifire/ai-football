@@ -702,11 +702,11 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     return f"""# Role 你是一位资深足球量化分析师.擅长结合传统球探报告与高阶数据（xG、PPDA 等）进行赛事研判。你的分析风格严谨、冷静，拒绝主观臆断，注重数据背后的逻辑。
 
     # 【比赛信息】
-    {fixture['home_name']} vs {fixture['away_name']}
-    联赛:{fixture['league_name']} 赛季:{fixture['season']}
+    {fixture.get('home_name','')} vs {fixture.get('away_name','')}
+    联赛:{fixture.get('league_name','')} 赛季:{fixture.get('season','')}
     赛事属性:{competition_context}
     阵容信息:{lineups_text}
-    比赛场地:{fixture['venue']}
+    比赛场地:{fixture.get('venue','')}
 
     # 核心数据输入（请基于以下信息进行推理）
 
