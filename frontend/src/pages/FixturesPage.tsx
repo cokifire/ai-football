@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import Pagination from '../components/Pagination'
@@ -377,7 +378,15 @@ export default function FixturesPage() {
                 {fixtures.map((f) => (
                   <tr key={f.id}>
                     <td className="text-gray-400 text-xs">{f.id}</td>
-                    <td className="text-xs text-gray-500">{f.league_name || f.league_id}</td>
+                    <td className="text-xs text-gray-500">
+                    {f.league_id ? (
+                      <Link className="text-primary-600 hover:underline" to={`/standings?league=${f.league_id}`}>
+                        {f.league_name || f.league_id}
+                      </Link>
+                    ) : (
+                      f.league_name || f.league_id
+                    )}
+                  </td>
                     <td className="font-medium">
                       <div className="flex items-center gap-2">
                         {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain" />}
@@ -934,7 +943,14 @@ function FixtureCard({
     <div className="p-4">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-gray-500 truncate">
-          {f.league_name || f.league_id} · #{f.id}
+          {f.league_id ? (
+            <Link className="text-primary-600 hover:underline" to={`/standings?league=${f.league_id}`}>
+              {f.league_name || f.league_id}
+            </Link>
+          ) : (
+            f.league_name || f.league_id
+          )}
+          {' '}· #{f.id}
         </span>
         <StatusBadge status={f.status_short} />
       </div>
