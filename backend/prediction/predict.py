@@ -156,13 +156,27 @@ def _poisson_top3(lambda_home: float, lambda_away: float,
 
 
 def _normalize_llm_fields(parsed: dict) -> dict:
-    """将模型可能返回的列表/数值字段规整为字符串，避免写入 TEXT 列时报错。"""
-    for k, v in list(parsed.items()):
-        if isinstance(v, list):
-            parsed[k] = ",".join(str(x) for x in v)
-        elif isinstance(v, (int, float)):
-            parsed[k] = str(v)
-    return parsed
+    """将模型可能返回的列表/数值字段规整为字符串，避免写入 TEXT 列时报错。
+
+    对缺失/异常字段做容错：任何字段（含值本身）只要无法安全转字符串，
+    都统一落为 ""，绝不让单字段异常把整次 LLM 预测拖垮（此前曾因
+    data['venue'] 缺失触发 KeyError，导致整场预测被判失败）。
+    """
+    out = {}
+    for k, v in parsed.items():
+        if v is None:
+            out[k] = ""
+        elif isinstance(v, list):
+            try:
+                out[k] = ",".join(str(x) for x in v)
+            except Exception:
+                out[k] = ""
+        else:
+            try:
+                out[k] = str(v)
+            except Exception:
+                out[k] = ""
+    return out
 
 
 def _call_llm(prompt: str, retries: int = 2) -> dict | None:

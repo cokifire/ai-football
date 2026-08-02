@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.value_bet_service import compute_value_bets
 from app.services.calibration_service import get_diagnostics
+from prediction.predict import PredictionDataError, PredictionLLMError
 
 router = APIRouter()
 
@@ -30,7 +31,7 @@ async def predict_match(fixture_id: int):
     t0 = time.time()
 
     def _run():
-        from prediction.predict import predict_fixture, PredictionDataError, PredictionLLMError
+        from prediction.predict import predict_fixture
         return predict_fixture(fixture_id)
 
     try:
