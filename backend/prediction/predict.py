@@ -15,6 +15,7 @@ import json
 import pickle
 import re
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 from scipy.stats import poisson
@@ -339,16 +340,27 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
         return None
 
 
-def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
+# 固定庄家白名单（大小写不敏感匹配）。仅抓取并保留这些庄家的赔率数据，
+# 用于替代原先「取数据最多前 5 家」的逻辑，保证各家数据来源稳定一致。
+ODDS_BOOKMAKER_WHITELIST = ["Bet365", "Unibet", "Betfair", "Pinnacle", "888Sport"]
+
+
+def _fetch_odds(fixture_id: int, match_date=None,
+                bookmaker_whitelist: list[str] | None = None) -> dict | None:
     """拉取赔率（含 1X2 / 亚盘 / 大小球）。
 
     搜索窗口锚定在「比赛日期」当天及前 3 天（match-3 .. match），按离比赛日由近到远
-    逐个尝试，集满 5 个庄家即停止。免费 API 通常只开放近期一小段时间窗，且每日配额
-    有限，因此只在比赛日附近查询，避免无谓请求、耗尽配额。仅保留真正抓到赔率的日期，
-    不再用「今天」硬性填充空行。
+    逐个尝试，直到白名单内庄家全部集满即停止。免费 API 通常只开放近期一小段时间窗，
+    且每日配额有限，因此只在比赛日附近查询，避免无谓请求、耗尽配额。仅保留真正抓到
+    赔率的日期，不再用「今天」硬性填充空行。
+
+    庄家筛选使用固定白名单（默认 ODDS_BOOKMAKER_WHITELIST，大小写不敏感），只保留
+    白名单内的庄家，最终按白名单顺序输出；若某家在窗口内无数据则自动缺失。
     """
     try:
         from datetime import datetime, timedelta
+        whitelist = [b.strip() for b in (bookmaker_whitelist or ODDS_BOOKMAKER_WHITELIST) if b.strip()]
+        wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
         today = datetime.now()
 
         # 候选日期集合: 仅以「比赛日」为锚点(当天 + 前 3 天)
@@ -376,7 +388,7 @@ def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
         bookmaker_odds = {}
         first_api_error = None  # 记录首个 API-Football 错误（如当日配额耗尽），用于向上游暴露
         for date_str in ordered:
-            resp = _api_get("odds", {"fixture": fixture_id, "date": date_str})
+            resp: dict[Any, Any] = _api_get("odds", {"fixture": fixture_id, "date": date_str})
             if isinstance(resp, dict) and resp.get("errors"):
                 if first_api_error is None:
                     first_api_error = resp["errors"]
@@ -387,7 +399,12 @@ def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
 
             for bm in data[0].get("bookmakers", []):
                 bm_name = bm.get("name", "未知")
-                bm_dict = bookmaker_odds.setdefault(bm_name, {})
+                # 仅保留白名单内的庄家（大小写不敏感）
+                key = bm_name.lower()
+                if key not in wl_lower:
+                    continue
+                canon = wl_lower[key]
+                bm_dict = bookmaker_odds.setdefault(canon, {})
                 for bet in bm.get("bets", []):
                     name = bet.get("name")
                     values = bet.get("values", [])
@@ -404,8 +421,8 @@ def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
                         base["date"] = date_str
                         bm_dict[date_str] = base
 
-            # 集满 5 个庄家即可停止, 减少无效 API 请求
-            if len(bookmaker_odds) >= 5:
+            # 白名单内的庄家全部集满即可停止, 减少无效 API 请求
+            if len(bookmaker_odds) >= len(whitelist):
                 break
 
         if not bookmaker_odds:
@@ -414,14 +431,15 @@ def _fetch_odds(fixture_id: int, match_date=None) -> dict | None:
                 return {"__api_error__": first_api_error}
             return None
 
-        # 取数据最多的前5个庄家, 按「实际抓到赔率的日期」组织 entries(时间升序)
-        sorted_bms = sorted(bookmaker_odds.items(), key=lambda x: -len(x[1]))[:5]
-        all_dates = sorted({d for _, dates in sorted_bms for d in dates.keys()})
+        # 按白名单顺序输出（仅含白名单内且实际抓到数据的庄家）
         odds_data = []
-        for bm_name, dates in sorted_bms:
-            entries = [dates[d] for d in all_dates if d in dates]
-            if entries:
-                odds_data.append({"bookmaker": bm_name, "entries": entries})
+        for canon in whitelist:
+            dates = bookmaker_odds.get(canon)
+            if not dates:
+                continue
+            all_dates = sorted(dates.keys())
+            entries = [dates[d] for d in all_dates]
+            odds_data.append({"bookmaker": canon, "entries": entries})
 
         if not odds_data:
             return None
@@ -706,7 +724,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     联赛:{fixture.get('league_name','')} 赛季:{fixture.get('season','')}
     赛事属性:{competition_context}
     阵容信息:{lineups_text}
-    比赛场地:{fixture.get('venue','')}
+    比赛场地:{fixture.get('venue_city','')}
 
     # 核心数据输入（请基于以下信息进行推理）
 

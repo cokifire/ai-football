@@ -31,7 +31,10 @@ def _get_teams_sync(db, page, page_size, search):
     teams = (query.options(joinedload(Team.venue)).order_by(Team.id)
              .offset((page - 1) * page_size).limit(page_size).all())
     for t in teams:
+        # 保留原始 name 作为主名称，name_zh 作为次要名称单独返回
+        orig_name = t.name
         zh_swap(t)
+        t.name = orig_name
         if t.venue:
             zh_swap(t.venue)
     return {"data": teams, "total": total, "page": page, "page_size": page_size}
@@ -47,7 +50,10 @@ def _get_team_sync(db, team_id):
             .filter(Team.id == team_id).first())
     if team is None:
         raise HTTPException(status_code=404, detail="球队不存在")
+    # 保留原始 name 作为主名称，name_zh 作为次要名称单独返回
+    orig_name = team.name
     zh_swap(team)
+    team.name = orig_name
     if team.venue:
         zh_swap(team.venue)
     return team

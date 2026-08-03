@@ -7,6 +7,7 @@ import Modal from '../components/Modal'
 interface Team {
   id: number
   name: string
+  name_zh?: string | null
   logo: string
   country?: string
   founded?: number
@@ -146,6 +147,9 @@ export default function TeamsPage() {
               )}
               <div>
                 <h3 className="text-xl font-bold">{teamDetail.name}</h3>
+                {teamDetail.name_zh && (
+                  <p className="text-sm text-gray-500">{teamDetail.name_zh}</p>
+                )}
                 <p className="text-gray-500">{teamDetail.country}</p>
               </div>
             </div>

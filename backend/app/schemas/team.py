@@ -19,6 +19,7 @@ class VenueSchema(BaseModel):
 class TeamSchema(BaseModel):
     id: int
     name: str
+    name_zh: Optional[str] = None
     code: Optional[str] = None
     country: Optional[str] = None
     founded: Optional[int] = None
