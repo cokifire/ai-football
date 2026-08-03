@@ -180,6 +180,8 @@ export default function FixturesPage() {
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
+  const [fetchingXgId, setFetchingXgId] = useState<number | null>(null)
+  const [fetchXgError, setFetchXgError] = useState<string | null>(null)
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
   const [predictResult, setPredictResult] = useState<{ fixture: Fixture; result: any } | null>(null)
@@ -243,6 +245,20 @@ export default function FixturesPage() {
           .catch(() => setFixtureDetail(selectedFixture as FixtureDetail))
       })
       .finally(() => setRefreshingFixtureId(null))
+  }
+
+  const fetchXg = () => {
+    if (!selectedFixture) return
+    setFetchingXgId(selectedFixture.id)
+    setFetchXgError(null)
+    apiClient
+      .post(`/fixtures/${selectedFixture.id}/fetch-xg`)
+      .then((res) => setFixtureDetail(res.data))
+      .catch((err) => {
+        const detail = err?.response?.data?.detail
+        setFetchXgError(typeof detail === 'string' ? detail : '获取 xG 失败')
+      })
+      .finally(() => setFetchingXgId(null))
   }
 
   const handlePredict = (fixture: Fixture) => {
@@ -542,6 +558,31 @@ export default function FixturesPage() {
                 </div>
               </div>
             )}
+
+            {/* xG 抓取: 任一方 xG 缺失时显示 Get xG 按钮 */}
+            {(() => {
+              const stats = fixtureDetail.statistics || []
+              const hasXg = stats.some((s) => s.stat_type === 'expected_goals' && s.stat_value)
+              if (hasXg) return null
+              const disabled = fetchingXgId !== null
+              return (
+                <div className="flex flex-col items-start gap-1">
+                  <button
+                    className="btn btn-primary btn-xs"
+                    disabled={disabled}
+                    title={fetchXgError || '从 Flashscore 抓取 Expected goals (xG) 与 Goals prevented'}
+                    onClick={fetchXg}
+                  >
+                    {disabled ? '获取中...' : 'Get xG'}
+                  </button>
+                  {fetchXgError && (
+                    <span className="text-xs text-red-500" title={fetchXgError}>
+                      无法获取: {fetchXgError.length > 60 ? fetchXgError.slice(0, 60) + '…' : fetchXgError}
+                    </span>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* 技术统计 */}
             {fixtureDetail.statistics && fixtureDetail.statistics.length > 0 && (

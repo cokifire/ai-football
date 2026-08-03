@@ -1,7 +1,11 @@
 import asyncio
+import json
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import text
 
 from app.db.session import get_db
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
@@ -12,6 +16,9 @@ from app.core.config import settings
 from loguru import logger
 
 router = APIRouter()
+
+# flashscore hash -> api-football team id
+_TEAM_MAP_FILE = Path(__file__).resolve().parent.parent.parent / "tools" / "flashscore_team_map.json"
 
 # DB 存的是北京时间，10:00 为次日分界
 # 用户选北京日期 date，查询范围：date 10:00 ~ date+1 09:59
@@ -87,6 +94,90 @@ async def refresh_fixture_endpoint(fixture_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=502, detail="刷新失败：API-Football 未返回该比赛数据")
     fixture = await asyncio.to_thread(_get_sync, db, fixture_id)
     return fixture
+
+
+@router.post("/fixtures/{fixture_id}/fetch-xg", response_model=FixtureDetailSchema)
+async def fetch_xg_endpoint(fixture_id: int, db: Session = Depends(get_db)):
+    """从 Flashscore 抓取该场比赛的 Expected goals (xG) 与 Goals prevented, 写入 fixture_statistics。
+
+    仅当双方球队都能在 flashscore_team_map.json 中找到对应 hash 时才可抓取。
+    """
+    def _run():
+        f = db.query(Fixture).filter(Fixture.id == fixture_id).first()
+        if not f:
+            raise HTTPException(status_code=404, detail="比赛不存在")
+
+        # 加载 hash -> api_football_id 映射, 反查 id -> hash
+        if not _TEAM_MAP_FILE.exists():
+            raise HTTPException(status_code=503, detail="未找到 flashscore_team_map.json")
+        override = json.loads(_TEAM_MAP_FILE.read_text(encoding="utf-8"))
+        id_to_hash = {tid: h for h, tid in override.items()}
+
+        home_hash = id_to_hash.get(f.home_id)
+        away_hash = id_to_hash.get(f.away_id)
+        if not home_hash or not away_hash:
+            miss = []
+            if not home_hash:
+                miss.append(f"{f.home_name}(id={f.home_id})")
+            if not away_hash:
+                miss.append(f"{f.away_name}(id={f.away_id})")
+            raise HTTPException(
+                status_code=422,
+                detail=f"以下球队不在 flashscore_team_map.json 中, 无法抓取 xG: {'; '.join(miss)}",
+            )
+
+        # hash -> 队名 (用于生成 Flashscore URL slug)
+        rows = db.execute(text("SELECT id, name FROM teams")).fetchall()
+        id_to_name = {r[0]: r[1] for r in rows}
+        hash_to_name = {}
+        if f.home_id in id_to_name:
+            hash_to_name[home_hash] = id_to_name[f.home_id]
+        if f.away_id in id_to_name:
+            hash_to_name[away_hash] = id_to_name[f.away_id]
+
+        # 调用抓取脚本
+        sys_path = str(_TEAM_MAP_FILE.resolve().parent.parent)  # backend/
+        if sys_path not in sys.path:
+            sys.path.insert(0, sys_path)
+        try:
+            from tools.fetch_flashscore_match_xg import scrape_match_xg
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"导入抓取脚本失败: {e}")
+
+        try:
+            stats = scrape_match_xg(home_hash, away_hash, hash_to_name)
+        except Exception as e:
+            logger.error(f"抓取 Flashscore xG 失败 fixture={fixture_id}: {e}")
+            raise HTTPException(status_code=502, detail=f"抓取 Flashscore xG 失败: {e}")
+
+        # 写库: 每队两条 (expected_goals, goals_prevented)
+        def upsert(team_id, team_name, vals):
+            for stat_type, value in (
+                ("expected_goals", vals.get("xg")),
+                ("goals_prevented", vals.get("goals_prevented")),
+            ):
+                if value is None:
+                    continue
+                exist = (
+                    db.query(FixtureStatistic)
+                    .filter_by(fixture_id=fixture_id, team_id=team_id, stat_type=stat_type)
+                    .first()
+                )
+                if exist:
+                    exist.stat_value = str(value)
+                    exist.team_name = team_name
+                else:
+                    db.add(FixtureStatistic(
+                        fixture_id=fixture_id, team_id=team_id,
+                        team_name=team_name, stat_type=stat_type, stat_value=str(value),
+                    ))
+        upsert(f.home_id, f.home_name, stats["home"])
+        upsert(f.away_id, f.away_name, stats["away"])
+        db.commit()
+
+        return _get_sync(db, fixture_id)
+
+    return await asyncio.to_thread(_run)
 
 
 @router.patch("/fixtures/{fixture_id}/category")

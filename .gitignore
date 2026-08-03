@@ -15,4 +15,3 @@ _uvicorn_err.log
 *.sql
 venv
 .playwright-cli/
-stats_before.yml
