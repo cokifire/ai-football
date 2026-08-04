@@ -634,7 +634,8 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
 
         n = len(rows)
         detail_text = "\n".join(details)
-        avg_xg = f" 场均xG{xg_sum / xg_cnt:.2f}" if xg_cnt else ""
+        # xG 样本不足 5 场时代表性不足，不统计场均 xG
+        avg_xg = f" 场均xG{xg_sum / xg_cnt:.2f}" if xg_cnt >= 5 else ""
         return (f"{wins}胜{draws}平{losses}负 进{gf}球失{ga}球 "
                 f"场均进{gf / n:.1f}失{ga / n:.1f}{avg_xg}\n"
                 f"近10场明细:\n{detail_text}")
@@ -747,8 +748,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     # 【重要规则】
     * 必须先基于球队状态、对手含金量、主客场表现、积分背景、赛事属性和赛程动机独立判断。
-    * 虚实辨析：对比比赛的“实际进球数”与“xG”差异，判断球队近期火力是否依赖门前的运气成分（Hot Shooting）。
-    * 模型概率只表示历史数据下的统计参考，不能替代你的最终判断。
+    * 虚实辨析：对比比赛的“实际进球数”与“xG”差异，判断球队近期火力是否依赖运气成分（Hot Shooting）。
+    * 模型概率只表示历史数据下的统计参考，不能替代你的判断。
     * 赔率只代表市场价格和热度，不代表真实胜率；世界杯、杯赛、国家队、友谊赛、青年队、女足或样本不足时，赔率权重必须降低。
     * 如果没有首发阵容的数据，不要假设固定阵容；必须考虑轮换、伤停、战术调整、体能和临场动机，并降低置信度。
     * 价值投注：基于你的数据分析，指出当前盘口是否存在与市场预期不符的价值洼地。
