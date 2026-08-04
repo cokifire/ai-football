@@ -24,6 +24,17 @@ interface Fixture {
   venue_city?: string
 }
 
+interface Team {
+  id: number
+  name: string
+  name_zh?: string | null
+  logo: string
+  country?: string
+  founded?: number
+  venue_name?: string
+  venue_capacity?: number
+}
+
 interface FixtureDetail extends Fixture {
   events?: FixtureAPIEvent[]
   lineups?: FixtureAPILineup[]
@@ -185,6 +196,8 @@ export default function FixturesPage() {
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
   const [predictResult, setPredictResult] = useState<{ fixture: Fixture; result: any } | null>(null)
+  const [teamDetail, setTeamDetail] = useState<Team | null>(null)
+  const [teamLoading, setTeamLoading] = useState(false)
   const [oddsFixture, setOddsFixture] = useState<Fixture | null>(null)
   const [oddsData, setOddsData] = useState<OddsData | null>(null)
   const [oddsError, setOddsError] = useState<string | null>(null)
@@ -288,6 +301,17 @@ export default function FixturesPage() {
           return next
         })
       })
+  }
+
+  const openTeamDetail = (teamId: number) => {
+    if (!teamId) return
+    setTeamLoading(true)
+    setTeamDetail(null)
+    apiClient
+      .get(`/teams/${teamId}`)
+      .then((res) => setTeamDetail(res.data))
+      .catch(() => setTeamDetail(null))
+      .finally(() => setTeamLoading(false))
   }
 
   const handleFetchOdds = (fixture: Fixture) => {
@@ -406,7 +430,9 @@ export default function FixturesPage() {
                     <td className="font-medium">
                       <div className="flex items-center gap-2">
                         {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain" />}
-                        {f.home_name || f.home_id}
+                        <button className="text-primary-600 hover:underline" onClick={() => openTeamDetail(f.home_id)}>
+                          {f.home_name || f.home_id}
+                        </button>
                       </div>
                     </td>
                     <td className="font-bold text-center">
@@ -419,7 +445,9 @@ export default function FixturesPage() {
                     <td className="font-medium">
                       <div className="flex items-center gap-2">
                         {f.away_logo && <img src={f.away_logo} alt="" className="w-5 h-5 object-contain" />}
-                        {f.away_name || f.away_id}
+                        <button className="text-primary-600 hover:underline" onClick={() => openTeamDetail(f.away_id)}>
+                          {f.away_name || f.away_id}
+                        </button>
                       </div>
                     </td>
                     <td className="text-xs text-gray-500">{f.date}</td>
@@ -467,6 +495,7 @@ export default function FixturesPage() {
                 onViewDetail={viewDetail}
                 onFetchOdds={handleFetchOdds}
                 onPredict={handlePredict}
+                onOpenTeam={openTeamDetail}
                 fetchingOdds={fetchingOddsIds.has(f.id)}
                 predicting={predictingIds.has(f.id)}
                 finished={FINISHED_STATUSES.has(f.status_short)}
@@ -777,6 +806,55 @@ export default function FixturesPage() {
       >
         {predictResult && <PredictionResult result={predictResult.result} />}
       </Modal>
+
+      {/* 球队详情弹窗 */}
+      <Modal
+        open={!!teamDetail || teamLoading}
+        onClose={() => setTeamDetail(null)}
+        title={teamDetail?.name || '球队详情'}
+        size="sm"
+      >
+        {teamDetail ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-4">
+              {teamDetail.logo && (
+                <img src={teamDetail.logo} alt="" className="w-20 h-20 object-contain" />
+              )}
+              <div>
+                <h3 className="text-xl font-bold">{teamDetail.name}</h3>
+                {teamDetail.name_zh && (
+                  <p className="text-sm text-gray-500">{teamDetail.name_zh}</p>
+                )}
+                <p className="text-gray-500">{teamDetail.country}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {teamDetail.founded && (
+                <div className="p-3 rounded-lg bg-gray-50">
+                  <div className="text-xs text-gray-500">成立年份</div>
+                  <div className="font-semibold">{teamDetail.founded}</div>
+                </div>
+              )}
+              {teamDetail.venue_name && (
+                <div className="p-3 rounded-lg bg-gray-50">
+                  <div className="text-xs text-gray-500">主场场馆</div>
+                  <div className="font-semibold">{teamDetail.venue_name}</div>
+                </div>
+              )}
+              {teamDetail.venue_capacity && (
+                <div className="p-3 rounded-lg bg-gray-50">
+                  <div className="text-xs text-gray-500">场馆容量</div>
+                  <div className="font-semibold">
+                    {teamDetail.venue_capacity.toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <Loading />
+        )}
+      </Modal>
     </div>
   )
 }
@@ -982,6 +1060,7 @@ function FixtureCard({
   onViewDetail: (f: Fixture) => void
   onFetchOdds: (f: Fixture) => void
   onPredict: (f: Fixture) => void
+  onOpenTeam: (teamId: number) => void
   fetchingOdds: boolean
   predicting: boolean
   finished: boolean
@@ -1007,7 +1086,9 @@ function FixtureCard({
         <div className="flex-1 min-w-0 text-right">
           <div className="flex items-center justify-end gap-2">
             {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain" />}
-            <span className="font-medium truncate">{f.home_name || f.home_id}</span>
+            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => onOpenTeam(f.home_id)}>
+              {f.home_name || f.home_id}
+            </button>
           </div>
         </div>
 
@@ -1021,7 +1102,9 @@ function FixtureCard({
 
         <div className="flex-1 min-w-0 text-left">
           <div className="flex items-center gap-2">
-            <span className="font-medium truncate">{f.away_name || f.away_id}</span>
+            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => onOpenTeam(f.away_id)}>
+              {f.away_name || f.away_id}
+            </button>
             {f.away_logo && <img src={f.away_logo} alt="" className="w-5 h-5 object-contain" />}
           </div>
         </div>
