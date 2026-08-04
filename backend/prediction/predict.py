@@ -342,7 +342,7 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
 
 # 固定庄家白名单（大小写不敏感匹配）。仅抓取并保留这些庄家的赔率数据，
 # 用于替代原先「取数据最多前 5 家」的逻辑，保证各家数据来源稳定一致。
-ODDS_BOOKMAKER_WHITELIST = ["Bet365", "Unibet", "SBOBET", "Pinnacle", "Marathonbet"]
+ODDS_BOOKMAKER_WHITELIST = ["Bet365", "Unibet", "SBO", "Pinnacle", "Marathonbet"]
 
 
 def _fetch_odds(fixture_id: int, match_date=None,
