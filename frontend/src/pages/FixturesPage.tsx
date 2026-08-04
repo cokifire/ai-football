@@ -559,25 +559,32 @@ export default function FixturesPage() {
               </div>
             )}
 
-            {/* xG 抓取: 任一方 xG 缺失时显示 Get xG 按钮 */}
+            {/* xG 抓取: 任一方 xG 或 Goals prevented 缺失时显示 Get xG 按钮 */}
             {(() => {
               const stats = fixtureDetail.statistics || []
               const hasXg = stats.some((s) => s.stat_type === 'expected_goals' && s.stat_value)
-              if (hasXg) return null
+              const hasGp = stats.some((s) => s.stat_type === 'goals_prevented' && s.stat_value)
+              if (hasXg && hasGp) return null
               const disabled = fetchingXgId !== null
+              const missing = []
+              if (!hasXg) missing.push('Expected goals (xG)')
+              if (!hasGp) missing.push('Goals prevented')
               return (
-                <div className="flex flex-col items-start gap-1">
+                <div className="flex items-center gap-3 rounded-lg border border-dashed border-primary-300 bg-primary-50 px-3 py-2">
+                  <span className="text-sm text-gray-600">
+                    缺少数据：{missing.join('、')}
+                  </span>
                   <button
-                    className="btn btn-primary btn-xs"
+                    className="btn btn-primary btn-sm"
                     disabled={disabled}
-                    title={fetchXgError || '从 Flashscore 抓取 Expected goals (xG) 与 Goals prevented'}
+                    title={fetchXgError || '从 Flashscore 抓取 Expected goals (xG) 与 Goals prevented 并写入数据库'}
                     onClick={fetchXg}
                   >
-                    {disabled ? '获取中...' : 'Get xG'}
+                    {disabled ? '获取中…' : 'Get xG'}
                   </button>
                   {fetchXgError && (
                     <span className="text-xs text-red-500" title={fetchXgError}>
-                      无法获取: {fetchXgError.length > 60 ? fetchXgError.slice(0, 60) + '…' : fetchXgError}
+                      无法获取: {fetchXgError.length > 50 ? fetchXgError.slice(0, 50) + '…' : fetchXgError}
                     </span>
                   )}
                 </div>

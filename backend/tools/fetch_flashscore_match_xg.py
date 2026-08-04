@@ -26,7 +26,9 @@ import sys
 import json
 import time
 import argparse
+from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -90,6 +92,103 @@ def build_url(home_hash, away_hash, hash_to_name):
     )
 
 
+def _format_flashscore_date(match_date):
+    """将日期格式化为 Flashscore H2H 列表显示形式 'dd.mm.yy'。"""
+    if isinstance(match_date, datetime):
+        match_date = match_date.date()
+    if isinstance(match_date, date):
+        return match_date.strftime("%d.%m.%y")
+    return str(match_date)
+
+
+def _is_future_match(page):
+    """当前页是否为未开赛页面 (无 stats)。"""
+    text = page.evaluate("() => document.body.innerText") or ""
+    return "Statistics will be available once the match starts" in text
+
+
+def _get_page_match_date(page):
+    """从 stats 页解析当前比赛日期, 返回 (year, month, day) 或 None。
+
+    页面标题形如 'SIR 4-1 GOT | Sirius v Goteborg 26/07/2026, Stats',
+    或从 body 中匹配 '26/07/2026' 这类日期。
+    """
+    text = page.evaluate("() => document.body.innerText") or ""
+    # 标题优先 (格式 dd/mm/yyyy 或 dd.mm.yyyy)
+    m = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})", text)
+    if not m:
+        return None
+    day, month, year = (int(x) for x in m.groups())
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return None
+    return (year, month, day)
+
+
+def _dates_match(page_date, target_date):
+    """比较页面日期与目标日期是否一致。target_date 可为 date/datetime/字符串。"""
+    if page_date is None:
+        return False
+    if isinstance(target_date, datetime):
+        target = (target_date.year, target_date.month, target_date.day)
+    elif isinstance(target_date, date):
+        target = (target_date.year, target_date.month, target_date.day)
+    else:
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(target_date))
+        if not m:
+            return False
+        target = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return tuple(page_date) == target
+
+
+def _accept_consent(page):
+    """点击 Flashscore 的同意/接受弹窗 (如果存在)。"""
+    for sel in ["text=AGREE", "text=I ACCEPT", "text=Accept", "text=OK"]:
+        try:
+            page.click(sel, timeout=3000)
+            break
+        except Exception:
+            pass
+
+
+def _derive_h2h_url(stats_url: str) -> str:
+    """把 stats URL 换成同场比赛的 h2h URL。"""
+    return stats_url.replace("/summary/stats/overall/", "/h2h/overall/")
+
+
+def _derive_stats_url_from_match_url(match_url: str) -> str:
+    """把 H2H 里点击得到的比赛详情 URL (?mid=xxx) 换成 stats URL。"""
+    parts = urlsplit(match_url)
+    # match_url 形如 https://.../match/football/<slug>/<slug>/?mid=xxx
+    path = parts.path.rstrip("/") + "/summary/stats/overall/"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+def _resolve_via_h2h(page, stats_url, match_date):
+    """通过 H2H 列表点击对应日期的历史比赛, 返回正确的 stats URL。
+
+    当 team-hash pair 被 Flashscore 解析到未来那场时, 在 H2H 栏里按日期定位。
+    """
+    date_label = _format_flashscore_date(match_date)
+    h2h_url = _derive_h2h_url(stats_url)
+    print(f"[h2h] 未来场次, 尝试 H2H 找 {date_label}: {h2h_url}")
+    page.goto(h2h_url, wait_until="domcontentloaded", timeout=60000)
+    _accept_consent(page)
+    page.wait_for_timeout(6000)
+
+    section = page.locator("div.h2h__section", has_text="Head-to-head matches")
+    row = section.locator("a.h2h__row", has_text=date_label)
+    if row.count() == 0:
+        raise ValueError(
+            f"在 Head-to-head matches 中未找到日期 {date_label} 的比赛"
+        )
+    match_url = row.first.get_attribute("href")
+    if not match_url:
+        raise ValueError("H2H 行未包含比赛链接")
+    resolved_stats_url = _derive_stats_url_from_match_url(match_url)
+    print(f"[h2h] 定位到历史比赛: {match_url}")
+    return resolved_stats_url
+
+
 def extract_stats(page):
     """从已渲染的 stats 页抽取 xG 与 Goals prevented。
 
@@ -131,7 +230,7 @@ def extract_stats(page):
     }
 
 
-def scrape_match_xg(home_hash, away_hash, hash_to_name):
+def scrape_match_xg(home_hash, away_hash, hash_to_name, match_date):
     """抓取单场比赛的 xG 与 Goals prevented, 返回结构:
         {
           "home": {"xg": str|None, "goals_prevented": str|None},
@@ -140,7 +239,11 @@ def scrape_match_xg(home_hash, away_hash, hash_to_name):
           "home_name": ..., "away_name": ..., "url": ...
         }
     hash_to_name: dict[flashscore_hash] -> 队名 (用于生成 slug)。
+    match_date: 必选, 抓取前会核对比赛日期; 当 Flashscore 把 team-hash pair
+                解析到未来那场时, 通过 H2H 列表点击对应日期的历史比赛。
     """
+    if match_date is None:
+        raise ValueError("scrape_match_xg 必须提供 match_date 以核对比赛日期")
     url = build_url(home_hash, away_hash, hash_to_name)
     print(f"[fetch] {url}")
     with sync_playwright() as p:
@@ -148,15 +251,27 @@ def scrape_match_xg(home_hash, away_hash, hash_to_name):
         page = browser.new_page(user_agent=UA, locale="en-US")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            # 处理同意弹窗
-            for sel in ["text=AGREE", "text=I ACCEPT", "text=Accept", "text=OK"]:
-                try:
-                    page.click(sel, timeout=3000)
-                    break
-                except Exception:
-                    pass
+            _accept_consent(page)
+
             # 等待 stats 异步加载完成 (Flashscore 统计表为 JS 异步注入)
             page.wait_for_timeout(9000)
+
+            # 精确核对比赛日期: 若页面日期与目标不一致 (含未开赛/未来场次),
+            # 通过 H2H 列表按日期找正确的历史比赛
+            page_date = _get_page_match_date(page)
+            if not _dates_match(page_date, match_date):
+                print(f"[fetch] 日期不一致 page={page_date} target={match_date}, 尝试 H2H 回退")
+                resolved_url = _resolve_via_h2h(page, page.url, match_date)
+                print(f"[fetch] 重新加载历史场次: {resolved_url}")
+                page.goto(resolved_url, wait_until="domcontentloaded", timeout=60000)
+                _accept_consent(page)
+                page.wait_for_timeout(9000)
+                page_date = _get_page_match_date(page)
+                if not _dates_match(page_date, match_date):
+                    raise ValueError(
+                        f"抓取的比赛日期 {page_date} 与目标日期 {match_date} 仍不一致"
+                    )
+
             stats = extract_stats(page)
         finally:
             browser.close()

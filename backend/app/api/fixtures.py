@@ -145,7 +145,7 @@ async def fetch_xg_endpoint(fixture_id: int, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=f"导入抓取脚本失败: {e}")
 
         try:
-            stats = scrape_match_xg(home_hash, away_hash, hash_to_name)
+            stats = scrape_match_xg(home_hash, away_hash, hash_to_name, match_date=f.date)
         except Exception as e:
             logger.error(f"抓取 Flashscore xG 失败 fixture={fixture_id}: {e}")
             raise HTTPException(status_code=502, detail=f"抓取 Flashscore xG 失败: {e}")
