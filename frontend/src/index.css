@@ -8,6 +8,13 @@
   }
 }
 
+/* 手机端（<640px）整体缩小字号，桌面端保持不变 */
+@media (max-width: 639px) {
+  html {
+    font-size: 14px;
+  }
+}
+
 @layer components {
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;

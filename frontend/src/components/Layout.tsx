@@ -14,7 +14,10 @@ const navItems = [
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation()
-  const [collapsed, setCollapsed] = useState(false)
+  // 默认在手机端（<640px）仅显示图标，桌面端展开
+  const [collapsed, setCollapsed] = useState(
+    typeof window !== 'undefined' && window.innerWidth < 640
+  )
 
   return (
     <div className="flex h-screen overflow-hidden">
