@@ -874,7 +874,12 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         # 6. 写库
         _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group)
 
-        result = {**xgb_result, 'llm': llm_result, 'model_group': model_group}
+        # 近10场原始战绩仅本次返回给前端核对，不落库
+        result = {
+            **xgb_result,
+            'llm': {**llm_result, 'home_stats': home_stats, 'away_stats': away_stats},
+            'model_group': model_group,
+        }
         logger.info(
             f"预测完成 fixt={fixture_id} "
             f"{fixture['home_name']} vs {fixture['away_name']} "

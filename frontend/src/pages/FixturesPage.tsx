@@ -804,7 +804,9 @@ export default function FixturesPage() {
         }
         size="xl"
       >
-        {predictResult && <PredictionResult result={predictResult.result} />}
+        {predictResult && (
+          <PredictionResult result={predictResult.result} fixture={predictResult.fixture} />
+        )}
       </Modal>
 
       {/* 球队详情弹窗 */}
@@ -896,7 +898,7 @@ const winnerLabel = (w: any): string => {
   return '-'
 }
 
-function PredictionResult({ result }: { result: any }) {
+function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
   if (!result) return null
   const xgb = result
   const llm = result.llm || {}
@@ -1037,6 +1039,36 @@ function PredictionResult({ result }: { result: any }) {
         <div>
           <h4 className="font-semibold mb-2">深度报告</h4>
           <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.deep_report}</p>
+        </div>
+      )}
+
+      {/* 核对战绩：脚本喂给 LLM 的近10场原始数据（仅本次展示，不入库） */}
+      {(llm.home_stats || llm.away_stats) && (
+        <div>
+          <h4 className="font-semibold mb-2">
+            核对战绩
+            <span className="ml-1 text-xs font-normal text-gray-400">
+              (脚本喂给 LLM 的近10场原始数据，可核对 LLM 摘要是否一致)
+            </span>
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="p-3 rounded-lg bg-gray-50">
+              <div className="text-xs text-gray-500 mb-1">
+                {fixture?.home_name || '主队'} 近况
+              </div>
+              <p className="text-xs whitespace-pre-wrap font-mono leading-relaxed">
+                {toText(llm.home_stats) || '无'}
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-gray-50">
+              <div className="text-xs text-gray-500 mb-1">
+                {fixture?.away_name || '客队'} 近况
+              </div>
+              <p className="text-xs whitespace-pre-wrap font-mono leading-relaxed">
+                {toText(llm.away_stats) || '无'}
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
