@@ -1115,16 +1115,12 @@ function FixtureCard({
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <div className="flex-1 min-w-0 text-right">
-          <div className="flex items-center justify-end gap-2">
-            {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain" />}
-            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => onOpenTeam(f.home_id)}>
-              {f.home_name || f.home_id}
-            </button>
-          </div>
-        </div>
+        <button className="flex items-center justify-end gap-1 min-w-0 text-right text-sm font-medium text-primary-600 hover:underline" onClick={() => onOpenTeam(f.home_id)}>
+          {f.home_logo && <img src={f.home_logo} alt="" className="w-5 h-5 object-contain shrink-0" />}
+          <span className="truncate">{f.home_name || f.home_id}</span>
+        </button>
 
-        <div className="px-2 text-center whitespace-nowrap">
+        <div className="px-2 text-center whitespace-nowrap shrink-0">
           {f.status_short === 'NS' || f.status_short === 'TBD' ? (
             <span className="text-gray-400 text-sm">vs</span>
           ) : (
@@ -1132,14 +1128,10 @@ function FixtureCard({
           )}
         </div>
 
-        <div className="flex-1 min-w-0 text-left">
-          <div className="flex items-center gap-2">
-            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => onOpenTeam(f.away_id)}>
-              {f.away_name || f.away_id}
-            </button>
-            {f.away_logo && <img src={f.away_logo} alt="" className="w-5 h-5 object-contain" />}
-          </div>
-        </div>
+        <button className="flex items-center gap-1 min-w-0 text-left text-sm font-medium text-primary-600 hover:underline" onClick={() => onOpenTeam(f.away_id)}>
+          <span className="truncate">{f.away_name || f.away_id}</span>
+          {f.away_logo && <img src={f.away_logo} alt="" className="w-5 h-5 object-contain shrink-0" />}
+        </button>
       </div>
 
       <div className="text-xs text-gray-400 mt-1 text-center">{f.date}</div>
