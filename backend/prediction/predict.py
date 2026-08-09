@@ -605,7 +605,7 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
         xg_sum = 0.0
         xg_cnt = 0
         details = []
-        for r in reversed(rows):  # 由旧到新输出明细
+        for r in rows:  # rows 已按 date DESC，由新到旧输出明细
             rm = dict(r._mapping)
             is_home = rm["home_id"] == team_id
             gh = int(rm["goals_home"] or 0)
@@ -638,7 +638,7 @@ def _fetch_team_recent_via_db(db, team_id: int, before_date=None) -> str:
         avg_xg = f" 场均xG{xg_sum / xg_cnt:.2f}" if xg_cnt >= 5 else ""
         return (f"{wins}胜{draws}平{losses}负 进{gf}球失{ga}球 "
                 f"场均进{gf / n:.1f}失{ga / n:.1f}{avg_xg}\n"
-                f"近10场明细:\n{detail_text}")
+                f"近10场明细(由近及远):\n{detail_text}")
     except Exception as e:
         logger.debug(f"本地聚合球队近况失败 team={team_id}: {e}")
         return "无"
