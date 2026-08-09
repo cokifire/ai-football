@@ -36,7 +36,7 @@ export default function LoginModal({
       >
         <h2 className="text-lg font-bold mb-1">登录以继续</h2>
         <p className="text-sm text-gray-500 mb-4">
-          {reason || '请输入 backend/.env 中的 ADMIN_API_KEY（或 READ_API_KEY）以使用管理功能。'}
+          {reason || '请输入 token 以使用功能。'}
         </p>
         <input
           type="password"
@@ -66,7 +66,7 @@ export default function LoginModal({
           </button>
         </div>
         <p className="text-xs text-gray-400 mt-4">
-          token 仅保存在本浏览器 localStorage，不会写入代码或构建产物。
+          token 仅保存在本浏览器 localStorage。
         </p>
       </form>
     </div>

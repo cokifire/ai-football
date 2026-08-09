@@ -121,9 +121,16 @@ def _parse_date(text):
     if c < 100:
         c += 2000
     # 兼容 日/月/年 与 月/日/年: 取 1..12 为月
-    if 1 <= a <= 12 and 1 <= b <= 31:
+    # Flashscore 全部使用欧洲 dd/mm 日期格式；当 a、b 都 ≤12 时两种解读
+    # 都合法，这里优先 dd/mm（day-first），否则退回到唯一合法解读。
+    a_is_month = 1 <= a <= 12 and 1 <= b <= 31
+    b_is_month = 1 <= b <= 12 and 1 <= a <= 31
+    if a_is_month and b_is_month:
+        # 两者都合法 → Flashscore 惯例为 dd/mm，所以 b 是月 a 是日
+        month, day = b, a
+    elif a_is_month:
         month, day = a, b
-    elif 1 <= b <= 12 and 1 <= a <= 31:
+    elif b_is_month:
         month, day = b, a
     else:
         return None
