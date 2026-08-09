@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import apiClient from '../api/client'
+import apiClient, { apiAuthHeaders } from '../api/client'
 import Loading from '../components/Loading'
 
 interface SchedulerTask {
@@ -43,7 +43,7 @@ export default function SchedulerPage() {
   const [syncing, setSyncing] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [streamLines, setStreamLines] = useState<string[]>([])  // SSE 实时日志行
-  const esRef = useRef<EventSource | null>(null)
+  const streamAbortRef = useRef<AbortController | null>(null)
 
   const fetchTasks = useCallback(() => {
     apiClient
@@ -66,29 +66,51 @@ export default function SchedulerPage() {
     setMessage('')
     setStreamLines([])
 
-    // 先打开 SSE 连接
-    const es = new EventSource(`/api/scheduler/${taskId}/stream`)
-    esRef.current = es
+    const controller = new AbortController()
+    streamAbortRef.current?.abort()
+    streamAbortRef.current = controller
 
-    es.onmessage = (event) => {
-      if (event.data === '__DONE__') return
-      setStreamLines((prev) => [...prev, event.data])
+    const streamLogs = async () => {
+      try {
+        const response = await fetch(`/api/scheduler/${taskId}/stream`, {
+          headers: apiAuthHeaders,
+          signal: controller.signal,
+        })
+        if (!response.ok || !response.body) {
+          throw new Error(`日志流连接失败（HTTP ${response.status}）`)
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const events = buffer.split('\n\n')
+          buffer = events.pop() || ''
+          for (const event of events) {
+            const data = event.split('\n').find((line) => line.startsWith('data: '))?.slice(6)
+            if (data && data !== '__DONE__') setStreamLines((prev) => [...prev, data])
+            if (data === '__DONE__') return
+          }
+        }
+      } catch (err: any) {
+        if (err.name !== 'AbortError') setMessage(err.message || '日志流连接失败')
+      } finally {
+        if (streamAbortRef.current === controller) streamAbortRef.current = null
+        setSyncing(null)
+        fetchTasks()
+      }
     }
 
-    es.onerror = () => {
-      // SSE 关闭（正常或异常）
-      es.close()
-      esRef.current = null
-      setSyncing(null)
-      fetchTasks()
-    }
+    void streamLogs()
 
     try {
       await apiClient.post(`/scheduler/${taskId}/trigger`, {}, { timeout: 0 })
     } catch (err: any) {
       setSyncing(null)
-      es.close()
-      esRef.current = null
+      controller.abort()
+      if (streamAbortRef.current === controller) streamAbortRef.current = null
       setMessage(`❌ 执行失败: ${err.response?.data?.detail || err.message}`)
     }
   }
@@ -105,7 +127,7 @@ export default function SchedulerPage() {
 
   useEffect(() => {
     return () => {
-      if (esRef.current) esRef.current.close()
+      streamAbortRef.current?.abort()
     }
   }, [])
 

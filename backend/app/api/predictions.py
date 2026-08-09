@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.services.value_bet_service import compute_value_bets
 from app.services.calibration_service import get_diagnostics
 from prediction.predict import PredictionDataError, PredictionLLMError
+from app.core.security import AdminAuth
 
 router = APIRouter()
 
@@ -24,7 +25,7 @@ def _date_to_utc_range(date_str: str) -> tuple[str, str]:
 
 
 @router.post("/predict/{fixture_id}")
-async def predict_match(fixture_id: int):
+async def predict_match(fixture_id: int, _: AdminAuth):
     """手动触发单场预测"""
     logger.info(f"收到单场预测请求: fixture_id={fixture_id}")
     import time
@@ -103,7 +104,7 @@ async def get_odds(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/odds/{fixture_id}")
-async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
+async def fetch_and_save_odds(fixture_id: int, _: AdminAuth, db: Session = Depends(get_db)):
     """手动触发赔率抓取，保存到 odds 表。"""
     logger.info(f"收到赔率抓取请求: fixture_id={fixture_id}")
 
@@ -149,7 +150,7 @@ async def fetch_and_save_odds(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/predict-from-odds/{fixture_id}")
-async def predict_from_odds_endpoint(fixture_id: int):
+async def predict_from_odds_endpoint(fixture_id: int, _: AdminAuth):
     """基于实时赔率（调用 API-Football 查询）进行市场共识预测。"""
     logger.info(f"收到赔率预测请求: fixture_id={fixture_id}")
 

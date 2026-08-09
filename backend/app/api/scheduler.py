@@ -19,6 +19,7 @@ from app.services.standing_service import sync_standings
 from app.services.fixture_service import sync_fixtures, sync_live_fixtures
 from app.services.prediction_result_service import backfill_results
 from app.services.auto_predict_service import auto_predict
+from app.core.security import AdminAuth, ReadAuth, require_admin, require_read
 
 router = APIRouter()
 
@@ -120,12 +121,12 @@ def _run_task_with_stream(task_id: str, task_name: str, sync_fn):
 
 
 @router.get("/scheduler/status")
-async def scheduler_status():
+async def scheduler_status(_: ReadAuth):
     return await asyncio.to_thread(get_scheduler_status)
 
 
 @router.post("/scheduler/{task_id}/trigger")
-async def trigger_task(task_id: str, background_tasks: BackgroundTasks):
+async def trigger_task(task_id: str, background_tasks: BackgroundTasks, _: AdminAuth):
     if task_id not in TASK_MAP:
         raise HTTPException(status_code=404, detail="任务不存在")
     name, fn = TASK_MAP[task_id]
@@ -139,7 +140,7 @@ async def trigger_task(task_id: str, background_tasks: BackgroundTasks):
 
 
 @router.get("/scheduler/{task_id}/stream")
-async def stream_task_logs(task_id: str):
+async def stream_task_logs(task_id: str, _: ReadAuth):
     """SSE 端点：实时推送后台任务的执行日志"""
     q = _ensure_queue(task_id)
 
@@ -164,44 +165,44 @@ async def stream_task_logs(task_id: str):
 
 # ═══ 兼容旧接口 ═══
 @router.post("/scheduler/leagues/sync")
-async def trigger_league_sync(db: Session = Depends(get_db)):
+async def trigger_league_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 联赛数据同步")
     sync_leagues(db)
     return {"status": "ok"}
 
 @router.post("/scheduler/teams/sync")
-async def trigger_team_sync(db: Session = Depends(get_db)):
+async def trigger_team_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 球队数据同步")
     sync_teams(db)
     return {"status": "ok"}
 
 @router.post("/scheduler/players/sync")
-async def trigger_player_sync(db: Session = Depends(get_db)):
+async def trigger_player_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 球员数据同步")
     sync_players(db)
     return {"status": "ok"}
 
 @router.post("/scheduler/standings/sync")
-async def trigger_standing_sync(db: Session = Depends(get_db)):
+async def trigger_standing_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 积分榜数据同步")
     sync_standings(db)
     return {"status": "ok"}
 
 @router.post("/scheduler/fixtures/sync")
-async def trigger_fixture_sync(db: Session = Depends(get_db)):
+async def trigger_fixture_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 赛程每日同步")
     sync_fixtures(db)
     return {"status": "ok"}
 
 @router.post("/scheduler/fixtures/live")
-async def trigger_live_sync(db: Session = Depends(get_db)):
+async def trigger_live_sync(_: AdminAuth, db: Session = Depends(get_db)):
     logger.info("手动触发: 赛程实时同步")
     sync_live_fixtures(db)
     return {"status": "ok"}
 
 
 @router.post("/scheduler/{task_id}/stop")
-async def stop_task(task_id: str):
+async def stop_task(task_id: str, _: AdminAuth):
     ok = stop_scheduled_task(task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在或无需停止")
@@ -209,7 +210,7 @@ async def stop_task(task_id: str):
 
 
 @router.post("/scheduler/{task_id}/start")
-async def start_task(task_id: str):
+async def start_task(task_id: str, _: AdminAuth):
     ok = start_scheduled_task(task_id)
     if not ok:
         raise HTTPException(status_code=400, detail="任务不存在或已在运行")
@@ -218,7 +219,8 @@ async def start_task(task_id: str):
 
 @router.patch("/scheduler/{task_id}")
 async def patch_task(task_id: str, start_hour: float | None = None,
-                     interval_seconds: int | None = None, is_enabled: bool | None = None):
+                     interval_seconds: int | None = None, is_enabled: bool | None = None,
+                     _: str = Depends(require_admin)):
     ok = update_task(task_id, start_hour=start_hour, interval_seconds=interval_seconds,
                      is_enabled=is_enabled)
     if not ok:
@@ -227,7 +229,8 @@ async def patch_task(task_id: str, start_hour: float | None = None,
 
 
 @router.get("/scheduler/logs")
-async def get_logs(page: int = 1, page_size: int = 20, task_id: str | None = None):
+async def get_logs(page: int = 1, page_size: int = 20, task_id: str | None = None,
+                   _: str = Depends(require_read)):
     return await asyncio.to_thread(_get_logs_sync, page, page_size, task_id)
 
 

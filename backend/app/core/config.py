@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # 缓存
     cache_ttl: int = 3600
 
+    # API 认证：生产环境必须通过环境变量配置随机长密钥
+    read_api_key: str = ""
+    admin_api_key: str = ""
+
     @property
     def db_url(self) -> str:
         return (

@@ -114,6 +114,10 @@ alembic upgrade head
 
 > 若坚持使用 `root` 空密码，请把 `root`@`127.0.0.1`（注意是 TCP 账号，非 `localhost` 的 socket 账号）也改为 `mysql_native_password`，否则 pymysql 在 Ubuntu 上大概率报 `2013 Lost connection to MySQL server during query`。
 
+### API 认证
+
+管理接口不接受匿名请求。请在 `backend/.env` 中配置两个不同的随机 Bearer key：`READ_API_KEY` 用于调度状态/日志，`ADMIN_API_KEY` 用于同步、预测和其他写操作。前端开发时将所需令牌设置为 `VITE_API_TOKEN`，例如 `VITE_API_TOKEN=... npm run dev`；不要把令牌提交到 Git 或写入前端源码。
+
 ### 本地开发
 
 方式一：一键启动前后端（跨平台，Windows / Linux / macOS 通用）

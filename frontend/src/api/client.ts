@@ -1,10 +1,17 @@
 import axios from 'axios'
 
+export const apiToken = import.meta.env.VITE_API_TOKEN || ''
+
+export const apiAuthHeaders: Record<string, string> = apiToken
+  ? { Authorization: `Bearer ${apiToken}` }
+  : {}
+
 const apiClient = axios.create({
   baseURL: '/api',
   timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
+    ...apiAuthHeaders,
   },
 })
 

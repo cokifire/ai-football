@@ -13,6 +13,7 @@ from app.schemas.fixture import FixtureSchema, FixtureDetailSchema
 from app.schemas.league import PaginatedResponse
 from app.core.zh import zh_swap, fixtures_apply_denorm_zh
 from app.core.config import settings
+from app.core.security import AdminAuth
 from loguru import logger
 
 router = APIRouter()
@@ -80,7 +81,7 @@ def _get_sync(db, fixture_id):
 
 
 @router.post("/fixtures/{fixture_id}/refresh", response_model=FixtureDetailSchema)
-async def refresh_fixture_endpoint(fixture_id: int, db: Session = Depends(get_db)):
+async def refresh_fixture_endpoint(fixture_id: int, _: AdminAuth, db: Session = Depends(get_db)):
     """手动刷新: 重新从 API-Football 拉取并更新该场比赛主表与子数据，返回最新详情。"""
     if not settings.api_football_key:
         raise HTTPException(status_code=503, detail="未配置 API_FOOTBALL_KEY，无法刷新")
@@ -97,7 +98,7 @@ async def refresh_fixture_endpoint(fixture_id: int, db: Session = Depends(get_db
 
 
 @router.post("/fixtures/{fixture_id}/fetch-xg", response_model=FixtureDetailSchema)
-async def fetch_xg_endpoint(fixture_id: int, db: Session = Depends(get_db)):
+async def fetch_xg_endpoint(fixture_id: int, _: AdminAuth, db: Session = Depends(get_db)):
     """从 Flashscore 抓取该场比赛的 Expected goals (xG) 与 Goals prevented, 写入 fixture_statistics。
 
     仅当双方球队都能在 flashscore_team_map.json 中找到对应 hash 时才可抓取。
@@ -181,7 +182,8 @@ async def fetch_xg_endpoint(fixture_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/fixtures/{fixture_id}/category")
-async def set_fixture_category(fixture_id: int, category: str | None = None,
+async def set_fixture_category(fixture_id: int, _: AdminAuth,
+                                category: str | None = None,
                                 db: Session = Depends(get_db)):
     """设置或清除比赛分类标签（category=jingzu 或 category=null 清除）"""
     def _run():

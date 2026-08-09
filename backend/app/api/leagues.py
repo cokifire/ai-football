@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.models.league import League
 from app.schemas.league import LeagueDetailSchema, PaginatedResponse
 from app.core.zh import zh_swap, zh_swap_many
+from app.core.security import AdminAuth
 
 router = APIRouter()
 
@@ -51,7 +52,7 @@ def _get_league_sync(db, league_id):
 
 
 @router.patch("/leagues/{league_id}/toggle")
-async def toggle_league(league_id: int, db: Session = Depends(get_db)):
+async def toggle_league(league_id: int, _: AdminAuth, db: Session = Depends(get_db)):
     return await asyncio.to_thread(_toggle_league_sync, db, league_id)
 
 
