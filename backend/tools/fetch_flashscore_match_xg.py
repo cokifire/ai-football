@@ -107,6 +107,29 @@ def _is_future_match(page):
     return "Statistics will be available once the match starts" in text
 
 
+def _parse_date(text):
+    """从文本中解析日期, 返回 (year, month, day) 或 None。
+
+    兼容 Flashscore 的 'dd/mm/yyyy' 与 'dd.mm.yy' 两种写法。
+    """
+    if not text:
+        return None
+    m = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})", text)
+    if not m:
+        return None
+    a, b, c = (int(x) for x in m.groups())
+    if c < 100:
+        c += 2000
+    # 兼容 日/月/年 与 月/日/年: 取 1..12 为月
+    if 1 <= a <= 12 and 1 <= b <= 31:
+        month, day = a, b
+    elif 1 <= b <= 12 and 1 <= a <= 31:
+        month, day = b, a
+    else:
+        return None
+    return (c, month, day)
+
+
 def _get_page_match_date(page):
     """从 stats 页解析当前比赛日期, 返回 (year, month, day) 或 None。
 
@@ -114,30 +137,39 @@ def _get_page_match_date(page):
     或从 body 中匹配 '26/07/2026' 这类日期。
     """
     text = page.evaluate("() => document.body.innerText") or ""
-    # 标题优先 (格式 dd/mm/yyyy 或 dd.mm.yyyy)
-    m = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})", text)
-    if not m:
-        return None
-    day, month, year = (int(x) for x in m.groups())
-    if not (1 <= day <= 31 and 1 <= month <= 12):
-        return None
-    return (year, month, day)
+    return _parse_date(text)
 
 
-def _dates_match(page_date, target_date):
-    """比较页面日期与目标日期是否一致。target_date 可为 date/datetime/字符串。"""
+def _as_date_tuple(target_date):
+    """把目标日期统一为 (year, month, day)。支持 date/datetime/字符串。"""
+    if isinstance(target_date, datetime):
+        return (target_date.year, target_date.month, target_date.day)
+    if isinstance(target_date, date):
+        return (target_date.year, target_date.month, target_date.day)
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(target_date))
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def _dates_match(page_date, target_date, tol_days=1):
+    """比较页面日期与目标日期是否一致 (允许 ±tol_days 天容差)。
+
+    容差用于解决时区差异: 本地库 f.date 为北京时间 (UTC+8),
+    而 Flashscore 页面显示的比赛日期为比赛当地时区, 两者可能相差 1 天
+    (例如北京 07-25 凌晨的比赛, 当地为 07-24 下午)。
+    """
     if page_date is None:
         return False
-    if isinstance(target_date, datetime):
-        target = (target_date.year, target_date.month, target_date.day)
-    elif isinstance(target_date, date):
-        target = (target_date.year, target_date.month, target_date.day)
-    else:
-        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(target_date))
-        if not m:
-            return False
-        target = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    return tuple(page_date) == target
+    target = _as_date_tuple(target_date)
+    if target is None:
+        return False
+    try:
+        d1 = date(*page_date)
+        d2 = date(*target)
+    except Exception:
+        return False
+    return abs((d1 - d2).days) <= tol_days
 
 
 def _accept_consent(page):
@@ -166,26 +198,40 @@ def _derive_stats_url_from_match_url(match_url: str) -> str:
 def _resolve_via_h2h(page, stats_url, match_date):
     """通过 H2H 列表点击对应日期的历史比赛, 返回正确的 stats URL。
 
-    当 team-hash pair 被 Flashscore 解析到未来那场时, 在 H2H 栏里按日期定位。
+    当 team-hash pair 被 Flashscore 解析到错误场次时, 在 H2H 栏里按比赛日期
+    定位。由于 Flashscore 列表显示的是比赛当地日期, 而目标 match_date 为北京时间,
+    这里以 ±1 天容差匹配 (见 _dates_match)。
     """
-    date_label = _format_flashscore_date(match_date)
     h2h_url = _derive_h2h_url(stats_url)
-    print(f"[h2h] 未来场次, 尝试 H2H 找 {date_label}: {h2h_url}")
+    print(f"[h2h] 尝试按日期定位 H2H: {h2h_url}")
     page.goto(h2h_url, wait_until="domcontentloaded", timeout=60000)
     _accept_consent(page)
     page.wait_for_timeout(6000)
 
     section = page.locator("div.h2h__section", has_text="Head-to-head matches")
-    row = section.locator("a.h2h__row", has_text=date_label)
-    if row.count() == 0:
+    rows = section.locator("a.h2h__row")
+    best_row = None
+    best_diff = None
+    for i in range(rows.count()):
+        row = rows.nth(i)
+        row_text = row.inner_text() or ""
+        row_date = _parse_date(row_text)
+        if row_date is None:
+            continue
+        if _dates_match(row_date, match_date, tol_days=1):
+            match_url = row.get_attribute("href")
+            if not match_url:
+                continue
+            diff = abs((date(*row_date) - date(*_as_date_tuple(match_date))).days)
+            if best_diff is None or diff < best_diff:
+                best_diff = diff
+                best_row = match_url
+    if not best_row:
         raise ValueError(
-            f"在 Head-to-head matches 中未找到日期 {date_label} 的比赛"
+            f"在 Head-to-head matches 中未找到日期接近 {match_date} 的比赛"
         )
-    match_url = row.first.get_attribute("href")
-    if not match_url:
-        raise ValueError("H2H 行未包含比赛链接")
-    resolved_stats_url = _derive_stats_url_from_match_url(match_url)
-    print(f"[h2h] 定位到历史比赛: {match_url}")
+    resolved_stats_url = _derive_stats_url_from_match_url(best_row)
+    print(f"[h2h] 定位到历史比赛: {best_row}")
     return resolved_stats_url
 
 
