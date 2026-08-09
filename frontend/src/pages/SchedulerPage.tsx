@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import apiClient, { apiAuthHeaders } from '../api/client'
+import apiClient, { getApiToken } from '../api/client'
 import Loading from '../components/Loading'
 
 interface SchedulerTask {
@@ -72,8 +72,9 @@ export default function SchedulerPage() {
 
     const streamLogs = async () => {
       try {
+        const token = getApiToken()
         const response = await fetch(`/api/scheduler/${taskId}/stream`, {
-          headers: apiAuthHeaders,
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
           signal: controller.signal,
         })
         if (!response.ok || !response.body) {

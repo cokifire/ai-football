@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { getApiToken, clearApiToken } from '../api/client'
+import LoginModal from './LoginModal'
 
 const navItems = [
   { path: '/', label: '仪表盘', icon: '📊' },
@@ -12,12 +14,34 @@ const navItems = [
   { path: '/scheduler', label: '数据同步', icon: '🔄' },
 ]
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout({
+  children,
+  onRequireLogin,
+}: {
+  children: React.ReactNode
+  onRequireLogin: (reason?: string) => void
+}) {
   const location = useLocation()
   // 默认在手机端（<640px）仅显示图标，桌面端展开
   const [collapsed, setCollapsed] = useState(
     typeof window !== 'undefined' && window.innerWidth < 640
   )
+  const [loggedIn, setLoggedIn] = useState(() => !!getApiToken())
+  const [showLogin, setShowLogin] = useState(false)
+
+  const handleLoginOpen = () => {
+    setShowLogin(true)
+    onRequireLogin()
+  }
+  const handleLogout = () => {
+    clearApiToken()
+    setLoggedIn(false)
+    setShowLogin(true)
+  }
+  const handleLoginClose = () => {
+    setShowLogin(false)
+    setLoggedIn(!!getApiToken())
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -59,7 +83,26 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         <div className="px-4 py-3 border-t border-gray-800 text-xs text-gray-500">
-          {!collapsed && 'AI Football v1.0'}
+          {!collapsed && (
+            <div className="flex flex-col gap-2">
+              <span>AI Football v1.0</span>
+              {loggedIn ? (
+                <button
+                  onClick={handleLogout}
+                  className="text-left text-gray-400 hover:text-white"
+                >
+                  退出登录
+                </button>
+              ) : (
+                <button
+                  onClick={handleLoginOpen}
+                  className="text-left text-primary-400 hover:text-primary-300"
+                >
+                  登录获取 admin 权限
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </aside>
 
@@ -67,6 +110,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="p-6">{children}</div>
       </main>
+
+      <LoginModal open={showLogin} onClose={handleLoginClose} />
     </div>
   )
 }

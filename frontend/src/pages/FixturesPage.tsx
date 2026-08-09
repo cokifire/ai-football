@@ -752,7 +752,7 @@ export default function FixturesPage() {
                                   </div>
                                   {e.ah_home_odd != null && (
                                     <span className="text-xs text-gray-400">
-                                      主{(e.ah_home_odd * 100).toFixed(0)}% 客{(e.ah_away_odd * 100).toFixed(0)}%
+                                      主{(e.ah_home_odd * 100).toFixed(0)}% 客{(e.ah_away_odd != null ? (e.ah_away_odd * 100).toFixed(0) : '-')}%
                                     </span>
                                   )}
                                 </div>
@@ -766,7 +766,7 @@ export default function FixturesPage() {
                                   </div>
                                   {e.ou_over_odd != null && (
                                     <span className="text-xs text-gray-400">
-                                      大{(e.ou_over_odd * 100).toFixed(0)}% 小{(e.ou_under_odd * 100).toFixed(0)}%
+                                      大{(e.ou_over_odd * 100).toFixed(0)}% 小{(e.ou_under_odd != null ? (e.ou_under_odd * 100).toFixed(0) : '-')}%
                                     </span>
                                   )}
                                 </div>
@@ -1084,6 +1084,7 @@ function FixtureCard({
   onViewDetail,
   onFetchOdds,
   onPredict,
+  onOpenTeam,
   fetchingOdds,
   predicting,
   finished,

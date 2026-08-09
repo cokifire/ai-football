@@ -32,7 +32,8 @@ interface ValueBetData {
   }
 }
 
-const MARKET_LABELS: Record<string, string> = { '1x2': '胜负平', ou: '大小球', ah: '让球盘' }
+type MarketKey = '1x2' | 'ou' | 'ah'
+const MARKET_LABELS: Record<MarketKey, string> = { '1x2': '胜负平', ou: '大小球', ah: '让球盘' }
 const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`
 
 export default function ValueBetPanel({ fixtureId }: { fixtureId: number }) {
@@ -69,7 +70,7 @@ export default function ValueBetPanel({ fixtureId }: { fixtureId: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fixtureId])
 
-  const renderMarket = (key: keyof typeof MARKET_LABELS) => {
+  const renderMarket = (key: MarketKey) => {
     const m = data!.markets[key]
     if (!m || !m.available) {
       return <p className="text-xs text-gray-400">无对应赔率数据</p>
