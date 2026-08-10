@@ -13,6 +13,11 @@ from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStat
 
 LIVE_SYNC_INTERVAL = 120  # 秒
 
+# 免费版日期查询使用的时区: API 按 date 返回的 fixture 数受时区影响,
+# Asia/Shanghai (UTC+8) 使 24 小时日界覆盖更广的 UTC 范围, 突破默认 UTC 的 ~595 条上限,
+# 避免遗漏当天晚间开球的比赛.
+DATE_SYNC_TIMEZONE = "Asia/Shanghai"
+
 # TLS 握手/连接超时重试配置
 API_CONNECT_TIMEOUT = 10.0   # 连接(含 TLS 握手)超时
 API_READ_TIMEOUT = 30.0      # 读取响应超时
@@ -222,11 +227,11 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
     # ── 步骤1: 先探测今天，确认日期窗口 ──
     allowed_dates: set[str] = set()
     today_str = today.strftime("%Y-%m-%d")
-    data, err = _fetch_fixtures_by_params({"date": today_str})
+    data, err = _fetch_fixtures_by_params({"date": today_str, "timezone": DATE_SYNC_TIMEZONE})
 
     if data is None and err and "rateLimit" in err:
         time.sleep(10)
-        data, err = _fetch_fixtures_by_params({"date": today_str})
+        data, err = _fetch_fixtures_by_params({"date": today_str, "timezone": DATE_SYNC_TIMEZONE})
 
     if data is not None:
         # 今天可用，尝试识别完整窗口
@@ -236,7 +241,7 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
             test_date = (today + timedelta(days=day_offset)).strftime("%Y-%m-%d")
             if test_date in allowed_dates:
                 continue
-            d, e = _fetch_fixtures_by_params({"date": test_date})
+            d, e = _fetch_fixtures_by_params({"date": test_date, "timezone": DATE_SYNC_TIMEZONE})
             if d is not None:
                 allowed_dates.add(test_date)
             elif e:
@@ -278,11 +283,11 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
         if date_str == today_str and data is not None:
             items = data.get("response", [])
         else:
-            d, e = _fetch_fixtures_by_params({"date": date_str})
+            d, e = _fetch_fixtures_by_params({"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
             if d is None:
                 if e and "rateLimit" in e:
                     time.sleep(10)
-                    d, e = _fetch_fixtures_by_params({"date": date_str})
+                    d, e = _fetch_fixtures_by_params({"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
                 if d is None:
                     logger.warning(f"date={date_str} 跳过: {e}")
                     continue
@@ -728,7 +733,7 @@ def sync_live_fixtures(db: Session) -> None:
     all_items = []
     for date_str in [today, yesterday]:
         try:
-            response = _api_get_http("fixtures", {"date": date_str})
+            response = _api_get_http("fixtures", {"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
             response.raise_for_status()
             data = response.json()
             items = data.get("response", [])
