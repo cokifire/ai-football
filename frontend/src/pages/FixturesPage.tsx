@@ -4,6 +4,7 @@ import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import Pagination from '../components/Pagination'
 import Modal from '../components/Modal'
+import TeamDetailModal from '../components/TeamDetailModal'
 
 interface Fixture {
   id: number
@@ -196,8 +197,7 @@ export default function FixturesPage() {
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
   const [predictResult, setPredictResult] = useState<{ fixture: Fixture; result: any } | null>(null)
-  const [teamDetail, setTeamDetail] = useState<Team | null>(null)
-  const [teamLoading, setTeamLoading] = useState(false)
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
   const [oddsFixture, setOddsFixture] = useState<Fixture | null>(null)
   const [oddsData, setOddsData] = useState<OddsData | null>(null)
   const [oddsError, setOddsError] = useState<string | null>(null)
@@ -305,13 +305,7 @@ export default function FixturesPage() {
 
   const openTeamDetail = (teamId: number) => {
     if (!teamId) return
-    setTeamLoading(true)
-    setTeamDetail(null)
-    apiClient
-      .get(`/teams/${teamId}`)
-      .then((res) => setTeamDetail(res.data))
-      .catch(() => setTeamDetail(null))
-      .finally(() => setTeamLoading(false))
+    setSelectedTeamId(teamId)
   }
 
   const handleFetchOdds = (fixture: Fixture) => {
@@ -809,54 +803,7 @@ export default function FixturesPage() {
         )}
       </Modal>
 
-      {/* 球队详情弹窗 */}
-      <Modal
-        open={!!teamDetail || teamLoading}
-        onClose={() => setTeamDetail(null)}
-        title={teamDetail?.name || '球队详情'}
-        size="sm"
-      >
-        {teamDetail ? (
-          <div className="space-y-4">
-            <div className="flex items-center gap-4">
-              {teamDetail.logo && (
-                <img src={teamDetail.logo} alt="" className="w-20 h-20 object-contain" />
-              )}
-              <div>
-                <h3 className="text-xl font-bold">{teamDetail.name}</h3>
-                {teamDetail.name_zh && (
-                  <p className="text-sm text-gray-500">{teamDetail.name_zh}</p>
-                )}
-                <p className="text-gray-500">{teamDetail.country}</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {teamDetail.founded && (
-                <div className="p-3 rounded-lg bg-gray-50">
-                  <div className="text-xs text-gray-500">成立年份</div>
-                  <div className="font-semibold">{teamDetail.founded}</div>
-                </div>
-              )}
-              {teamDetail.venue_name && (
-                <div className="p-3 rounded-lg bg-gray-50">
-                  <div className="text-xs text-gray-500">主场场馆</div>
-                  <div className="font-semibold">{teamDetail.venue_name}</div>
-                </div>
-              )}
-              {teamDetail.venue_capacity && (
-                <div className="p-3 rounded-lg bg-gray-50">
-                  <div className="text-xs text-gray-500">场馆容量</div>
-                  <div className="font-semibold">
-                    {teamDetail.venue_capacity.toLocaleString()}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <Loading />
-        )}
-      </Modal>
+      <TeamDetailModal teamId={selectedTeamId} onClose={() => setSelectedTeamId(null)} />
     </div>
   )
 }

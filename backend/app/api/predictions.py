@@ -316,6 +316,7 @@ def _get_predictions_sync(db, date, category, league_id, season, team, page, pag
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
                    p.home_logo, p.away_logo,
+                   f.home_id, f.away_id,
                    COALESCE(ht.name_zh, p.home_name) AS home_name,
                    COALESCE(at.name_zh, p.away_name) AS away_name,
                    COALESCE(lg.name_zh, p.league_name) AS league_name,
@@ -351,6 +352,8 @@ def _get_predictions_sync(db, date, category, league_id, season, team, page, pag
             record = {
                 "basic": {
                     "fixture_id": d.get("fixture_id"),
+                    "home_id": d.get("home_id"),
+                    "away_id": d.get("away_id"),
                     "home_name": d.get("home_name"),
                     "away_name": d.get("away_name"),
                     "home_logo": d.get("home_logo"),

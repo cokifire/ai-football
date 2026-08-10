@@ -31,10 +31,10 @@ export default function Modal({ open, onClose, title, children, size = 'lg', hea
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div
-        className={`relative bg-white rounded-xl shadow-2xl w-full ${sizeClass} max-h-[90vh] flex flex-col mx-4`}
+        className={`relative bg-white rounded-xl shadow-2xl w-[calc(100%-1rem)] sm:w-full ${sizeClass} max-h-[90vh] flex flex-col mx-2 sm:mx-4`}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold">{title}</h2>
+          <h2 className="text-lg font-semibold min-w-0 break-words leading-tight pr-2">{title}</h2>
           <div className="flex items-center gap-2">
             {headerExtra}
             <button
@@ -45,7 +45,7 @@ export default function Modal({ open, onClose, title, children, size = 'lg', hea
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto px-6 py-4">{children}</div>
+        <div className="overflow-y-auto px-4 sm:px-6 py-4">{children}</div>
       </div>
     </div>
   )

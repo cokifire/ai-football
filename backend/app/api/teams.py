@@ -5,6 +5,7 @@ from sqlalchemy import or_
 
 from app.db.session import get_db
 from app.models.team import Team
+from app.models.fixture import Fixture
 from app.schemas.team import TeamDetailSchema
 from app.schemas.league import PaginatedResponse
 from app.core.zh import zh_swap
@@ -56,4 +57,9 @@ def _get_team_sync(db, team_id):
     team.name = orig_name
     if team.venue:
         zh_swap(team.venue)
+    team.recent_fixtures = (db.query(Fixture)
+        .filter((Fixture.home_id == team_id) | (Fixture.away_id == team_id))
+        .filter(Fixture.status_short.in_(["FT", "AET", "PEN"]))
+        .order_by(Fixture.date.desc(), Fixture.id.desc())
+        .limit(10).all())
     return team

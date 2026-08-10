@@ -5,10 +5,13 @@ import Pagination from '../components/Pagination'
 import Modal from '../components/Modal'
 import AccuracyPanel, { AccuracyItem } from '../components/AccuracyPanel'
 import ValueBetPanel from '../components/ValueBetPanel'
+import TeamDetailModal from '../components/TeamDetailModal'
 
 interface PredictionDetail {
   basic: {
     fixture_id: number
+    home_id: number | null
+    away_id: number | null
     home_name: string | null
     away_name: string | null
     home_logo: string | null
@@ -63,6 +66,7 @@ export default function PredictionsPage() {
   const [team, setTeam] = useState('')
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const [accuracy, setAccuracy] = useState<AccuracyItem[]>([])
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
   const pageSize = 20
 
   // 亚盘盘口以「主队视角」展示: line<0 主队让球, line>0 主队受让, 0 平手
@@ -258,7 +262,13 @@ export default function PredictionsPage() {
                     <tr key={b.fixture_id}>
                       <td className="text-gray-400 text-xs">{b.fixture_id}</td>
                       <td className="font-medium">
-                        {b.home_name || '主队'} vs {b.away_name || '客队'}
+                        <button className="text-primary-600 hover:underline" onClick={() => b.home_id && setSelectedTeamId(b.home_id)}>
+                          {b.home_name || '主队'}
+                        </button>
+                        <span className="mx-1">vs</span>
+                        <button className="text-primary-600 hover:underline" onClick={() => b.away_id && setSelectedTeamId(b.away_id)}>
+                          {b.away_name || '客队'}
+                        </button>
                       </td>
                       <td className="text-xs text-gray-500">{b.match_date?.substring(0, 10) || '-'}</td>
                       <td className="text-green-600 font-medium">
@@ -316,6 +326,7 @@ export default function PredictionsPage() {
                 onDetail={setSelectedPred}
                 onOddsPred={openOddsPred}
                 onViewOdds={loadOdds}
+                onOpenTeam={(teamId) => setSelectedTeamId(teamId)}
               />
             ))}
             {predictions.length === 0 && (
@@ -333,6 +344,8 @@ export default function PredictionsPage() {
 
       {/* 预测准确率分析（底部图表） */}
       <AccuracyPanel data={accuracy} />
+
+      <TeamDetailModal teamId={selectedTeamId} onClose={() => setSelectedTeamId(null)} />
 
       {/* 预测详情弹窗 - 直接从列表数据中获取 */}
       <Modal
@@ -973,11 +986,13 @@ function PredictionCard({
   onDetail,
   onOddsPred,
   onViewOdds,
+  onOpenTeam,
 }: {
   p: PredictionDetail
   onDetail: (p: PredictionDetail) => void
   onOddsPred: (p: PredictionDetail) => void
   onViewOdds: (p: PredictionDetail) => void
+  onOpenTeam: (teamId: number) => void
 }) {
   const b = p.basic
   const x = p.xgb
@@ -999,13 +1014,13 @@ function PredictionCard({
         <div className="flex-1 min-w-0 text-right">
           <div className="flex items-center justify-end gap-2">
             {b.home_logo && <img src={b.home_logo} alt="" className="w-5 h-5 object-contain" />}
-            <span className="font-medium truncate">{b.home_name || '主队'}</span>
+            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => b.home_id && onOpenTeam(b.home_id)}>{b.home_name || '主队'}</button>
           </div>
         </div>
         <div className="px-2 text-xs text-gray-400 whitespace-nowrap">VS</div>
         <div className="flex-1 min-w-0 text-left">
           <div className="flex items-center gap-2">
-            <span className="font-medium truncate">{b.away_name || '客队'}</span>
+            <button className="font-medium truncate text-primary-600 hover:underline" onClick={() => b.away_id && onOpenTeam(b.away_id)}>{b.away_name || '客队'}</button>
             {b.away_logo && <img src={b.away_logo} alt="" className="w-5 h-5 object-contain" />}
           </div>
         </div>
