@@ -39,11 +39,18 @@ def _seed_defaults():
         for k, v in _DEFAULT_TASKS.items():
             sh = v.get("start_hour")
             iv = v.get("interval_seconds")
+            # 用 ON DUPLICATE KEY UPDATE 让代码里的最新默认时间始终生效
+            # （INSERT IGNORE 遇到已存在的主键会静默跳过，导致改了 _DEFAULT_TASKS
+            #  之后数据库里仍是旧时间，任务仍按旧时间执行）
             db.execute(
                 text(
-                    """INSERT IGNORE INTO scheduler_tasks
-                       (id, name, interval_seconds, start_hour, is_enabled)
-                       VALUES (:id, :name, :iv, :sh, 1)"""
+                    """INSERT INTO scheduler_tasks
+                          (id, name, interval_seconds, start_hour, is_enabled)
+                       VALUES (:id, :name, :iv, :sh, 1)
+                       ON DUPLICATE KEY UPDATE
+                          name = VALUES(name),
+                          interval_seconds = VALUES(interval_seconds),
+                          start_hour = VALUES(start_hour)"""
                 ),
                 {"id": k, "name": v["name"], "iv": iv, "sh": sh},
             )
