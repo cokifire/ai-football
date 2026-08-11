@@ -3,7 +3,7 @@ import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import Pagination from '../components/Pagination'
 import Modal from '../components/Modal'
-import AccuracyPanel, { AccuracyItem } from '../components/AccuracyPanel'
+import AccuracyPanel from '../components/AccuracyPanel'
 import ValueBetPanel from '../components/ValueBetPanel'
 import TeamDetailModal from '../components/TeamDetailModal'
 
@@ -65,7 +65,6 @@ export default function PredictionsPage() {
   const [season, setSeason] = useState('')
   const [team, setTeam] = useState('')
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
-  const [accuracy, setAccuracy] = useState<AccuracyItem[]>([])
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
   const [selectedRecentFixtureId, setSelectedRecentFixtureId] = useState<number | null>(null)
   const [recentFixtureDetail, setRecentFixtureDetail] = useState<any>(null)
@@ -97,21 +96,8 @@ export default function PredictionsPage() {
   const [oddsPredLoading, setOddsPredLoading] = useState(false)
   const [oddsPredError, setOddsPredError] = useState('')
 
-  const fetchAccuracy = () => {
-    apiClient
-      .get('/predictions/accuracy', {
-        params: {
-          date: date || undefined,
-          category: category || undefined,
-        },
-      })
-      .then((res) => setAccuracy(res.data.data || []))
-      .catch(() => setAccuracy([]))
-  }
-
   const fetchPredictions = () => {
     setLoading(true)
-    fetchAccuracy()
     apiClient
       .get('/predictions', {
         params: {
@@ -357,7 +343,7 @@ export default function PredictionsPage() {
       )}
 
       {/* 预测准确率分析（底部图表） */}
-      <AccuracyPanel data={accuracy} />
+      <AccuracyPanel />
 
       <TeamDetailModal
         teamId={selectedTeamId}

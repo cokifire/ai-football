@@ -192,12 +192,19 @@ async def get_predictions(
 
 @router.get("/predictions/accuracy")
 async def get_predictions_accuracy(
-    date: str | None = Query(None),
-    category: str | None = Query(None),
+    date: str | None = Query(None, description="按单日筛选，如 2026-05-01"),
+    date_from: str | None = Query(None, description="起始日期，含，如 2026-05-01"),
+    date_to: str | None = Query(None, description="结束日期，含，如 2026-05-31"),
+    league_id: int | None = Query(None, description="按联赛筛选"),
+    season: int | None = Query(None, description="按赛季（年份）筛选"),
+    team: str | None = Query(None, description="按球队名（含）筛选"),
+    category: str | None = Query(None, description="按模型分组/类别筛选，如 胜平负/WDL"),
     db: Session = Depends(get_db),
 ):
     """整体分类预测准确率：胜负 / 大小球 / 盘口 / 比分Top3。"""
-    return await asyncio.to_thread(_get_accuracy_sync, db, date, category)
+    return await asyncio.to_thread(
+        _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team, category
+    )
 
 
 @router.get("/predictions/value-bets/{fixture_id}")
@@ -224,7 +231,7 @@ async def get_calibration_report():
     return {"report": get_diagnostics()}
 
 
-def _get_accuracy_sync(db, date, category):
+def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, category):
     conditions = ["(p.actual_home_goals IS NOT NULL OR f.goals_home IS NOT NULL)"]
     params: dict = {}
     if date:
@@ -232,6 +239,23 @@ def _get_accuracy_sync(db, date, category):
         conditions.append("p.match_date >= :utc_start AND p.match_date < :utc_end")
         params["utc_start"] = utc_start
         params["utc_end"] = utc_end
+    if date_from:
+        utc_start, _ = _date_to_utc_range(date_from)
+        conditions.append("p.match_date >= :utc_start")
+        params["utc_start"] = utc_start
+    if date_to:
+        _, utc_end = _date_to_utc_range(date_to)
+        conditions.append("p.match_date < :utc_end")
+        params["utc_end"] = utc_end
+    if league_id is not None:
+        conditions.append("f.league_id = :league_id")
+        params["league_id"] = league_id
+    if season is not None:
+        conditions.append("f.season = :season")
+        params["season"] = season
+    if team:
+        conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
+        params["team"] = f"%{team.strip()}%"
     if category:
         conditions.append("f.category = :category")
         params["category"] = category
