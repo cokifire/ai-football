@@ -32,6 +32,7 @@ from sqlalchemy import text
 
 from app.db.session import SessionLocal
 from app.models.standing import Standing
+from app.models.league import League
 
 # league_id -> Flashscore 完整积分榜 URL (竞赛 ID 在 standings/<comp_id>/ 处)
 URLS = {
@@ -72,20 +73,32 @@ def core(s: str) -> str:
 # 队名 -> api_football_id 解析
 # ---------------------------------------------------------------------------
 def load_teams(db):
-    rows = db.execute(text("SELECT id, name FROM teams")).fetchall()
-    # 也纳入已有 standings 的 (team_name, team_id): 当 teams 表规范名与
+    # 取规范名 + logo, 用于解析后回填徽标
+    rows = db.execute(text("SELECT id, name, logo FROM teams")).fetchall()
+    # 也纳入已有 standings 的 (team_name, team_id, team_logo): 当 teams 表规范名与
     # API-Football 实际返回的队名不一致时(如 Athletico-PR), 用 standings 里的
-    # 真实队名+正确 id 兜底, 提升解析命中率。
+    # 真实队名+正确 id+徽标兜底, 提升解析命中率。
     rows += db.execute(
-        text("SELECT DISTINCT team_id, team_name FROM standings WHERE team_name IS NOT NULL")
+        text(
+            "SELECT DISTINCT team_id, team_name, team_logo FROM standings "
+            "WHERE team_name IS NOT NULL"
+        )
     ).fetchall()
     seen, result = set(), []
     for r in rows:
-        rid, rname = r[0], r[1]
+        rid, rname, rlogo = r[0], r[1], (r[2] or "")
         if (rid, rname) in seen:
             continue
         seen.add((rid, rname))
-        result.append({"id": rid, "name": rname, "norm": norm(rname), "core": core(rname)})
+        result.append(
+            {
+                "id": rid,
+                "name": rname,
+                "logo": rlogo,
+                "norm": norm(rname),
+                "core": core(rname),
+            }
+        )
     return result
 
 
@@ -218,9 +231,11 @@ def detect_season(blob: str) -> int:
     return int(m.group(1)) if m else datetime.now().year
 
 
-def _apply(standing: Standing, t: dict, team_name: str):
+def _apply(standing: Standing, t: dict, team_name: str, team_logo: str = "", group_name: str = ""):
     standing.rank = t["rank"]
     standing.team_name = team_name
+    standing.team_logo = team_logo
+    standing.group_name = group_name
     standing.points = t["points"]
     standing.goals_diff = t["gd"]
     standing.form = t["form"]
@@ -264,6 +279,14 @@ def run(league_id: int, db=None, dry_run: bool = False):
     try:
         team_rows = load_teams(db)
         override = load_override()
+        # group_name 用联赛名称(与 API-Football 来源一致, 如 "Allsvenskan"),
+        # 而不是写死的 "overall"
+        league_name = (
+            db.query(League.name)
+            .filter(League.id == league_id)
+            .scalar()
+            or f"league_{league_id}"
+        )
         unresolved = []
 
         for t in teams:
@@ -273,8 +296,10 @@ def run(league_id: int, db=None, dry_run: bool = False):
                 unresolved.append(t["name"])
                 logger.warning(f"  [未解析] {t['name']} (Flashscore hash={fs_hash})")
                 continue
-            # 取 api_football 规范队名
-            team_name = next((r["name"] for r in team_rows if r["id"] == tid), t["name"])
+            # 取 api_football 规范队名 + 徽标 URL
+            row = next((r for r in team_rows if r["id"] == tid), None)
+            team_name = row["name"] if row else t["name"]
+            team_logo = row["logo"] if row else ""
             # 持久化 hash->id 以便审阅/覆盖
             if fs_hash:
                 override[fs_hash] = tid
@@ -294,13 +319,14 @@ def run(league_id: int, db=None, dry_run: bool = False):
                 .first()
             )
             if existing:
-                _apply(existing, t, team_name)
+                _apply(existing, t, team_name, team_logo, league_name)
             else:
                 s = Standing(
                     league_id=league_id, season=season,
-                    group_name="overall", team_id=tid, team_name=team_name,
+                    group_name=league_name, team_id=tid,
+                    team_name=team_name,
                 )
-                _apply(s, t, team_name)
+                _apply(s, t, team_name, team_logo, league_name)
                 db.add(s)
 
         if not dry_run:
