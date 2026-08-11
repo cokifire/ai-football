@@ -240,8 +240,15 @@ export default function FixturesPage() {
     setFixtureDetail(null)
     apiClient
       .get(`/fixtures/${fixture.id}`)
-      .then((res) => setFixtureDetail(res.data))
+      .then((res) => {
+        setSelectedFixture(res.data)
+        setFixtureDetail(res.data)
+      })
       .catch(() => setFixtureDetail(fixture as FixtureDetail))
+  }
+
+  const closeFixtureDetail = () => {
+    setSelectedFixture(null)
   }
 
   const refreshFixtureDetail = () => {
@@ -511,7 +518,7 @@ export default function FixturesPage() {
       {/* 比赛详情弹窗 */}
       <Modal
         open={!!selectedFixture}
-        onClose={() => setSelectedFixture(null)}
+        onClose={closeFixtureDetail}
         title={
           selectedFixture
             ? `${selectedFixture.home_name || ''} vs ${selectedFixture.away_name || ''}`
@@ -803,7 +810,14 @@ export default function FixturesPage() {
         )}
       </Modal>
 
-      <TeamDetailModal teamId={selectedTeamId} onClose={() => setSelectedTeamId(null)} />
+      <TeamDetailModal
+        teamId={selectedTeamId}
+        onClose={() => setSelectedTeamId(null)}
+        onOpenFixture={(fixtureId) => {
+          setSelectedTeamId(null)
+          viewDetail({ id: fixtureId } as Fixture)
+        }}
+      />
     </div>
   )
 }

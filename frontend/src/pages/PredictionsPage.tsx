@@ -67,6 +67,9 @@ export default function PredictionsPage() {
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const [accuracy, setAccuracy] = useState<AccuracyItem[]>([])
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
+  const [selectedRecentFixtureId, setSelectedRecentFixtureId] = useState<number | null>(null)
+  const [recentFixtureDetail, setRecentFixtureDetail] = useState<any>(null)
+  const [recentFixtureLoading, setRecentFixtureLoading] = useState(false)
   const pageSize = 20
 
   // 亚盘盘口以「主队视角」展示: line<0 主队让球, line>0 主队受让, 0 平手
@@ -136,6 +139,17 @@ export default function PredictionsPage() {
   const handleSearch = () => {
     setPage(1)
     fetchPredictions()
+  }
+
+  const openRecentFixture = (fixtureId: number) => {
+    setSelectedTeamId(null)
+    setSelectedRecentFixtureId(fixtureId)
+    setRecentFixtureDetail(null)
+    setRecentFixtureLoading(true)
+    apiClient.get(`/fixtures/${fixtureId}`)
+      .then((res) => setRecentFixtureDetail(res.data))
+      .catch(() => setRecentFixtureDetail(null))
+      .finally(() => setRecentFixtureLoading(false))
   }
 
   const loadOdds = (pred: PredictionDetail) => {
@@ -345,7 +359,70 @@ export default function PredictionsPage() {
       {/* 预测准确率分析（底部图表） */}
       <AccuracyPanel data={accuracy} />
 
-      <TeamDetailModal teamId={selectedTeamId} onClose={() => setSelectedTeamId(null)} />
+      <TeamDetailModal
+        teamId={selectedTeamId}
+        onClose={() => setSelectedTeamId(null)}
+        onOpenFixture={openRecentFixture}
+      />
+
+      {/* 从球队近况打开的比赛详情，留在预测中心当前页面展示 */}
+      <Modal
+        open={selectedRecentFixtureId !== null}
+        onClose={() => setSelectedRecentFixtureId(null)}
+        title={recentFixtureDetail
+          ? `${recentFixtureDetail.home_name || ''} vs ${recentFixtureDetail.away_name || ''}`
+          : '比赛详情'}
+        size="xl"
+      >
+        {recentFixtureLoading ? <Loading /> : recentFixtureDetail ? (
+          <div className="space-y-6">
+            <div className="flex items-center justify-center gap-4 sm:gap-6 py-4">
+              <div className="text-center min-w-0 flex-1">
+                {recentFixtureDetail.home_logo && <img src={recentFixtureDetail.home_logo} alt="" className="w-12 h-12 mx-auto object-contain" />}
+                <p className="font-bold mt-1 break-words">{recentFixtureDetail.home_name || '主队'}</p>
+              </div>
+              <div className="text-center shrink-0">
+                <div className="text-3xl font-bold">{recentFixtureDetail.goals_home ?? '-'} - {recentFixtureDetail.goals_away ?? '-'}</div>
+                <span className="badge-gray">{recentFixtureDetail.status_short || '-'}</span>
+                <p className="text-xs text-gray-400 mt-1">{recentFixtureDetail.date || ''}</p>
+              </div>
+              <div className="text-center min-w-0 flex-1">
+                {recentFixtureDetail.away_logo && <img src={recentFixtureDetail.away_logo} alt="" className="w-12 h-12 mx-auto object-contain" />}
+                <p className="font-bold mt-1 break-words">{recentFixtureDetail.away_name || '客队'}</p>
+              </div>
+            </div>
+            {(recentFixtureDetail.round || recentFixtureDetail.venue_name) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                {recentFixtureDetail.round && <div><span className="text-gray-500">轮次：</span>{recentFixtureDetail.round}</div>}
+                {recentFixtureDetail.venue_name && <div><span className="text-gray-500">场馆：</span>{recentFixtureDetail.venue_name}{recentFixtureDetail.venue_city ? `，${recentFixtureDetail.venue_city}` : ''}</div>}
+              </div>
+            )}
+            {recentFixtureDetail.events?.length > 0 && (
+              <div>
+                <h4 className="font-semibold mb-2">比赛事件</h4>
+                <div className="space-y-1">{recentFixtureDetail.events.map((event: any, i: number) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2 p-1.5 rounded text-sm hover:bg-gray-50">
+                    <span className="w-10 text-center font-mono text-xs font-bold bg-gray-100 rounded px-1 py-0.5">{event.elapsed ?? '-'}'</span>
+                    <span className="badge-blue text-xs">{event.type || '事件'}</span>
+                    <span>{event.player_name || '-'}</span>
+                    <span className="text-gray-400 text-xs">{event.team_name || ''}</span>
+                    {event.detail && <span className="text-gray-400 text-xs">({event.detail})</span>}
+                  </div>
+                ))}</div>
+              </div>
+            )}
+            {recentFixtureDetail.statistics?.length > 0 && (
+              <div>
+                <h4 className="font-semibold mb-2">技术统计</h4>
+                <div className="table-container"><table><thead><tr><th>球队</th><th>统计项</th><th>数值</th></tr></thead><tbody>
+                  {recentFixtureDetail.statistics.map((stat: any, i: number) => <tr key={i}><td>{stat.team_name || '-'}</td><td>{stat.stat_type || '-'}</td><td>{stat.stat_value ?? '-'}</td></tr>)}
+                </tbody></table></div>
+              </div>
+            )}
+            {!recentFixtureDetail.events?.length && !recentFixtureDetail.statistics?.length && <p className="text-sm text-gray-400 text-center">暂无详细比赛数据</p>}
+          </div>
+        ) : <p className="text-sm text-gray-500 text-center py-4">比赛详情加载失败</p>}
+      </Modal>
 
       {/* 预测详情弹窗 - 直接从列表数据中获取 */}
       <Modal

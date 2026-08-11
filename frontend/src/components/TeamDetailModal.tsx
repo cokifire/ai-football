@@ -28,7 +28,11 @@ export interface TeamDetail {
   recent_fixtures?: RecentFixture[]
 }
 
-export default function TeamDetailModal({ teamId, onClose }: { teamId: number | null; onClose: () => void }) {
+export default function TeamDetailModal({ teamId, onClose, onOpenFixture }: {
+  teamId: number | null
+  onClose: () => void
+  onOpenFixture?: (fixtureId: number) => void
+}) {
   const [team, setTeam] = useState<TeamDetail | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -69,7 +73,7 @@ export default function TeamDetailModal({ teamId, onClose }: { teamId: number | 
                   const ga = isHome ? f.goals_away : f.goals_home
                   const result = gf == null || ga == null ? '-' : gf > ga ? '胜' : gf < ga ? '负' : '平'
                   const resultClass = result === '胜' ? 'badge-green' : result === '负' ? 'badge-red' : 'badge-yellow'
-                  return <div key={f.id} className="px-3 py-3 text-sm">
+                  return <button key={f.id} type="button" onClick={() => onOpenFixture?.(f.id)} className="block w-full text-left px-3 py-3 text-sm hover:bg-primary-50 transition-colors">
                     <div className="flex items-center gap-2 mb-2 text-xs text-gray-400">
                       <span>{f.date?.substring(0, 10) || '-'}</span>
                       <span className="truncate">{f.league_name || '-'}</span>
@@ -81,7 +85,7 @@ export default function TeamDetailModal({ teamId, onClose }: { teamId: number | 
                       <span className="min-w-0 flex-1 break-words leading-tight">{f.away_name || '-'}</span>
                       <span className={`${resultClass} shrink-0`}>{result}</span>
                     </div>
-                  </div>
+                  </button>
                 })}
               </div>
             ) : <p className="text-sm text-gray-400 py-3">暂无已完赛记录</p>}
