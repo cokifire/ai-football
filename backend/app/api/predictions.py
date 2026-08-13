@@ -177,6 +177,8 @@ async def predict_from_odds_endpoint(fixture_id: int, _: AdminAuth):
 @router.get("/predictions")
 async def get_predictions(
     date: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     category: str | None = Query(None),
     league_id: int | None = Query(None),
     season: int | None = Query(None),
@@ -186,7 +188,7 @@ async def get_predictions(
     db: Session = Depends(get_db),
 ):
     return await asyncio.to_thread(
-        _get_predictions_sync, db, date, category, league_id, season, team, page, page_size
+        _get_predictions_sync, db, date, date_from, date_to, category, league_id, season, team, page, page_size
     )
 
 
@@ -299,7 +301,7 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
     return {"data": data}
 
 
-def _get_predictions_sync(db, date, category, league_id, season, team, page, page_size):
+def _get_predictions_sync(db, date, date_from, date_to, category, league_id, season, team, page, page_size):
     try:
         conditions = []
         params: dict = {}
@@ -308,6 +310,14 @@ def _get_predictions_sync(db, date, category, league_id, season, team, page, pag
             conditions.append("p.match_date >= :utc_start AND p.match_date < :utc_end")
             params["utc_start"] = utc_start
             params["utc_end"] = utc_end
+        if date_from:
+            utc_start, _ = _date_to_utc_range(date_from)
+            conditions.append("p.match_date >= :date_from_utc")
+            params["date_from_utc"] = utc_start
+        if date_to:
+            _, utc_end = _date_to_utc_range(date_to)
+            conditions.append("p.match_date < :date_to_utc")
+            params["date_to_utc"] = utc_end
         if category:
             conditions.append("f.category = :category")
             params["category"] = category

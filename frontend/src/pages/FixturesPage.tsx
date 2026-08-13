@@ -36,6 +36,12 @@ interface Team {
   venue_capacity?: number
 }
 
+interface LeagueOption {
+  id: number
+  name: string
+  name_zh?: string
+}
+
 interface FixtureDetail extends Fixture {
   events?: FixtureAPIEvent[]
   lineups?: FixtureAPILineup[]
@@ -185,6 +191,7 @@ export default function FixturesPage() {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [leagueId, setLeagueId] = useState('')
+  const [leagues, setLeagues] = useState<LeagueOption[]>([])
   const [season, setSeason] = useState('')
   const [status, setStatus] = useState('')
   const [date, setDate] = useState(getBeijingToday())
@@ -192,6 +199,7 @@ export default function FixturesPage() {
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
+  const [apiQuotaMessage, setApiQuotaMessage] = useState<string | null>(null)
   const [fetchingXgId, setFetchingXgId] = useState<number | null>(null)
   const [fetchXgError, setFetchXgError] = useState<string | null>(null)
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
@@ -203,6 +211,13 @@ export default function FixturesPage() {
   const [oddsError, setOddsError] = useState<string | null>(null)
   const [fetchingOddsIds, setFetchingOddsIds] = useState<Set<number>>(new Set())
   const pageSize = 20
+
+  useEffect(() => {
+    apiClient
+      .get('/leagues', { params: { enabled: true, page_size: 200 } })
+      .then((res) => setLeagues(res.data.data || []))
+      .catch(() => setLeagues([]))
+  }, [])
 
   const fetchFixtures = () => {
     setLoading(true)
@@ -257,7 +272,13 @@ export default function FixturesPage() {
     apiClient
       .post(`/fixtures/${selectedFixture.id}/refresh`)
       .then((res) => setFixtureDetail(res.data))
-      .catch(() => {
+      .catch((err) => {
+        const status = err?.response?.status
+        const detail = err?.response?.data?.detail
+        if (status === 429 || (typeof detail === 'string' && /额度|quota|rate limit|ratelimit/i.test(detail))) {
+          setApiQuotaMessage(typeof detail === 'string' ? detail : 'Football API 今日请求额度已用完，请稍后再试')
+          return
+        }
         // 刷新失败（如 API 限额/网络异常）时回退到本地 DB 数据
         apiClient
           .get(`/fixtures/${selectedFixture.id}`)
@@ -363,8 +384,19 @@ export default function FixturesPage() {
         <div className="card-body">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">联赛ID</label>
-              <input className="input" placeholder="联赛ID" value={leagueId} onChange={(e) => setLeagueId(e.target.value)} />
+              <label className="block text-xs text-gray-500 mb-1">联赛</label>
+              <select
+                className="input"
+                value={leagueId}
+                onChange={(e) => setLeagueId(e.target.value)}
+              >
+                <option value="">全部</option>
+                {leagues.map((league) => (
+                  <option key={league.id} value={league.id}>
+                    {league.name_zh || league.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">赛季</label>
@@ -694,6 +726,24 @@ export default function FixturesPage() {
         ) : (
           <Loading />
         )}
+      </Modal>
+
+      <Modal
+        open={!!apiQuotaMessage}
+        onClose={() => setApiQuotaMessage(null)}
+        title="API 请求额度已用完"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            {apiQuotaMessage || 'Football API 今日请求额度已用完，请稍后再试。'}
+          </p>
+          <div className="flex justify-end">
+            <button className="btn btn-primary" onClick={() => setApiQuotaMessage(null)}>
+              知道了
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* 赔率弹窗 */}

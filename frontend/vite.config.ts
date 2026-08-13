@@ -12,6 +12,11 @@ export default defineConfig({
     // 监听所有网卡，允许从其他机器通过 IP 访问 dev server（远程调试必需）
     host: true,
     allowedHosts: ['goal.ayametal.cc.cd'],
+    // 服务器的 inotify watcher 配额可能被其它开发工具占满，使用轮询避免 Vite 启动失败。
+    watch: {
+      usePolling: true,
+      interval: 1000,
+    },
     proxy: {
       '/api': {
         target: apiTarget,

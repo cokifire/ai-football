@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import Pagination from '../components/Pagination'
@@ -54,16 +54,37 @@ interface PredictionDetail {
   } | null
 }
 
+interface FilterValues {
+  dateFrom: string
+  dateTo: string
+  leagueId: string
+  season: string
+  team: string
+}
+
+interface LeagueOption {
+  id: number
+  name: string
+  name_zh?: string
+  seasons?: { year: number }[]
+}
+
 export default function PredictionsPage() {
   const [predictions, setPredictions] = useState<PredictionDetail[]>([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
-  const [date, setDate] = useState('')
-  const [category, setCategory] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [leagueId, setLeagueId] = useState('')
   const [season, setSeason] = useState('')
   const [team, setTeam] = useState('')
+  const [appliedFilters, setAppliedFilters] = useState<FilterValues>({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '' })
+  const [leagues, setLeagues] = useState<LeagueOption[]>([])
+  const seasons = useMemo(() => {
+    const league = leagues.find((item) => item.id === Number(leagueId))
+    return league?.seasons?.map((item) => item.year) || []
+  }, [leagues, leagueId])
   const [selectedPred, setSelectedPred] = useState<PredictionDetail | null>(null)
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
   const [selectedRecentFixtureId, setSelectedRecentFixtureId] = useState<number | null>(null)
@@ -103,11 +124,11 @@ export default function PredictionsPage() {
         params: {
           page,
           page_size: pageSize,
-          date: date || undefined,
-          category: category || undefined,
-          league_id: leagueId.trim() || undefined,
-          season: season.trim() || undefined,
-          team: team.trim() || undefined,
+          date_from: appliedFilters.dateFrom || undefined,
+          date_to: appliedFilters.dateTo || undefined,
+          league_id: appliedFilters.leagueId.trim() || undefined,
+          season: appliedFilters.season.trim() || undefined,
+          team: appliedFilters.team.trim() || undefined,
         },
       })
       .then((res) => {
@@ -119,12 +140,28 @@ export default function PredictionsPage() {
   }
 
   useEffect(() => {
+    apiClient.get('/leagues', { params: { enabled: true, page_size: 200 } })
+      .then((res) => setLeagues(res.data.data || []))
+      .catch(() => setLeagues([]))
+  }, [])
+
+  useEffect(() => {
     fetchPredictions()
-  }, [page])
+  }, [page, appliedFilters])
 
   const handleSearch = () => {
     setPage(1)
-    fetchPredictions()
+    setAppliedFilters({ dateFrom, dateTo, leagueId, season, team })
+  }
+
+  const resetFilters = () => {
+    setDateFrom('')
+    setDateTo('')
+    setLeagueId('')
+    setSeason('')
+    setTeam('')
+    setPage(1)
+    setAppliedFilters({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '' })
   }
 
   const openRecentFixture = (fixtureId: number) => {
@@ -200,32 +237,43 @@ export default function PredictionsPage() {
     <div>
       <h1 className="text-2xl font-bold mb-6">预测中心</h1>
 
-      {/* 筛选 */}
+      {/* 统计筛选：同时控制预测结果与底部预测统计 */}
       <div className="card mb-6">
-        <div className="card-body">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div className="border-b border-gray-200 bg-gray-50/70 px-6 py-4">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-700">筛选条件</span>
+            {(appliedFilters.dateFrom || appliedFilters.dateTo || appliedFilters.leagueId || appliedFilters.season || appliedFilters.team) && <span className="badge-gray">已应用</span>}
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">日期</label>
-              <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
+              <label className="block text-xs font-medium text-gray-500 mb-1">起始日期</label>
+              <input type="date" className="input" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">分类</label>
-              <input className="input" placeholder="分类过滤" value={category} onChange={(e) => setCategory(e.target.value)} />
+              <label className="block text-xs font-medium text-gray-500 mb-1">结束日期</label>
+              <input type="date" className="input" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">联赛ID</label>
-              <input className="input" placeholder="联赛ID" value={leagueId} onChange={(e) => setLeagueId(e.target.value)} />
+              <label className="block text-xs font-medium text-gray-500 mb-1">联赛</label>
+              <select className="input" value={leagueId} onChange={(e) => { setLeagueId(e.target.value); setSeason('') }}>
+                <option value="">全部</option>
+                {leagues.map((league) => <option key={league.id} value={league.id}>{league.name_zh || league.name}</option>)}
+              </select>
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">赛季</label>
-              <input className="input" placeholder="例: 2024" value={season} onChange={(e) => setSeason(e.target.value)} />
+              <label className="block text-xs font-medium text-gray-500 mb-1">赛季</label>
+              <select className="input" value={season} disabled={!leagueId || seasons.length === 0} onChange={(e) => setSeason(e.target.value)}>
+                <option value="">全部</option>
+                {seasons.map((year) => <option key={year} value={year}>{year}</option>)}
+              </select>
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">球队名称</label>
-              <input className="input" placeholder="球队名称" value={team} onChange={(e) => setTeam(e.target.value)} />
+              <label className="block text-xs font-medium text-gray-500 mb-1">球队</label>
+              <input className="input" placeholder="队名含…" value={team} onChange={(e) => setTeam(e.target.value)} />
             </div>
-            <div className="flex items-end">
-              <button className="btn btn-primary w-full" onClick={handleSearch}>搜索</button>
+            <div className="flex items-end gap-2">
+              <button className="btn btn-primary btn-sm" onClick={handleSearch}>搜索</button>
+              <button className="btn btn-secondary btn-sm" onClick={resetFilters}>重置</button>
             </div>
           </div>
         </div>
@@ -343,7 +391,7 @@ export default function PredictionsPage() {
       )}
 
       {/* 预测准确率分析（底部图表） */}
-      <AccuracyPanel />
+      <AccuracyPanel filters={appliedFilters} />
 
       <TeamDetailModal
         teamId={selectedTeamId}

@@ -5,9 +5,9 @@ Wants=mysql.service
 
 [Service]
 Type=simple
-User=cokifire
-Group=cokifire
-WorkingDirectory=/home/cokifire/project/ai-football/frontend
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ai-football/frontend
 
 # node/npm 由 apt 安装，位于 /usr/bin（已在 systemd 默认 PATH 中）。
 # 这里仍显式声明 PATH，避免某些最小化环境下缺省 PATH 不含 /usr/bin。
@@ -15,7 +15,7 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/npm run dev
 
 # 数据库/依赖未就绪时避免无限快速重启风暴
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 # 后端连接参数来自 backend/.env（由 run-backend.mjs 在 cwd=backend 下读取）。

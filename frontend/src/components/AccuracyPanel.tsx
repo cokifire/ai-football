@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useState } from 'react'
 import apiClient from '../api/client'
 
 interface AccuracyItem {
@@ -13,78 +13,30 @@ interface AccuracyResponse {
   data: AccuracyItem[]
 }
 
-interface LeagueOption {
-  id: number
-  name: string
-  name_zh?: string
-  seasons?: { year: number }[]
+interface AccuracyFilters {
+  dateFrom: string
+  dateTo: string
+  leagueId: string
+  season: string
+  team: string
 }
 
-function useDebounced<T>(value: T, delay = 400): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay)
-    return () => clearTimeout(id)
-  }, [value, delay])
-  return debounced
-}
-
-const CATEGORIES = ['胜平负', 'WDL', '大小球', '亚洲盘', '比分']
-
-export default function AccuracyPanel() {
+export default function AccuracyPanel({ filters }: { filters: AccuracyFilters }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<AccuracyItem[]>([])
 
-  // 联赛 / 赛季选项
-  const [leagues, setLeagues] = useState<LeagueOption[]>([])
-  const [leagueId, setLeagueId] = useState<number | ''>('')
-  const [season, setSeason] = useState<number | ''>('')
-  const seasons = useMemo(() => {
-    const lg = leagues.find((l) => l.id === leagueId)
-    return lg?.seasons?.map((s) => s.year) || []
-  }, [leagues, leagueId])
-
-  // 筛选条件
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [team, setTeam] = useState('')
-  const [category, setCategory] = useState<string | ''>('')
-
-  const debTeam = useDebounced(team, 500)
-
-  // 加载已启用联赛（含赛季）
   useEffect(() => {
-    let cancelled = false
-    apiClient
-      .get('/leagues', { params: { enabled: true, page_size: 200 } })
-      .then((res) => {
-        if (!cancelled) setLeagues(res.data.data || [])
-      })
-      .catch(() => {
-        /* 联赛列表失败不阻断准确率面板 */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // 联赛变化时重置赛季选择
-  useEffect(() => {
-    setSeason('')
-  }, [leagueId])
-
-  const fetchAccuracy = useCallback(async () => {
+    const fetchAccuracy = async () => {
     setLoading(true)
     setError(null)
     try {
       const params: Record<string, unknown> = {}
-      if (dateFrom) params.date_from = dateFrom
-      if (dateTo) params.date_to = dateTo
-      if (leagueId !== '') params.league_id = leagueId
-      if (season !== '') params.season = season
-      if (debTeam.trim()) params.team = debTeam.trim()
-      if (category) params.category = category
+      if (filters.dateFrom) params.date_from = filters.dateFrom
+      if (filters.dateTo) params.date_to = filters.dateTo
+      if (filters.leagueId.trim()) params.league_id = filters.leagueId.trim()
+      if (filters.season.trim()) params.season = filters.season.trim()
+      if (filters.team.trim()) params.team = filters.team.trim()
       const res = await apiClient.get<AccuracyResponse>('/predictions/accuracy', { params })
       setData(res.data.data || [])
     } catch (e: unknown) {
@@ -94,170 +46,73 @@ export default function AccuracyPanel() {
     } finally {
       setLoading(false)
     }
-  }, [dateFrom, dateTo, leagueId, season, debTeam, category])
-
-  useEffect(() => {
+    }
     fetchAccuracy()
-  }, [fetchAccuracy])
+  }, [filters.dateFrom, filters.dateTo, filters.leagueId, filters.season, filters.team])
 
-  const resetFilters = () => {
-    setDateFrom('')
-    setDateTo('')
-    setLeagueId('')
-    setSeason('')
-    setTeam('')
-    setCategory('')
-  }
-
-  const hasFilter = dateFrom || dateTo || leagueId !== '' || season !== '' || debTeam.trim() || category
-
-  const inputCls =
-    'rounded-md border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500'
-  const labelCls = 'text-xs font-medium text-gray-500 dark:text-gray-400'
-  const cell = 'px-4 py-3 text-sm'
+  const categoryColors = [
+    'bg-primary-500',
+    'bg-blue-500',
+    'bg-amber-500',
+    'bg-violet-500',
+    'bg-rose-500',
+  ]
 
   return (
-    <div className="rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-gray-200 dark:border-slate-700 px-4 py-3">
-        <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">筛选</span>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>联赛</label>
-          <select
-            className={inputCls}
-            value={leagueId}
-            onChange={(e) => setLeagueId(e.target.value === '' ? '' : Number(e.target.value))}
-          >
-            <option value="">全部</option>
-            {leagues.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name_zh || l.name}
-              </option>
-            ))}
-          </select>
+    <div className="card mt-6 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-5">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-primary-500" />
+            <h2 className="text-lg font-bold text-gray-900">预测统计</h2>
+          </div>
+          <p className="mt-1 text-sm text-gray-500">按预测类别查看模型的历史命中表现</p>
         </div>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>赛季</label>
-          <select
-            className={inputCls}
-            value={season}
-            onChange={(e) => setSeason(e.target.value === '' ? '' : Number(e.target.value))}
-            disabled={!leagueId || seasons.length === 0}
-          >
-            <option value="">全部</option>
-            {seasons.map((y) => (
-              <option key={y} value={y}>
-                {y}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>起始日期</label>
-          <input
-            type="date"
-            className={inputCls}
-            value={dateFrom}
-            max={dateTo || undefined}
-            onChange={(e) => setDateFrom(e.target.value)}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>结束日期</label>
-          <input
-            type="date"
-            className={inputCls}
-            value={dateTo}
-            min={dateFrom || undefined}
-            onChange={(e) => setDateTo(e.target.value)}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>球队</label>
-          <input
-            type="text"
-            className={inputCls}
-            placeholder="队名含…"
-            value={team}
-            onChange={(e) => setTeam(e.target.value)}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>类别</label>
-          <select
-            className={inputCls}
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-          >
-            <option value="">全部</option>
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          type="button"
-          onClick={resetFilters}
-          disabled={!hasFilter}
-          className="self-end rounded-md border border-gray-300 dark:border-slate-600 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 disabled:opacity-40"
-        >
-          重置
-        </button>
+        <span className="badge-blue">{data.length} 个类别</span>
       </div>
 
       {error && (
         <div className="px-4 py-3 text-sm text-red-600 dark:text-red-400">{error}</div>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="border-b border-gray-200 dark:border-slate-700 text-gray-500 dark:text-gray-400">
-              <th className={cell + ' font-medium'}>预测类别</th>
-              <th className={cell + ' font-medium'}>样本数</th>
-              <th className={cell + ' font-medium'}>命中数</th>
-              <th className={cell + ' font-medium'}>准确率</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row) => (
-              <tr
-                key={row.key}
-                className="border-b border-gray-100 dark:border-slate-800 last:border-0"
-              >
-                <td className={cell + ' font-medium text-gray-800 dark:text-gray-100'}>
-                  {row.label}
-                </td>
-                <td className={cell + ' text-gray-600 dark:text-gray-300'}>{row.total}</td>
-                <td className={cell + ' text-gray-600 dark:text-gray-300'}>{row.correct}</td>
-                <td className={cell}>
-                  {row.accuracy === null ? (
-                    <span className="text-gray-400">—</span>
-                  ) : (
-                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                      {(row.accuracy * 100).toFixed(1)}%
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {!loading && data.length === 0 && !error && (
-              <tr>
-                <td colSpan={4} className={cell + ' text-center text-gray-400'}>
-                  暂无符合条件的预测数据
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="px-6 py-5">
+        <div className="mb-3 hidden grid-cols-[220px_140px_minmax(180px,1fr)] gap-4 px-4 text-xs font-medium uppercase tracking-wide text-gray-400 sm:grid">
+          <span>预测类别</span>
+          <span>样本表现</span>
+          <span>成功率</span>
+        </div>
+        <div className="space-y-3">
+          {data.map((row, index) => {
+            const percentage = row.accuracy === null ? 0 : Math.min(100, Math.max(0, row.accuracy * 100))
+            return (
+              <div key={row.key} className="grid gap-4 rounded-xl border border-gray-200 bg-white p-4 transition-colors hover:border-primary-200 hover:bg-primary-50/30 sm:grid-cols-[220px_140px_minmax(180px,1fr)] sm:items-center sm:gap-4">
+                <div className="flex items-center gap-3">
+                  <span className={`h-9 w-1.5 rounded-full ${categoryColors[index % categoryColors.length]}`} />
+                  <div>
+                    <p className="font-semibold text-gray-800">{row.label}</p>
+                    <p className="mt-0.5 text-xs text-gray-400">历史预测表现</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-5 text-sm">
+                  <div><p className="text-xs text-gray-400">命中</p><p className="mt-0.5 font-semibold text-gray-700">{row.correct}</p></div>
+                  <div><p className="text-xs text-gray-400">样本</p><p className="mt-0.5 font-semibold text-gray-700">{row.total}</p></div>
+                </div>
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-gray-400">成功率</span>
+                    {row.accuracy === null ? <span className="font-semibold text-gray-400">—</span> : <span className="font-bold text-primary-600">{percentage.toFixed(1)}%</span>}
+                  </div>
+                  <div className="progress-bar h-2.5 bg-gray-100">
+                    <div className="progress-fill bg-primary-500" style={{ width: `${percentage}%` }} />
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+          {!loading && data.length === 0 && !error && (
+            <div className="rounded-xl border border-dashed border-gray-300 px-4 py-10 text-center text-sm text-gray-400">暂无符合条件的预测数据</div>
+          )}
+        </div>
       </div>
 
       {loading && (

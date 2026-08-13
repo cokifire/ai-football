@@ -25,6 +25,10 @@ API_RETRY_MAX = 3            # 瞬时故障重试次数
 API_RETRY_BASE_DELAY = 1.5   # 退避基数(秒)
 
 
+class ApiFootballQuotaExceeded(Exception):
+    """API-Football 当日请求额度已耗尽。"""
+
+
 def _api_get_http(endpoint: str, params: dict) -> httpx.Response:
     """带 TLS/连接超时重试的 API GET 请求 (返回 httpx.Response)
 
@@ -43,7 +47,9 @@ def _api_get_http(endpoint: str, params: dict) -> httpx.Response:
     for attempt in range(API_RETRY_MAX):
         try:
             r = httpx.get(url, headers=headers, params=params, timeout=timeout)
-            if r.status_code in (429, 500, 502, 503, 504):
+            if r.status_code == 429:
+                return r
+            if r.status_code in (500, 502, 503, 504):
                 wait = API_RETRY_BASE_DELAY * (2 ** attempt)
                 logger.warning(
                     f"API {r.status_code} 瞬时错误 {endpoint}, {wait:.1f}s 后重试 #{attempt+1}"
@@ -194,6 +200,8 @@ def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
         response = _api_get_http("fixtures", params)
         remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
         logger.debug(f"API[{response.status_code}] fixtures params={params}  remaining={remaining}")
+        if response.status_code == 429 or remaining == "0":
+            raise ApiFootballQuotaExceeded()
         response.raise_for_status()
         data = response.json()
 
@@ -202,8 +210,16 @@ def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
             err_msg = errors if isinstance(errors, str) else "; ".join(
                 f"{k}: {v}" for k, v in errors.items()
             ) if isinstance(errors, dict) else str(errors)
+            lowered = err_msg.lower()
+            if (isinstance(errors, dict) and "requests" in errors) or any(term in lowered for term in (
+                "rate limit", "ratelimit", "quota", "daily request", "requests limit",
+                "too many requests", "allowed number of requests", "exceeded your allowed",
+            )):
+                raise ApiFootballQuotaExceeded()
             return (None, err_msg)
         return (data, None)
+    except ApiFootballQuotaExceeded:
+        raise
     except Exception as e:
         return (None, str(e))
 

@@ -85,9 +85,11 @@ async def refresh_fixture_endpoint(fixture_id: int, _: AdminAuth, db: Session = 
     """手动刷新: 重新从 API-Football 拉取并更新该场比赛主表与子数据，返回最新详情。"""
     if not settings.api_football_key:
         raise HTTPException(status_code=503, detail="未配置 API_FOOTBALL_KEY，无法刷新")
-    from app.services.fixture_service import refresh_fixture
+    from app.services.fixture_service import ApiFootballQuotaExceeded, refresh_fixture
     try:
         ok = await asyncio.to_thread(refresh_fixture, db, fixture_id)
+    except ApiFootballQuotaExceeded:
+        raise HTTPException(status_code=429, detail="Football API 今日请求额度已用完，请稍后再试")
     except Exception as e:
         logger.error(f"刷新比赛失败 fixture={fixture_id}: {e}")
         raise HTTPException(status_code=502, detail=f"刷新失败: {e}")
