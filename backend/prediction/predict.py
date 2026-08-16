@@ -488,6 +488,41 @@ def _odds_to_text(odds_data: list) -> str:
     return "\n" + "\n".join(lines)
 
 
+def _fetch_weather_text(city_name: str) -> str:
+    """获取比赛城市的天气及海拔，转换为供 LLM 使用的文本。"""
+    if not city_name:
+        return "未提供比赛城市，无法获取天气及海拔数据。"
+    if not settings.openweathermap_api_key:
+        return "未配置天气 API key，无法获取天气及海拔数据。"
+
+    try:
+        from tools.weather import get_weather_and_elevation
+
+        raw = get_weather_and_elevation(city_name, settings.openweathermap_api_key)
+        data = json.loads(raw)
+        if data.get("status") != "success":
+            return "天气及海拔数据获取失败，不能据此推断外部环境。"
+
+        location = data.get("location", {})
+        weather = data.get("weather", {})
+        elevation = location.get("elevation_meters")
+        elevation_text = f"{elevation}米" if elevation is not None else "未知"
+        weather_text = (
+            f"城市:{location.get('city') or city_name} "
+            f"天气:{weather.get('description', '未知')} "
+            f"气温:{weather.get('temperature_celsius', '未知')}°C "
+            f"体感:{weather.get('feels_like_celsius', '未知')}°C "
+            f"最低/最高:{weather.get('temp_min', '未知')}/{weather.get('temp_max', '未知')}°C "
+            f"湿度:{weather.get('humidity_percent', '未知')}% "
+            f"气压:{weather.get('pressure_hpa', '未知')}hPa "
+            f"风速:{weather.get('wind_speed_m_s', '未知')}m/s "
+            f"海拔:{elevation_text}"
+        )
+        return weather_text
+    except Exception:  # noqa: BLE001 - 外部环境数据不得阻断主预测流程
+        return "天气及海拔数据处理失败，不能据此推断外部环境。"
+
+
 def _fetch_standings_text(db, team_id, league_id, season) -> str:
     row = db.execute(text("""
         SELECT `rank`, points, goals_diff, all_played, all_win, all_draw, all_lose
@@ -707,7 +742,7 @@ def _competition_context(fixture: dict) -> str:
 def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       home_stats: str, away_stats: str,
                       home_standings: str, away_standings: str,
-                      lineups_text: str) -> str:
+                      lineups_text: str, weather_text: str = "") -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -725,6 +760,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     赛事属性:{competition_context}
     阵容信息:{lineups_text}
     比赛场地:{fixture.get('venue_city','')}
+    比赛地天气及海拔:{weather_text}
 
     # 核心数据输入（请基于以下信息进行推理）
 
@@ -806,7 +842,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             SELECT f.id, f.home_id, f.away_id, f.league_id, f.season,
                    f.date, f.goals_home, f.goals_away,
                    f.home_name, f.away_name, f.home_logo, f.away_logo,
-                   f.league_name
+                   f.league_name, f.venue_name, f.venue_city
             FROM fixtures f WHERE f.id = :fid
         """), {"fid": fixture_id}).fetchone()
         if not row:
@@ -871,6 +907,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'])
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
+        weather_text = _fetch_weather_text(fixture.get('venue_city'))
 
         # 5. LLM
         llm_result = None
@@ -878,7 +915,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
-                                       lineups_text)
+                                       lineups_text, weather_text)
             llm_result = _call_llm(prompt)
         except Exception as e:
             logger.debug(f"LLM失败: {e}")
@@ -893,6 +930,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         result = {
             **xgb_result,
             'llm': {**llm_result, 'home_stats': home_stats, 'away_stats': away_stats},
+            'weather': weather_text,
             'model_group': model_group,
         }
         logger.info(
@@ -1037,4 +1075,3 @@ def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
         "now": now,
     })
     db.commit()
-

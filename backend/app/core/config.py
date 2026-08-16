@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     api_football_key: str = ""
     api_football_base_url: str = ""
 
+    # 天气数据（OpenWeatherMap）
+    openweathermap_api_key: str = ""
+
     # DeepSeek
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
