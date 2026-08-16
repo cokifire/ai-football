@@ -34,12 +34,74 @@ def _sync_from_flashscore(db: Session, league_id: int) -> bool:
         return False
 
 
-def sync_standings(db: Session) -> None:
-    """遍历已启用联赛的当前赛季，拉取积分榜数据"""
-    if not settings.api_football_key:
-        logger.warning("API_FOOTBALL_KEY 未配置，跳过积分榜同步")
-        return
+def _sync_from_api_football(db: Session, season: Season) -> bool:
+    """使用 API-Football 同步单个积分榜。
 
+    这是保留的备用实现。目前积分榜同步不会调用此函数；如果未来需要
+    临时切回 API-Football，可在 sync_standings() 中显式接入。
+    """
+    try:
+        response = httpx.get(
+            f"{settings.api_football_base_url}/standings",
+            headers={"x-apisports-key": settings.api_football_key},
+            params={"league": season.league_id, "season": season.year},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("errors"):
+            logger.warning(
+                f"联赛 {season.league_id} 赛季 {season.year} 积分榜被 API-Football 拒绝: "
+                f"{data['errors']}"
+            )
+            return False
+    except Exception as e:
+        logger.error(f"API-Football 拉取联赛 {season.league_id} 积分榜失败: {e}")
+        return False
+
+    for entry in data.get("response", []):
+        league_info = entry.get("league", {})
+        lid = league_info.get("id") or season.league_id
+        stat_season = league_info.get("season") or season.year
+
+        # standings 是二维数组: [[group1...], [group2...]]
+        for group in league_info.get("standings", []):
+            for row in group:
+                team = row.get("team") or {}
+                all_stats = row.get("all") or {}
+                home_stats = row.get("home") or {}
+                away_stats = row.get("away") or {}
+                team_id = team.get("id")
+                if not team_id:
+                    continue
+
+                standing = (
+                    db.query(Standing)
+                    .filter(
+                        Standing.league_id == lid,
+                        Standing.season == stat_season,
+                        Standing.group_name == row.get("group"),
+                        Standing.team_id == team_id,
+                    )
+                    .first()
+                )
+                if standing:
+                    _update_standing(standing, row, team, all_stats, home_stats, away_stats)
+                else:
+                    db.add(_make_standing(
+                        lid, stat_season, row, team, all_stats, home_stats, away_stats
+                    ))
+
+    db.commit()
+    return True
+
+
+def sync_standings(db: Session) -> None:
+    """遍历已启用联赛的当前赛季，只从 Flashscore 拉取积分榜。
+
+    API-Football 相关代码保留在 _sync_from_api_football() 中作为未来备用，
+    但当前同步路径不会访问 API-Football，也不依赖其 key 或 base URL。
+    """
     seasons = (
         db.query(Season)
         .join(League)
@@ -50,77 +112,21 @@ def sync_standings(db: Session) -> None:
         logger.warning("没有找到当前赛季，跳过积分榜同步")
         return
 
-    scraped_flashscore = False
-    for season in seasons:
-        logger.info(f"拉取联赛 {season.league_id} 赛季 {season.year} 的积分榜...")
-
-        try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/standings",
-                headers={"x-apisports-key": settings.api_football_key},
-                params={"league": season.league_id, "season": season.year},
-                timeout=30.0,
+    for index, season in enumerate(seasons):
+        logger.info(
+            f"从 Flashscore 拉取联赛 {season.league_id} 赛季 {season.year} 的积分榜..."
+        )
+        if not _sync_from_flashscore(db, season.league_id):
+            logger.warning(
+                f"联赛 {season.league_id} 积分榜未同步：未配置 Flashscore URL 或抓取失败"
             )
-            response.raise_for_status()
-            data = response.json()
-            if data.get("errors"):
-                logger.warning(
-                    f"联赛 {season.league_id} 赛季 {season.year} 积分榜被 API-Football 拒绝"
-                    f"(套餐限制): {data['errors']}, 改用 Flashscore 备用源"
-                )
-                # 多次 Flashscore 爬取之间设置随机等待, 避免被反爬封锁
-                if scraped_flashscore:
-                    wait = random.uniform(*FLASHSCORE_SCRAPE_INTERVAL)
-                    logger.info(f"Flashscore 爬取间隔等待 {wait:.1f}s")
-                    time.sleep(wait)
-                _sync_from_flashscore(db, season.league_id)
-                scraped_flashscore = True
-                continue
-        except Exception as e:
-            logger.error(f"拉取联赛 {season.league_id} 积分榜失败: {e}")
-            continue
+        # 多次 Flashscore 爬取之间设置随机等待, 避免被反爬封锁
+        if index < len(seasons) - 1:
+            wait = random.uniform(*FLASHSCORE_SCRAPE_INTERVAL)
+            logger.info(f"Flashscore 爬取间隔等待 {wait:.1f}s")
+            time.sleep(wait)
 
-        for entry in data.get("response", []):
-            league_info = entry.get("league", {})
-            lid = league_info.get("id") or season.league_id
-            stat_season = league_info.get("season") or season.year
-
-            # standings 是二维数组: [[group1...], [group2...]]
-            for group in league_info.get("standings", []):
-                for row in group:
-                    team = row.get("team") or {}
-                    all_stats = row.get("all") or {}
-                    home_stats = row.get("home") or {}
-                    away_stats = row.get("away") or {}
-
-                    team_id = team.get("id")
-                    if not team_id:
-                        continue
-
-                    # 按 (league_id, season, group_name, team_id) 查找
-                    standing = (
-                        db.query(Standing)
-                        .filter(
-                            Standing.league_id == lid,
-                            Standing.season == stat_season,
-                            Standing.group_name == row.get("group"),
-                            Standing.team_id == team_id,
-                        )
-                        .first()
-                    )
-
-                    if standing:
-                        _update_standing(standing, row, team, all_stats, home_stats, away_stats)
-                    else:
-                        db.add(
-                            _make_standing(
-                                lid, stat_season, row, team, all_stats, home_stats, away_stats
-                            )
-                        )
-
-        db.commit()
-
-    logger.info("积分榜同步完成")
+    logger.info("Flashscore 积分榜同步完成")
 
 
 def _make_standing(lid, stat_season, row, team, all_stats, home_stats, away_stats):
