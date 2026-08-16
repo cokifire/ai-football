@@ -41,6 +41,7 @@ URLS = {
     71: "https://www.flashscore.com/football/brazil/serie-a-betano/standings/hdLUdQGi/standings/overall/",
     94: "https://www.flashscore.com/football/portugal/liga-portugal/standings/hhJ7LFzn/standings/overall/",
     88: "https://www.flashscore.com/football/netherlands/eredivisie/standings/zm1be8bD/standings/overall/",
+    140: "https://www.flashscore.com/football/spain/laliga/standings/dWdJXP6U/standings/overall/",
 }
 
 OVERRIDE_FILE = Path(__file__).resolve().parent / "flashscore_team_map.json"
@@ -61,7 +62,11 @@ def norm(s: str) -> str:
 
 def core(s: str) -> str:
     """在 norm 基础上去除头尾俱乐部词, 得到队名核心。"""
-    parts = norm(s).split()
+    # norm() 会移除空格，不能直接拿它 split；这里保留词边界来剥离
+    # "Hammarby FF" / "FF Hammarby" 这类 Flashscore 与 API-Football 的命名差异。
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    parts = re.findall(r"[a-z0-9]+", s.lower())
     while parts and parts[0] in CLUB_TOKENS:
         parts.pop(0)
     while parts and parts[-1] in CLUB_TOKENS:
@@ -256,13 +261,13 @@ def run(league_id: int, db=None, dry_run: bool = False):
     url = URLS.get(league_id)
     if not url:
         logger.error(f"未配置 league_id={league_id} 的 Flashscore URL")
-        return
+        return False
 
     logger.info(f"抓取联赛 {league_id} 积分榜: {url}")
     blob, links = fetch_blob(url)
     if not blob:
         logger.error("未能抓取到积分榜文本 (可能被反爬拦截)")
-        return
+        return False
 
     season = detect_season(blob)
     teams = parse_standings(blob)
@@ -335,6 +340,7 @@ def run(league_id: int, db=None, dry_run: bool = False):
         save_override(override)
         if unresolved:
             logger.warning(f"有 {len(unresolved)} 支队未解析, 请手动填入 {OVERRIDE_FILE.name}: {unresolved}")
+        return True
     finally:
         if own_db:
             db.close()
