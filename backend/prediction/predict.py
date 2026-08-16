@@ -186,7 +186,7 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
         try:
             resp = _http_with_deadline(
                 "POST",
-                f"{settings.deepseek_base_url}/chat/completions",
+                f"{settings.deepseek_base_url.rstrip('/')}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.deepseek_api_key}",
                     "Content-Type": "application/json",
@@ -196,8 +196,6 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
                     "max_tokens": 1200,
-                    # 关闭推理模型的 thinking，使其直接输出最终 JSON（content 不再为空）
-                    "enable_thinking": False,
                 },
                 timeout=60.0,
                 label="DeepSeek",
@@ -214,7 +212,7 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
             parsed = _parse_llm_json(content)
             if parsed and _has_required_llm_fields(parsed):
                 return _normalize_llm_fields(parsed)
-            logger.warning("LLM 返回缺少必要预测字段（第 %d 次）", attempt)
+            logger.warning("LLM 返回缺少必要预测字段（第 {} 次）", attempt)
         except Exception as e:
             detail = str(e)
             if hasattr(e, 'response') and e.response is not None:
@@ -222,7 +220,7 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
                     detail += f" | body: {e.response.text[:500]}"
                 except Exception:
                     pass
-            logger.warning("LLM 失败（第 %d 次）: %s", attempt, detail)
+            logger.warning("LLM 失败（第 {} 次）: {}", attempt, detail)
     return None
 
 
@@ -1039,7 +1037,4 @@ def _save_odds(db, fixture_id: int, odds_result: dict) -> None:
         "now": now,
     })
     db.commit()
-
-
-
 
