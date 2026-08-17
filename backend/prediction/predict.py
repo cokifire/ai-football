@@ -196,6 +196,7 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
                     "max_tokens": 1200,
+                    "enable_thinking": True
                 },
                 timeout=60.0,
                 label="DeepSeek",
