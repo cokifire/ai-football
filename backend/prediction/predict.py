@@ -348,40 +348,31 @@ def _fetch_odds(fixture_id: int, match_date=None,
                 bookmaker_whitelist: list[str] | None = None) -> dict | None:
     """拉取赔率（含 1X2 / 亚盘 / 大小球）。
 
-    搜索窗口锚定在「比赛日期」当天及前 3 天（match-3 .. match），按离比赛日由近到远
-    逐个尝试，直到白名单内庄家全部集满即停止。免费 API 通常只开放近期一小段时间窗，
-    且每日配额有限，因此只在比赛日附近查询，避免无谓请求、耗尽配额。仅保留真正抓到
+    仅查询「比赛日期」当天（缺少比赛日期时使用当前日期），每场比赛最多发起一次赔率
+    API 请求。赔率接口每日配额有限，避免为同一场比赛重复查询历史日期；仅保留真正抓到
     赔率的日期，不再用「今天」硬性填充空行。
 
     庄家筛选使用固定白名单（默认 ODDS_BOOKMAKER_WHITELIST，大小写不敏感），只保留
     白名单内的庄家，最终按白名单顺序输出；若某家在窗口内无数据则自动缺失。
     """
     try:
-        from datetime import datetime, timedelta
+        from datetime import datetime
         whitelist = [b.strip() for b in (bookmaker_whitelist or ODDS_BOOKMAKER_WHITELIST) if b.strip()]
         wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
         today = datetime.now()
 
-        # 候选日期集合: 仅以「比赛日」为锚点(当天 + 前 3 天)
-        candidate_dates: set = set()
+        # 只查询比赛日期当天；没有比赛日期时才回退到当前日期。
         md = None
         if match_date:
             try:
-                md = match_date if isinstance(match_date, datetime) else datetime.strptime(
-                    str(match_date)[:19], "%Y-%m-%d %H:%M:%S")
+                if isinstance(match_date, datetime):
+                    md = match_date
+                else:
+                    # 兼容 SQLAlchemy 返回的 date、ISO 日期和 ISO datetime 字符串。
+                    md = datetime.fromisoformat(str(match_date).replace("Z", "+00:00"))
             except Exception:
                 md = None
-        anchors = [md] if md else [today]
-        for anc in anchors:
-            for off in range(-3, 1):  # match-3 .. match（当天及前三天）
-                candidate_dates.add((anc + timedelta(days=off)).strftime("%Y-%m-%d"))
-
-        # 按离「比赛日(无则今天)」由近到远排序, 优先查最可能命中的日期
-        ref = md or today
-        ordered = sorted(
-            candidate_dates,
-            key=lambda d: abs((datetime.strptime(d, "%Y-%m-%d") - ref).days),
-        )
+        ordered = [(md or today).strftime("%Y-%m-%d")]
 
         # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
