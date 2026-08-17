@@ -202,30 +202,56 @@ def _derive_stats_url_from_match_url(match_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
-def _resolve_via_h2h(page, stats_url, match_date):
+def _normalize_team_label(name):
+    """去掉常见后缀, 用于和 Flashscore H2H 行里的短队名做包含匹配。"""
+    if not name:
+        return ""
+    for suf in (" FC", " FF", " U21", " II"):
+        name = name.replace(suf, "")
+    return name.strip().lower()
+
+
+def _resolve_via_h2h(page, stats_url, match_date, home_hash=None, away_hash=None, hash_to_name=None):
     """通过 H2H 列表点击对应日期的历史比赛, 返回正确的 stats URL。
 
     当 team-hash pair 被 Flashscore 解析到错误场次时, 在 H2H 栏里按比赛日期
     定位。由于 Flashscore 列表显示的是比赛当地日期, 而目标 match_date 为北京时间,
-    这里以 ±1 天容差匹配 (见 _dates_match)。
+    这里以 ±1 天容差匹配 (见 _dates_match)。同时要求行内包含双方队名, 避免误命中。
     """
     h2h_url = _derive_h2h_url(stats_url)
     print(f"[h2h] 尝试按日期定位 H2H: {h2h_url}")
     page.goto(h2h_url, wait_until="domcontentloaded", timeout=60000)
     _accept_consent(page)
-    page.wait_for_timeout(6000)
+    # 等待 H2H 行渲染 (懒加载, 给足时间)
+    try:
+        page.wait_for_selector("a.h2h__row", timeout=15000)
+    except Exception:
+        pass
+    page.wait_for_timeout(3000)
 
-    section = page.locator("div.h2h__section", has_text="Head-to-head matches")
-    rows = section.locator("a.h2h__row")
+    home_label = _normalize_team_label(hash_to_name.get(home_hash)) if hash_to_name else ""
+    away_label = _normalize_team_label(hash_to_name.get(away_hash)) if hash_to_name else ""
+
+    # 优先在 Head-to-head 区里找, 退化到全页 a.h2h__row
+    candidates = [
+        page.locator("div.h2h__section", has_text="Head-to-head matches").locator("a.h2h__row"),
+        page.locator("a.h2h__row"),
+    ]
     best_row = None
     best_diff = None
-    for i in range(rows.count()):
-        row = rows.nth(i)
-        row_text = row.inner_text() or ""
-        row_date = _parse_date(row_text)
-        if row_date is None:
-            continue
-        if _dates_match(row_date, match_date, tol_days=1):
+    for rows in candidates:
+        for i in range(rows.count()):
+            row = rows.nth(i)
+            row_text = (row.inner_text() or "").lower()
+            row_date = _parse_date(row_text)
+            if row_date is None:
+                continue
+            if not _dates_match(row_date, match_date, tol_days=1):
+                continue
+            # 要求行内同时包含双方队名 (短名), 排除其它比赛的 Last matches 行
+            if home_label and away_label:
+                if home_label not in row_text or away_label not in row_text:
+                    continue
             match_url = row.get_attribute("href")
             if not match_url:
                 continue
@@ -233,6 +259,8 @@ def _resolve_via_h2h(page, stats_url, match_date):
             if best_diff is None or diff < best_diff:
                 best_diff = diff
                 best_row = match_url
+        if best_row:
+            break
     if not best_row:
         raise ValueError(
             f"在 Head-to-head matches 中未找到日期接近 {match_date} 的比赛"
@@ -314,7 +342,10 @@ def scrape_match_xg(home_hash, away_hash, hash_to_name, match_date):
             page_date = _get_page_match_date(page)
             if not _dates_match(page_date, match_date):
                 print(f"[fetch] 日期不一致 page={page_date} target={match_date}, 尝试 H2H 回退")
-                resolved_url = _resolve_via_h2h(page, page.url, match_date)
+                resolved_url = _resolve_via_h2h(
+                    page, page.url, match_date,
+                    home_hash=home_hash, away_hash=away_hash, hash_to_name=hash_to_name,
+                )
                 print(f"[fetch] 重新加载历史场次: {resolved_url}")
                 page.goto(resolved_url, wait_until="domcontentloaded", timeout=60000)
                 _accept_consent(page)
