@@ -348,9 +348,9 @@ def _fetch_odds(fixture_id: int, match_date=None,
                 bookmaker_whitelist: list[str] | None = None) -> dict | None:
     """拉取赔率（含 1X2 / 亚盘 / 大小球）。
 
-    仅查询「比赛日期」当天（缺少比赛日期时使用当前日期），每场比赛最多发起一次赔率
-    API 请求。赔率接口每日配额有限，避免为同一场比赛重复查询历史日期；仅保留真正抓到
-    赔率的日期，不再用「今天」硬性填充空行。
+    仅查询当前日期，每场比赛最多发起一次赔率 API 请求。这里的 ``date`` 是赔率快照
+    的发布日期，而不是比赛日期；未来比赛的赔率只能通过今天的快照查询。赔率接口每日
+    配额有限，避免为同一场比赛重复查询历史日期；仅保留真正抓到赔率的日期。
 
     庄家筛选使用固定白名单（默认 ODDS_BOOKMAKER_WHITELIST，大小写不敏感），只保留
     白名单内的庄家，最终按白名单顺序输出；若某家在窗口内无数据则自动缺失。
@@ -359,20 +359,8 @@ def _fetch_odds(fixture_id: int, match_date=None,
         from datetime import datetime
         whitelist = [b.strip() for b in (bookmaker_whitelist or ODDS_BOOKMAKER_WHITELIST) if b.strip()]
         wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
-        today = datetime.now()
-
-        # 只查询比赛日期当天；没有比赛日期时才回退到当前日期。
-        md = None
-        if match_date:
-            try:
-                if isinstance(match_date, datetime):
-                    md = match_date
-                else:
-                    # 兼容 SQLAlchemy 返回的 date、ISO 日期和 ISO datetime 字符串。
-                    md = datetime.fromisoformat(str(match_date).replace("Z", "+00:00"))
-            except Exception:
-                md = None
-        ordered = [(md or today).strftime("%Y-%m-%d")]
+        # API-Football 的 date 表示赔率快照日期；始终查询当前日期，兼容未来比赛。
+        ordered = [datetime.now().strftime("%Y-%m-%d")]
 
         # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
