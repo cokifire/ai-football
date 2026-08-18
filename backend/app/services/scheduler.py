@@ -91,18 +91,13 @@ def _update_db(task_key: str, **kwargs):
         db.close()
 
 
-def run_task_with_log(task_id: str, task_name: str, sync_fn, db=None):
-    """执行任务并记录日志（供定时 loop 和手动触发共用）"""
-    log_id = _log_start(task_id, task_name)
+def run_task(task_id: str, task_name: str, sync_fn, db=None):
+    """执行任务（供定时 loop 和手动触发共用）"""
     own_db = db is None
     if own_db:
         db = SessionLocal()
     try:
         sync_fn(db)
-        _log_finish(log_id, 'success', None)
-    except Exception as e:
-        _log_finish(log_id, 'failed', str(e))
-        raise
     finally:
         if own_db:
             db.close()
@@ -135,38 +130,6 @@ def get_scheduler_status() -> dict:
                 "is_running": bool(r["is_running"]),
             })
         return {"tasks": tasks}
-    finally:
-        db.close()
-
-
-def _log_start(task_id: str, task_name: str) -> int:
-    """记录任务开始执行，返回 log id"""
-    db = SessionLocal()
-    try:
-        result = db.execute(
-            text(
-                """INSERT INTO scheduler_logs (task_id, task_name, status, started_at)
-                   VALUES (:tid, :name, 'running', :now)"""
-            ),
-            {"tid": task_id, "name": task_name, "now": datetime.now()},
-        )
-        db.commit()
-        return result.lastrowid
-    finally:
-        db.close()
-
-
-def _log_finish(log_id: int, status: str, message: str | None):
-    db = SessionLocal()
-    try:
-        db.execute(
-            text(
-                """UPDATE scheduler_logs SET status=:st, message=:msg, finished_at=:now
-                   WHERE id=:id"""
-            ),
-            {"st": status, "msg": message, "now": datetime.now(), "id": log_id},
-        )
-        db.commit()
     finally:
         db.close()
 
@@ -301,7 +264,7 @@ async def _run_loop(task_key: str):
         logger.info(f"[Scheduler] 触发: {row['name']}")
 
         try:
-            await asyncio.to_thread(run_task_with_log, task_key, row['name'], sync_fn)
+            await asyncio.to_thread(run_task, task_key, row['name'], sync_fn)
         except asyncio.CancelledError:
             raise
         except Exception as e:

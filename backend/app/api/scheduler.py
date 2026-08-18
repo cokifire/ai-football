@@ -10,7 +10,7 @@ from loguru import logger
 from app.db.session import get_db
 from app.services.scheduler import (
     get_scheduler_status, stop_scheduled_task, start_scheduled_task,
-    update_task, run_task_with_log,
+    update_task,
 )
 from app.services.league_service import sync_leagues
 from app.services.team_service import sync_teams
@@ -19,7 +19,7 @@ from app.services.standing_service import sync_standings
 from app.services.fixture_service import sync_fixtures, sync_live_fixtures
 from app.services.prediction_result_service import backfill_results
 from app.services.auto_predict_service import auto_predict
-from app.core.security import AdminAuth, ReadAuth, require_admin, require_read
+from app.core.security import AdminAuth, ReadAuth, require_admin
 
 router = APIRouter()
 
@@ -229,29 +229,4 @@ async def patch_task(task_id: str, start_hour: float | None = None,
     return {"status": "ok", "message": f"任务 {task_id} 已更新"}
 
 
-@router.get("/scheduler/logs")
-async def get_logs(page: int = 1, page_size: int = 20, task_id: str | None = None,
-                   _: str = Depends(require_read)):
-    return await asyncio.to_thread(_get_logs_sync, page, page_size, task_id)
 
-
-def _get_logs_sync(page, page_size, task_id):
-    from app.db.session import SessionLocal
-    from sqlalchemy import text
-    db = SessionLocal()
-    try:
-        where, params = "", {}
-        if task_id: where, params["tid"] = "WHERE task_id = :tid", task_id
-        total = db.execute(text(f"SELECT COUNT(*) FROM scheduler_logs {where}"), params).scalar()
-        rows = db.execute(text(f"SELECT * FROM scheduler_logs {where} ORDER BY id DESC LIMIT :limit OFFSET :offset"),
-                          {**params, "limit": page_size, "offset": (page - 1) * page_size}).fetchall()
-        data = []
-        for r in rows:
-            d = dict(r._mapping)
-            data.append({"id": d["id"], "task_id": d["task_id"], "task_name": d["task_name"],
-                         "status": d["status"], "message": d["message"],
-                         "started_at": d["started_at"].isoformat() if d["started_at"] else None,
-                         "finished_at": d["finished_at"].isoformat() if d["finished_at"] else None})
-        return {"data": data, "total": total, "page": page, "page_size": page_size}
-    finally:
-        db.close()

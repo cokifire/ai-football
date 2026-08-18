@@ -22,7 +22,7 @@ setup_logger()
 async def lifespan(app: FastAPI):
     """应用生命周期: 注册定时任务"""
     # 注意: 禁用了 alembic 自动迁移，因为 autogenerate 会删除没有 SQLAlchemy 模型的表
-    # （predictions、scheduler_tasks、scheduler_logs 使用 raw SQL 管理）
+    # （predictions、scheduler_tasks 使用 raw SQL 管理）
     # 新增表请手动建表或手动编写迁移
 
     logger.info("正在注册定时任务...")
