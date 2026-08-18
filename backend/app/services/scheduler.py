@@ -17,17 +17,17 @@ LIVE_INTERVAL_SECONDS = 2 * 60
 
 # ──── 默认任务定义 ────
 _DEFAULT_TASKS = {
-    "league_sync":    {"name": "联赛数据同步",   "start_hour": 8,   "fn": sync_leagues},
+    "league_sync":    {"name": "联赛数据同步",   "start_hour": 8,   "enabled": 1, "fn": sync_leagues},
     "team_sync":      {"name": "球队数据同步",   "start_hour": 8.2, "fn": sync_teams, "enabled": 0},
     "player_sync":    {"name": "球员数据同步",   "start_hour": 8.25, "weekday": 0, "enabled": 0, "fn": sync_players},
-    "standing_sync":  {"name": "积分榜数据同步", "start_hour": 9,   "fn": sync_standings},
-    "fixture_daily":  {"name": "赛程每日同步",   "start_hour": 8.5,   "fn": sync_fixtures},
+    "standing_sync":  {"name": "积分榜数据同步", "start_hour": 9,   "enabled": 1, "fn": sync_standings},
+    "fixture_daily":  {"name": "赛程每日同步",   "start_hour": 8.5, "enabled": 1, "fn": sync_fixtures},
     "fixture_live":   {"name": "赛程实时同步",   "start_hour": None, "fn": sync_live_fixtures,
-                       "interval_seconds": LIVE_INTERVAL_SECONDS},
+                       "interval_seconds": LIVE_INTERVAL_SECONDS, "enabled": 0},
     "backfill_pred":  {"name": "预测结果回填",   "start_hour": 9,   "fn": backfill_results,
-                       "interval_seconds": None},
+                       "interval_seconds": None, "enabled": 0},
     "auto_predict":   {"name": "赛前自动预测",   "start_hour": 12,  "fn": auto_predict,
-                       "interval_seconds": None},
+                       "interval_seconds": None, "enabled": 0},
 }
 
 _active_loops: dict[str, asyncio.Task] = {}
