@@ -186,19 +186,21 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
         try:
             resp = _http_with_deadline(
                 "POST",
-                f"{settings.deepseek_base_url.rstrip('/')}/chat/completions",
+                f"{settings.prediction_llm_base_url.rstrip('/')}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.deepseek_api_key}",
+                    "Authorization": f"Bearer {settings.prediction_llm_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": settings.deepseek_model,
+                    "model": settings.prediction_llm_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
-                    "max_tokens": 1200,
-                    "enable_thinking": True
+                    # Gemini 兼容接口会将思考 token 计入 max_tokens；预算过小会在最终 JSON
+                    # 输出前截断（finish_reason=length），导致必填字段缺失。
+                    "max_tokens": 16000,
+                    "enable_thinking": True,
                 },
-                timeout=60.0,
+                timeout=120.0,
                 label="DeepSeek",
             )
             if resp is None:
@@ -213,7 +215,12 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
             parsed = _parse_llm_json(content)
             if parsed and _has_required_llm_fields(parsed):
                 return _normalize_llm_fields(parsed)
-            logger.warning("LLM 返回缺少必要预测字段（第 {} 次）", attempt)
+            logger.warning(
+                "LLM 返回缺少必要预测字段（第 {} 次），keys={}，content_preview={!r}",
+                attempt,
+                sorted(parsed.keys()) if isinstance(parsed, dict) else [],
+                content[:500],
+            )
         except Exception as e:
             detail = str(e)
             if hasattr(e, 'response') and e.response is not None:
@@ -503,6 +510,26 @@ def _fetch_weather_text(city_name: str) -> str:
         return "天气及海拔数据处理失败，不能据此推断外部环境。"
 
 
+def _fetch_intelligence_markdown(fixture: dict) -> str:
+    """获取本场外部比赛情报 Markdown，失败时不阻断预测。"""
+    try:
+        from tools.fetch_intelligence import scrape_match_analysis
+
+        return scrape_match_analysis(
+            home_team=str(fixture.get("home_name") or ""),
+            away_team=str(fixture.get("away_name") or ""),
+            competition=str(fixture.get("league_name") or ""),
+            year=fixture.get("season") or datetime.now().year,
+            api_key=settings.firecrawl_api_key,
+            intelligence_llm_api_key=settings.intelligence_llm_api_key,
+            intelligence_llm_base_url=settings.intelligence_llm_base_url,
+            intelligence_llm_model=settings.intelligence_llm_model,
+            limit=3,
+        )
+    except Exception:
+        return "# 外部比赛情报\n\n获取失败，忽略该数据源。"
+
+
 def _fetch_standings_text(db, team_id, league_id, season) -> str:
     row = db.execute(text("""
         SELECT `rank`, points, goals_diff, all_played, all_win, all_draw, all_lose
@@ -722,7 +749,8 @@ def _competition_context(fixture: dict) -> str:
 def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       home_stats: str, away_stats: str,
                       home_standings: str, away_standings: str,
-                      lineups_text: str, weather_text: str = "") -> str:
+                      lineups_text: str, weather_text: str = "",
+                      intelligence_markdown: str = "") -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -741,6 +769,9 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     阵容信息:{lineups_text}
     比赛场地:{fixture.get('venue_city','')}
     比赛地天气及海拔:{weather_text}
+
+    # 【外部比赛情报（Markdown）】
+    {intelligence_markdown}
 
     # 核心数据输入（请基于以下信息进行推理）
 
@@ -888,6 +919,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
         weather_text = _fetch_weather_text(fixture.get('venue_city'))
+        intelligence_markdown = _fetch_intelligence_markdown(fixture)
 
         # 5. LLM
         llm_result = None
@@ -895,7 +927,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
-                                       lineups_text, weather_text)
+                                       lineups_text, weather_text,
+                                       intelligence_markdown)
             llm_result = _call_llm(prompt)
         except Exception as e:
             logger.debug(f"LLM失败: {e}")
@@ -911,6 +944,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             **xgb_result,
             'llm': {**llm_result, 'home_stats': home_stats, 'away_stats': away_stats},
             'weather': weather_text,
+            'intelligence_markdown': intelligence_markdown,
             'model_group': model_group,
         }
         logger.info(

@@ -16,10 +16,18 @@ class Settings(BaseSettings):
     # 天气数据（OpenWeatherMap）
     openweathermap_api_key: str = ""
 
-    # DeepSeek
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-chat"
+    # 外部比赛情报（Firecrawl）
+    firecrawl_api_key: str = ""
+
+    # 情报整理 LLM（OpenAI-compatible）
+    intelligence_llm_api_key: str = ""
+    intelligence_llm_base_url: str = "https://apihub.agnes-ai.com/v1"
+    intelligence_llm_model: str = "agnes-2.5-flash"
+
+    # 主预测 LLM（OpenAI-compatible）
+    prediction_llm_api_key: str = ""
+    prediction_llm_base_url: str = "https://api.deepseek.com/v1"
+    prediction_llm_model: str = "deepseek-chat"
 
     # 缓存
     cache_ttl: int = 3600

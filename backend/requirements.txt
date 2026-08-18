@@ -57,5 +57,6 @@ orjson==3.11.9
 watchfiles==1.2.0
 
 # ── Web Scraping (Flashscore 备用积分榜源) ──
+firecrawl==4.35.1
 # 安装后还需执行: python -m playwright install chromium (下载浏览器二进制)
 playwright==1.48.0
