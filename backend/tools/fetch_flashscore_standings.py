@@ -308,7 +308,6 @@ def run(league_id: int, db=None, dry_run: bool = False):
             # 持久化 hash->id 以便审阅/覆盖
             if fs_hash:
                 override[fs_hash] = tid
-            logger.info(f"  {t['rank']:>2}. {t['name']:<18} -> id={tid:<5} ({how}) PTS={t['points']}")
 
             if dry_run:
                 continue

@@ -220,9 +220,10 @@ async def start_task(task_id: str, _: AdminAuth):
 @router.patch("/scheduler/{task_id}")
 async def patch_task(task_id: str, start_hour: float | None = None,
                      interval_seconds: int | None = None, is_enabled: bool | None = None,
-                     _: str = Depends(require_admin)):
+                     weekday: int | None = None, _: str = Depends(require_admin)):
+    # weekday: 0=周一..6=周日，-1 表示恢复为每天（NULL）
     ok = update_task(task_id, start_hour=start_hour, interval_seconds=interval_seconds,
-                     is_enabled=is_enabled)
+                     is_enabled=is_enabled, weekday=weekday)
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"status": "ok", "message": f"任务 {task_id} 已更新"}

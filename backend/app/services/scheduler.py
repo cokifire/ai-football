@@ -18,14 +18,14 @@ LIVE_INTERVAL_SECONDS = 2 * 60
 # ──── 默认任务定义 ────
 _DEFAULT_TASKS = {
     "league_sync":    {"name": "联赛数据同步",   "start_hour": 8,   "fn": sync_leagues},
-    "team_sync":      {"name": "球队数据同步",   "start_hour": 8.2, "fn": sync_teams},
-    "player_sync":    {"name": "球员数据同步",   "start_hour": 8.5,   "fn": sync_players},
+    "team_sync":      {"name": "球队数据同步",   "start_hour": 8.2, "fn": sync_teams, "enabled": 0},
+    "player_sync":    {"name": "球员数据同步",   "start_hour": 8.25, "weekday": 0, "enabled": 0, "fn": sync_players},
     "standing_sync":  {"name": "积分榜数据同步", "start_hour": 9,   "fn": sync_standings},
-    "fixture_daily":  {"name": "赛程每日同步",   "start_hour": 9.5,   "fn": sync_fixtures},
+    "fixture_daily":  {"name": "赛程每日同步",   "start_hour": 8.5,   "fn": sync_fixtures},
     "fixture_live":   {"name": "赛程实时同步",   "start_hour": None, "fn": sync_live_fixtures,
                        "interval_seconds": LIVE_INTERVAL_SECONDS},
-    "backfill_pred":  {"name": "预测结果回填",   "start_hour": None, "fn": backfill_results,
-                       "interval_seconds": 3600},
+    "backfill_pred":  {"name": "预测结果回填",   "start_hour": 9,   "fn": backfill_results,
+                       "interval_seconds": None},
     "auto_predict":   {"name": "赛前自动预测",   "start_hour": 12,  "fn": auto_predict,
                        "interval_seconds": None},
 }
@@ -39,20 +39,26 @@ def _seed_defaults():
         for k, v in _DEFAULT_TASKS.items():
             sh = v.get("start_hour")
             iv = v.get("interval_seconds")
+            en = v.get("enabled", 1)
+            wd = v.get("weekday", None)
             # 用 ON DUPLICATE KEY UPDATE 让代码里的最新默认时间始终生效
             # （INSERT IGNORE 遇到已存在的主键会静默跳过，导致改了 _DEFAULT_TASKS
             #  之后数据库里仍是旧时间，任务仍按旧时间执行）
+            # 注意：is_enabled / weekday 也同步，因为部分任务（如 team_sync）默认停用、
+            #  player_sync 默认每周一跑。重启后需恢复默认状态。
             db.execute(
                 text(
                     """INSERT INTO scheduler_tasks
-                          (id, name, interval_seconds, start_hour, is_enabled)
-                       VALUES (:id, :name, :iv, :sh, 1)
+                          (id, name, interval_seconds, start_hour, is_enabled, weekday)
+                       VALUES (:id, :name, :iv, :sh, :en, :wd)
                        ON DUPLICATE KEY UPDATE
                           name = VALUES(name),
                           interval_seconds = VALUES(interval_seconds),
-                          start_hour = VALUES(start_hour)"""
+                          start_hour = VALUES(start_hour),
+                          is_enabled = VALUES(is_enabled),
+                          weekday = VALUES(weekday)"""
                 ),
-                {"id": k, "name": v["name"], "iv": iv, "sh": sh},
+                {"id": k, "name": v["name"], "iv": iv, "sh": sh, "en": en, "wd": wd},
             )
         db.commit()
     finally:
@@ -111,8 +117,10 @@ def get_scheduler_status() -> dict:
             r = dict(row._mapping)
             sh = r.get("start_hour")
             iv = r.get("interval_seconds")
+            wd = r.get("weekday", None)
             if sh is not None:
-                desc = f"每天 {int(sh):02d}:{int((sh % 1) * 60):02d}"
+                hh = f"{int(sh):02d}:{int((sh % 1) * 60):02d}"
+                desc = f"每周{_WEEKDAY_CN[wd]} {hh}" if wd is not None else f"每天 {hh}"
             else:
                 desc = _desc_interval(iv or 0)
             tasks.append({
@@ -171,6 +179,10 @@ def _desc_interval(sec: int) -> str:
     return f"每 {sec // 3600} 小时"
 
 
+# weekday: 0=周一 .. 6=周日
+_WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
+
+
 def stop_scheduled_task(task_key: str) -> bool:
     row = _read_db_row(task_key)
     if row is None:
@@ -196,7 +208,9 @@ def start_scheduled_task(task_key: str) -> bool:
 
 
 def update_task(task_key: str, start_hour: float = None, interval_seconds: int = None,
-                is_enabled: bool = None) -> bool:
+                is_enabled: bool = None, weekday: int = None) -> bool:
+    """weekday: 0=周一..6=周日（None=每天）。传 None 给 weekday 参数不会清空，
+    需显式传 -1 表示恢复为每天。"""
     row = _read_db_row(task_key)
     if row is None:
         return False
@@ -208,6 +222,8 @@ def update_task(task_key: str, start_hour: float = None, interval_seconds: int =
         kwargs["interval_seconds"] = interval_seconds
     if is_enabled is not None:
         kwargs["is_enabled"] = 1 if is_enabled else 0
+    if weekday is not None:
+        kwargs["weekday"] = None if weekday < 0 else weekday
     if kwargs:
         _update_db(task_key, **kwargs)
 
@@ -248,14 +264,20 @@ async def _run_loop(task_key: str):
 
         sh = row.get("start_hour")
         iv = row.get("interval_seconds")
+        wd = row.get("weekday", None)
 
         # 计算下一执行时间
         if sh is not None:
-            # 定时任务：每天固定时间
+            # 定时任务：每天或每周固定时间
             now = datetime.now()
             target = now.replace(hour=int(sh), minute=int((sh % 1) * 60), second=0, microsecond=0)
             if target <= now:
                 target += timedelta(days=1)
+            # weekday 指定：0=周一..6=周日，None=每天
+            if wd is not None:
+                days_ahead = (wd - target.weekday()) % 7
+                if days_ahead:
+                    target = target + timedelta(days=days_ahead)
             delay = (target - now).total_seconds()
             next_run = target
         else:
