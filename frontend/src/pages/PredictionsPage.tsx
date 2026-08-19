@@ -632,7 +632,7 @@ export default function PredictionsPage() {
                     <div className="p-3 rounded-lg bg-gray-50">
                       <div className="text-xs text-gray-500">胜负预测</div>
                       <span
-                        className={selectedPred.result.win_correct ? 'badge-green' : 'badge-red'}
+                        className={selectedPred.result.win_correct == null ? 'badge-yellow' : (selectedPred.result.win_correct ? 'badge-green' : 'badge-red')}
                         title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
                       >
                         {selectedPred.result.win_correct != null
@@ -672,7 +672,7 @@ export default function PredictionsPage() {
                       <div className="p-3 rounded-lg bg-gray-50">
                         <div className="text-xs text-gray-500">实际比分</div>
                         <span
-                          className={selectedPred.result.score_in_top3 ? 'badge-green' : 'badge-red'}
+                          className={selectedPred.result.score_in_top3 == null ? 'badge-yellow' : (selectedPred.result.score_in_top3 ? 'badge-green' : 'badge-red')}
                           title="比分：模型 Top3 比分预测是否命中真实比分"
                         >
                           {`${selectedPred.result.score}${selectedPred.result.score_in_top3 ? '✓' : '✗'}`}
@@ -1057,7 +1057,7 @@ function PredResultBadges({ p }: { p: PredictionDetail }) {
   return (
     <div className="flex flex-wrap gap-1">
       <span
-        className={r.win_correct ? 'badge-green' : 'badge-red'}
+        className={r.win_correct == null ? 'badge-yellow' : (r.win_correct ? 'badge-green' : 'badge-red')}
         title="胜负预测：模型给出的胜/平/负方向是否与实际赛果一致"
       >
         {r.win_correct != null ? `${winLabel(p.llm?.win)}${r.win_correct ? '✓' : '✗'}` : '-'}
@@ -1083,7 +1083,7 @@ function PredResultBadges({ p }: { p: PredictionDetail }) {
           : `${p.llm?.handicap_team ?? ''}(-)`}
       </span>
       <span
-        className={r.score_in_top3 ? 'badge-green' : 'badge-red'}
+        className={r.score_in_top3 == null ? 'badge-yellow' : (r.score_in_top3 ? 'badge-green' : 'badge-red')}
         title="比分：模型 Top3 比分预测是否命中真实比分"
       >
         {r.score != null && r.score_in_top3 != null ? `${r.score}${r.score_in_top3 ? '✓' : '✗'}` : '-'}
