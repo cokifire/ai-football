@@ -138,6 +138,7 @@ async def fetch_and_save_odds(fixture_id: int, _: AdminAuth, db: Session = Depen
         raise HTTPException(status_code=429, detail=f"赔率接口受限: {msg}")
 
     if result is None:
+        logger.warning(f"赔率抓取失败 fixture_id={fixture_id}: API 未返回可用赔率数据")
         raise HTTPException(status_code=400, detail="未获取到赔率数据（可能该比赛暂无赔率）")
 
     logger.info(f"赔率抓取完成 fixture_id={fixture_id}")

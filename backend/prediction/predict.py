@@ -109,12 +109,16 @@ def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
         params=params, timeout=timeout, label="API-Football",
     )
     if resp is None:
+        logger.warning(f"API-Football 请求无响应 [{path}] params={params}")
         return {}
     try:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:  # noqa: BLE001
-        logger.debug(f"API-Football 响应解析失败: {e}")
+        logger.warning(
+            f"API-Football 响应失败 [{path}] status={resp.status_code} "
+            f"params={params}: {e}; body={resp.text[:500]!r}"
+        )
         return {}
     # 即便 HTTP 200，接口也可能在 errors 字段返回限流/配额等错误（如当日请求数耗尽）
     if isinstance(data, dict) and data.get("errors"):
@@ -368,6 +372,7 @@ def _fetch_odds(fixture_id: int, match_date=None,
         wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
         # API-Football 的 date 表示赔率快照日期；始终查询当前日期，兼容未来比赛。
         ordered = [datetime.now().strftime("%Y-%m-%d")]
+        logger.info(f"赔率 API 请求: fixture_id={fixture_id}, dates={ordered}")
 
         # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
@@ -377,11 +382,21 @@ def _fetch_odds(fixture_id: int, match_date=None,
             if isinstance(resp, dict) and resp.get("errors"):
                 if first_api_error is None:
                     first_api_error = resp["errors"]
+                logger.warning(
+                    f"赔率 API 返回错误: fixture_id={fixture_id}, date={date_str}, "
+                    f"errors={resp['errors']}"
+                )
                 continue  # 该日期无赔率数据
             data = resp.get("response", []) if isinstance(resp, dict) else []
             if not data:
+                logger.warning(
+                    f"赔率 API 无数据: fixture_id={fixture_id}, date={date_str}, "
+                    f"response_count=0"
+                )
                 continue
 
+            raw_bookmakers = [bm.get("name", "未知") for bm in data[0].get("bookmakers", [])]
+            matched_bookmakers = []
             for bm in data[0].get("bookmakers", []):
                 bm_name = bm.get("name", "未知")
                 # 仅保留白名单内的庄家（大小写不敏感）
@@ -389,6 +404,7 @@ def _fetch_odds(fixture_id: int, match_date=None,
                 if key not in wl_lower:
                     continue
                 canon = wl_lower[key]
+                matched_bookmakers.append(canon)
                 bm_dict = bookmaker_odds.setdefault(canon, {})
                 for bet in bm.get("bets", []):
                     name = bet.get("name")
@@ -414,6 +430,11 @@ def _fetch_odds(fixture_id: int, match_date=None,
             # 优先返回真实的接口错误（如限流），让上层给出明确的 429 而非误判为「无赔率」
             if first_api_error is not None:
                 return {"__api_error__": first_api_error}
+            logger.warning(
+                f"赔率数据过滤后为空: fixture_id={fixture_id}, date={ordered[0]}, "
+                f"api_bookmakers={raw_bookmakers if 'raw_bookmakers' in locals() else []}, "
+                f"whitelist={whitelist}, matched={matched_bookmakers if 'matched_bookmakers' in locals() else []}"
+            )
             return None
 
         # 按白名单顺序输出（仅含白名单内且实际抓到数据的庄家）
@@ -427,10 +448,11 @@ def _fetch_odds(fixture_id: int, match_date=None,
             odds_data.append({"bookmaker": canon, "entries": entries})
 
         if not odds_data:
+            logger.warning(f"赔率盘口解析后为空: fixture_id={fixture_id}, date={ordered[0]}")
             return None
         return {"odds_data": odds_data}
     except Exception as e:
-        logger.debug(f"赔率获取失败: {e}")
+        logger.exception(f"赔率获取异常: fixture_id={fixture_id}, error={e}")
     return None
 
 
