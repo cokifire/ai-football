@@ -359,7 +359,8 @@ def _fetch_odds(fixture_id: int, match_date=None,
                 bookmaker_whitelist: list[str] | None = None) -> dict | None:
     """拉取赔率（含 1X2 / 亚盘 / 大小球）。
 
-    仅查询当前日期；每次调用都会按需请求最新赔率，不做 fixture 级缓存或调用次数限制。
+    仅查询 API-Football 当前日期（UTC）；每次调用都会按需请求最新赔率，不做 fixture 级
+    缓存或调用次数限制。本地时区凌晨时，API 仍可能处于前一天。
     这里的 ``date`` 是赔率快照的发布日期，而不是比赛日期；未来比赛的赔率只能通过今天
     的快照查询。仅保留真正抓到赔率的日期。
 
@@ -367,12 +368,16 @@ def _fetch_odds(fixture_id: int, match_date=None,
     白名单内的庄家，最终按白名单顺序输出；若某家在窗口内无数据则自动缺失。
     """
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
         whitelist = [b.strip() for b in (bookmaker_whitelist or ODDS_BOOKMAKER_WHITELIST) if b.strip()]
         wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
-        # API-Football 的 date 表示赔率快照日期；始终查询当前日期，兼容未来比赛。
-        ordered = [datetime.now().strftime("%Y-%m-%d")]
-        logger.info(f"赔率 API 请求: fixture_id={fixture_id}, dates={ordered}")
+        # API-Football 按 UTC 计算赔率快照日期；本地凌晨时仍可能处于 API 的前一天。
+        api_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        ordered = [api_date]
+        logger.info(
+            f"赔率 API 请求: fixture_id={fixture_id}, dates={ordered}, "
+            f"local_now={datetime.now().isoformat()}, utc_date={api_date}"
+        )
 
         # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
