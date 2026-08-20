@@ -165,7 +165,8 @@ export default function PredictionsPage() {
   }
 
   const openRecentFixture = (fixtureId: number) => {
-    setSelectedTeamId(null)
+    // 保留球队详情弹窗（selectedTeamId），仅叠加打开比赛详情弹窗；
+    // 关闭比赛详情后回到球队详情弹窗
     setSelectedRecentFixtureId(fixtureId)
     setRecentFixtureDetail(null)
     setRecentFixtureLoading(true)
@@ -446,12 +447,7 @@ export default function PredictionsPage() {
               </div>
             )}
             {recentFixtureDetail.statistics?.length > 0 && (
-              <div>
-                <h4 className="font-semibold mb-2">技术统计</h4>
-                <div className="table-container"><table><thead><tr><th>球队</th><th>统计项</th><th>数值</th></tr></thead><tbody>
-                  {recentFixtureDetail.statistics.map((stat: any, i: number) => <tr key={i}><td>{stat.team_name || '-'}</td><td>{stat.stat_type || '-'}</td><td>{stat.stat_value ?? '-'}</td></tr>)}
-                </tbody></table></div>
-              </div>
+              <FixtureStats stats={recentFixtureDetail.statistics} />
             )}
             {!recentFixtureDetail.events?.length && !recentFixtureDetail.statistics?.length && <p className="text-sm text-gray-400 text-center">暂无详细比赛数据</p>}
           </div>
@@ -1169,6 +1165,65 @@ function PredictionCard({
         <button className="btn btn-xs flex-1" onClick={() => onOddsPred(p)}>赔率预测</button>
         <button className="btn btn-xs flex-1" onClick={() => onViewOdds(p)}>查看赔率</button>
       </div>
+    </div>
+  )
+}
+
+interface FixtureAPIStat {
+  team_id?: number
+  team_name?: string
+  stat_type?: string
+  stat_value?: string
+}
+
+function FixtureStats({ stats }: { stats: FixtureAPIStat[] }) {
+  // 按 team_id 分组，第一个作为主队统计，第二个作为客队统计
+  const teamIds = [...new Set(stats.map((s) => s.team_id))]
+  if (teamIds.length < 2)
+    return <p className="text-sm text-gray-400 py-4 text-center">统计数据不完整</p>
+
+  const homeId = teamIds[0]!
+  const awayId = teamIds[1]!
+  const homeStats = stats.filter((s) => s.team_id === homeId)
+  const homeName = homeStats[0]?.team_name || '主队'
+  const awayName = stats.find((s) => s.team_id === awayId)?.team_name || '客队'
+
+  const statTypes = [...new Set(stats.map((s) => s.stat_type!))].filter(Boolean)
+
+  return (
+    <div>
+      <h4 className="font-semibold mb-2">技术统计</h4>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-gray-500">
+            <th className="text-right py-1 pr-2">{homeName}</th>
+            <th className="text-center py-1 px-2 w-20"></th>
+            <th className="text-left py-1 pl-2">{awayName}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {statTypes.map((type) => {
+            const h = homeStats.find((s) => s.stat_type === type)
+            const a = stats.find((s) => s.stat_type === type && s.team_id === awayId)
+            const hv = parseFloat(h?.stat_value || '0') || 0
+            const av = parseFloat(a?.stat_value || '0') || 0
+            const total = hv + av || 1
+            return (
+              <tr key={type} className="border-t border-gray-100">
+                <td className="text-right font-medium py-2 pr-2">{h?.stat_value ?? '-'}</td>
+                <td className="text-center py-2 px-2">
+                  <div className="text-xs text-gray-400 mb-0.5">{type}</div>
+                  <div className="h-1 bg-gray-100 rounded-full flex overflow-hidden">
+                    <div className="bg-primary-500 h-full rounded-l-full" style={{ width: `${(hv / total) * 100}%` }} />
+                    <div className="bg-gray-300 h-full rounded-r-full" style={{ width: `${(av / total) * 100}%` }} />
+                  </div>
+                </td>
+                <td className="font-medium py-2 pl-2">{a?.stat_value ?? '-'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }

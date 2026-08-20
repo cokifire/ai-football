@@ -864,7 +864,8 @@ export default function FixturesPage() {
         teamId={selectedTeamId}
         onClose={() => setSelectedTeamId(null)}
         onOpenFixture={(fixtureId) => {
-          setSelectedTeamId(null)
+          // 保留球队详情弹窗，仅叠加打开比赛详情弹窗；
+          // 关闭比赛详情后回到球队详情弹窗
           viewDetail({ id: fixtureId } as Fixture)
         }}
       />
