@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 import httpx
+from loguru import logger
 
 
 INTELLIGENCE_SITES = (
@@ -19,6 +20,9 @@ INTELLIGENCE_SITES = (
     "footballpredictions.com",
     "livescore.com/en/news/predictions",
 )
+
+# 最终注入主预测 LLM 的情报上限；原始文章可较长，但最终只保留关键观点。
+FINAL_INTELLIGENCE_MAX_CHARS = 1800
 
 
 def build_query(
@@ -108,11 +112,48 @@ def _clean_markdown(markdown: Any, *, max_chars: int = 6000) -> str:
     return cleaned
 
 
+def _limit_final_intelligence(markdown: str) -> str:
+    """Enforce a compact final intelligence payload for the prediction prompt."""
+    text = _clean_markdown(markdown, max_chars=100_000).strip()
+    if len(text) <= FINAL_INTELLIGENCE_MAX_CHARS:
+        return text
+
+    suffix = "\n\n[已截断，仅保留主要观点]"
+    budget = FINAL_INTELLIGENCE_MAX_CHARS - len(suffix)
+    compact = text[:budget].rstrip()
+    # Prefer not to cut an English sentence or Markdown line halfway through.
+    boundary = max(compact.rfind("\n"), compact.rfind("。"), compact.rfind(". "))
+    if boundary >= budget // 2:
+        compact = compact[:boundary + 1].rstrip()
+    return compact + suffix
+
+
 def _team_in_text(team: str, text: str) -> bool:
-    """Loose matching for team names while avoiding punctuation differences."""
+    """Match database team names against common shortened article names."""
     normalized_team = re.sub(r"[^\w]+", " ", team.casefold(), flags=re.UNICODE).strip()
     normalized_text = re.sub(r"[^\w]+", " ", text.casefold(), flags=re.UNICODE)
-    return bool(normalized_team) and normalized_team in normalized_text
+    if not normalized_team:
+        return False
+    if normalized_team in normalized_text:
+        return True
+
+    # Sites commonly omit suffixes such as AIF/FC and prefixes such as Red Bull.
+    suffixes = {"aif", "afc", "fc", "fk", "cf", "sc", "sk", "calcio"}
+    tokens = [token for token in normalized_team.split() if token not in suffixes]
+    significant = [token for token in tokens if len(token) >= 4]
+    return any(re.search(rf"\b{re.escape(token)}\b", normalized_text) for token in significant)
+
+
+def _short_team_name(team: str) -> str:
+    """Return a search-friendly name used by prediction sites."""
+    tokens = re.findall(r"[\w]+", team, flags=re.UNICODE)
+    suffixes = {"aif", "afc", "fc", "fk", "cf", "sc", "sk", "calcio"}
+    tokens = [token for token in tokens if token.casefold() not in suffixes]
+    if not tokens:
+        return team.strip()
+    # The final meaningful token is usually the name used in article slugs:
+    # "Mjallby AIF" -> "Mjallby", "Red Bull Salzburg" -> "Salzburg".
+    return tokens[-1]
 
 
 def _is_usable_article(item: dict[str, Any]) -> bool:
@@ -124,6 +165,21 @@ def _is_usable_article(item: dict[str, Any]) -> bool:
         "match center", "matchcentre", "results", "fixture list",
     )
     return not any(term in title or term in url for term in blocked)
+
+
+def _matching_items(result: Any, *, home_team: str, away_team: str, source_site: str) -> list[tuple[str, dict[str, Any]]]:
+    """Keep usable results that mention both teams, including common short names."""
+    matches = []
+    for source, item in _result_items(result):
+        if not _is_usable_article(item):
+            continue
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("title", "name", "description", "content", "markdown", "url", "link")
+        )
+        if _team_in_text(home_team, haystack) and _team_in_text(away_team, haystack):
+            matches.append((source, {**item, "source_site": source_site}))
+    return matches
 
 
 def _as_markdown(result: Any, *, query: str, limit: int = 3) -> str:
@@ -174,7 +230,13 @@ def _organize_with_agnes(
 ) -> str:
     """Turn filtered article text into compact, structured Markdown."""
     if not api_key or not raw_markdown or "未获取到可用的外部情报" in raw_markdown:
+        logger.info(
+            "情报 LLM 清洗跳过: api_key_configured={}, raw_chars={}",
+            bool(api_key), len(raw_markdown or ""),
+        )
         return raw_markdown
+
+    logger.info("情报 LLM 清洗开始: model={}, input_chars={}", model, len(raw_markdown))
 
     prompt = f"""你是足球比赛情报编辑。请只根据下方网页资料整理本场比赛情报。
 不要补充资料中没有明确出现的事实，不要猜测伤停、阵容、近期战绩或战术。
@@ -183,7 +245,8 @@ def _organize_with_agnes(
 目标比赛：{home_team} vs {away_team}
 
 请严格输出简洁 Markdown，不要输出 JSON、解释或前言，格式如下。
-不要输出比赛信息、来源、URL 或文章标题；必须分别保留主队和客队的信息，只输出情报分析和预测总结：
+不要输出比赛信息、来源、URL 或文章标题；必须分别保留主队和客队的信息，只输出情报分析和预测总结。
+每个项目最多一句话，优先保留伤停、状态变化和战术要点；全文控制在约 1200 个中文字符以内：
 ## 外部比赛情报
 ### 主队：{home_team}
 - 近期状态：
@@ -212,7 +275,7 @@ def _organize_with_agnes(
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 2500,
+                "max_tokens": 1200,
             },
             timeout=60.0,
         )
@@ -221,9 +284,13 @@ def _organize_with_agnes(
         content = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
         if content.startswith("## 外部比赛情报"):
             content = _remove_markdown_sections(content, ("比赛信息", "来源"))
-            return _clean_markdown(content, max_chars=8000)
-    except Exception:
-        pass
+            cleaned = _clean_markdown(content, max_chars=8000)
+            logger.info("情报 LLM 清洗完成: output_chars={}", len(cleaned))
+            return cleaned
+        logger.warning("情报 LLM 清洗返回格式不符合预期，使用程序清洗结果")
+    except Exception as exc:
+        logger.warning("情报 LLM 清洗失败: {}，使用程序清洗结果", exc)
+    logger.info("情报 LLM 清洗降级返回: output_chars={}", len(raw_markdown))
     return raw_markdown
 
 
@@ -246,6 +313,7 @@ def scrape_match_analysis(
     in a prompt without making external intelligence a hard prediction error.
     """
     if not api_key:
+        logger.warning("Firecrawl 情报获取跳过: FIRECRAWL_API_KEY 未配置")
         return "# 外部比赛情报\n\n未配置 Firecrawl API key。"
 
     limit = max(1, min(limit, 3))
@@ -275,41 +343,57 @@ def scrape_match_analysis(
             removeBase64Images=True,
             blockAds=True,
         )
-        per_site_limit = 1
+        per_site_limit = 3
         for source_site in sites:
             if len(relevant) >= limit:
                 break
-            query = build_query(
+            queries = [build_query(
                 home_team=home_team,
                 away_team=away_team,
                 competition=competition,
                 year=year,
                 site=source_site,
+            )]
+            fallback_query = (
+                f"site:{source_site} {_short_team_name(home_team)} "
+                f"{_short_team_name(away_team)} prediction"
             )
-            query_list.append(query)
-            result = app.search(
-                query=query,
-                limit=per_site_limit,
-                scrape_options=scrape_options,
-            )
-            for source, item in _result_items(result):
-                if not _is_usable_article(item):
+            if fallback_query not in queries:
+                queries.append(fallback_query)
+
+            site_matches = []
+            for query in queries:
+                query_list.append(query)
+                try:
+                    result = app.search(
+                        query=query,
+                        limit=per_site_limit,
+                        scrape_options=scrape_options,
+                    )
+                except Exception as exc:
+                    logger.warning("Firecrawl 搜索失败: site={}, error={}", source_site, exc)
                     continue
-                haystack = " ".join(
-                    str(item.get(key) or "")
-                    for key in ("title", "name", "description", "content", "markdown")
+                site_matches = _matching_items(
+                    result,
+                    home_team=home_team,
+                    away_team=away_team,
+                    source_site=source_site,
                 )
-                if _team_in_text(home_team, haystack) and _team_in_text(away_team, haystack):
-                    item = {**item, "source_site": source_site}
-                    relevant.append((source, item))
+                if site_matches:
                     break
+            if site_matches:
+                relevant.append(site_matches[0])
 
         raw_markdown = _as_markdown(
             {"data": [item for _, item in relevant]},
             query="\n".join(query_list),
             limit=limit,
         )
-        return _organize_with_agnes(
+        logger.info(
+            "Firecrawl 汇总完成: queried_sites={}, relevant_results={}, markdown_chars={}",
+            len(query_list), len(relevant), len(raw_markdown),
+        )
+        intelligence = _organize_with_agnes(
             raw_markdown,
             home_team=home_team,
             away_team=away_team,
@@ -317,7 +401,15 @@ def scrape_match_analysis(
             base_url=intelligence_llm_base_url,
             model=intelligence_llm_model,
         )
+        final_intelligence = _limit_final_intelligence(intelligence)
+        if len(final_intelligence) != len(intelligence):
+            logger.info(
+                "情报最终输出已压缩: before_chars={}, after_chars={}",
+                len(intelligence), len(final_intelligence),
+            )
+        return final_intelligence
     except Exception as exc:  # noqa: BLE001 - provider failure must not stop prediction
+        logger.error("Firecrawl 情报获取初始化/汇总失败: {}", exc)
         return f"# 外部比赛情报\n\n获取失败，忽略该数据源：{type(exc).__name__}: {exc}"
 
 

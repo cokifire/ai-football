@@ -539,10 +539,14 @@ def _fetch_weather_text(city_name: str) -> str:
 
 def _fetch_intelligence_markdown(fixture: dict) -> str:
     """获取本场外部比赛情报 Markdown，失败时不阻断预测。"""
+    logger.info(
+        "情报获取开始: fixture={}, home={}, away={}",
+        fixture.get("id"), fixture.get("home_name"), fixture.get("away_name"),
+    )
     try:
         from tools.fetch_intelligence import scrape_match_analysis
 
-        return scrape_match_analysis(
+        result = scrape_match_analysis(
             home_team=str(fixture.get("home_name") or ""),
             away_team=str(fixture.get("away_name") or ""),
             competition=str(fixture.get("league_name") or ""),
@@ -553,7 +557,10 @@ def _fetch_intelligence_markdown(fixture: dict) -> str:
             intelligence_llm_model=settings.intelligence_llm_model,
             limit=3,
         )
-    except Exception:
+        logger.info("情报获取结束: fixture={}, output_chars={}", fixture.get("id"), len(result or ""))
+        return result
+    except Exception as exc:
+        logger.exception("情报获取异常: fixture={}, error={}", fixture.get("id"), exc)
         return "# 外部比赛情报\n\n获取失败，忽略该数据源。"
 
 
