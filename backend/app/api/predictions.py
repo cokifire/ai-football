@@ -265,26 +265,36 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
 
     where = "WHERE " + " AND ".join(conditions)
 
-    row = db.execute(text(f"""
-        SELECT
-            COUNT(p.win_correct)      AS win_total,
-            SUM(p.win_correct)        AS win_correct_cnt,
-            COUNT(p.over25_correct)   AS over_total,
-            SUM(p.over25_correct)     AS over_correct_cnt,
-            COUNT(p.handicap_correct) AS hand_total,
-            SUM(p.handicap_correct)   AS hand_correct_cnt,
-            COUNT(p.score_in_top3)    AS score_total,
-            SUM(p.score_in_top3)      AS score_correct_cnt
+    # 不直接对 *_correct 字段做 COUNT：历史记录可能尚未执行赛后回填，
+    # 预测列表接口会用实际比分即时补算这些字段。统计接口也必须使用同一口径，
+    # 否则不同联赛（尤其杯赛）会出现样本数少于实际已完赛预测数的情况。
+    rows = db.execute(text(f"""
+        SELECT p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
+               p.llm_win, p.llm_score, p.llm_ou_type, p.llm_ou_line,
+               p.llm_handicap_num, p.llm_handicap_team,
+               p.actual_home_goals AS p_ah, p.actual_away_goals AS p_aa,
+               f.goals_home AS actual_h, f.goals_away AS actual_a
         FROM predictions p
         LEFT JOIN fixtures f ON p.fixture_id = f.id
         {where}
-    """), params).fetchone()
+    """), params).fetchall()
 
-    d = dict(row._mapping)
+    totals = {"win": 0, "over25": 0, "handicap": 0, "score": 0}
+    corrects = {"win": 0, "over25": 0, "handicap": 0, "score": 0}
+    for row in rows:
+        d = dict(row._mapping)
+        actual_h = d.get("p_ah") if d.get("p_ah") is not None else d.get("actual_h")
+        actual_a = d.get("p_aa") if d.get("p_aa") is not None else d.get("actual_a")
+        flags = _derive_result_flags(d, actual_h, actual_a)
+        for key, flag in zip(("win", "over25", "handicap", "score"), flags):
+            # None 表示没有可验证结果，包含大小球/盘口走水，必须排除。
+            if flag is not None:
+                totals[key] += 1
+                corrects[key] += int(flag)
 
-    def item(key: str, label: str, total, correct):
-        total = int(total or 0)
-        correct = int(correct or 0)
+    def item(key: str, label: str):
+        total = totals[key]
+        correct = corrects[key]
         return {
             "key": key,
             "label": label,
@@ -294,10 +304,10 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
         }
 
     data = [
-        item("win", "胜负", d["win_total"], d["win_correct_cnt"]),
-        item("over25", "大小球", d["over_total"], d["over_correct_cnt"]),
-        item("handicap", "盘口", d["hand_total"], d["hand_correct_cnt"]),
-        item("score", "比分Top3", d["score_total"], d["score_correct_cnt"]),
+        item("win", "胜负"),
+        item("over25", "大小球"),
+        item("handicap", "盘口"),
+        item("score", "比分Top3"),
     ]
     return {"data": data}
 
