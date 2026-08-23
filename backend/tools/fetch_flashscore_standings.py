@@ -42,6 +42,9 @@ URLS = {
     94: "https://www.flashscore.com/football/portugal/liga-portugal/standings/hhJ7LFzn/standings/overall/",
     88: "https://www.flashscore.com/football/netherlands/eredivisie/standings/zm1be8bD/standings/overall/",
     140: "https://www.flashscore.com/football/spain/laliga/standings/dWdJXP6U/standings/overall/",
+    39: "https://www.flashscore.com/football/england/premier-league/standings/GO4S62sM/standings/overall/",
+    135: "https://www.flashscore.com/football/italy/serie-a/standings/S0nT1X7q/standings/overall/",
+    61: "https://www.flashscore.com/football/france/ligue-1/standings/4R7iGq1l/standings/overall/",
 }
 
 OVERRIDE_FILE = Path(__file__).resolve().parent / "flashscore_team_map.json"
@@ -197,7 +200,8 @@ def fetch_blob(url: str):
 
 def parse_standings(blob: str):
     """把积分榜文本解析为队伍字典列表。每行 15 个字段:
-    rank. / name / MP / W / D / L / GF:GA / GD / PTS / sep / F1..F5。"""
+    rank. / name / [recent_score] / MP / W / D / L / GF:GA / GD / PTS / sep / F1..F5。
+    兼容两种结构：瑞典超无recent_score列，五大联赛/荷甲有recent_score列（自动检测跳过）。"""
     lines = [l.strip() for l in blob.split("\n") if l.strip()]
     teams = []
     i = 0
@@ -208,14 +212,18 @@ def parse_standings(blob: str):
             break
         rank = int(lines[i].rstrip("."))
         name = lines[i + 1]
-        played = int(lines[i + 2])
-        won = int(lines[i + 3])
-        draw = int(lines[i + 4])
-        lost = int(lines[i + 5])
-        gf, ga = map(int, lines[i + 6].split(":"))
-        gd = int(lines[i + 7])
-        points = int(lines[i + 8])
-        j = i + 10
+        # 检测是否有最近比分列（格式如 3-0 / 2:1）
+        offset = 0
+        if i + 2 < len(lines) and re.match(r"^\d+[-:]\d+$", lines[i + 2]):
+            offset = 1
+        played = int(lines[i + 2 + offset])
+        won = int(lines[i + 3 + offset])
+        draw = int(lines[i + 4 + offset])
+        lost = int(lines[i + 5 + offset])
+        gf, ga = map(int, lines[i + 6 + offset].split(":"))
+        gd = int(lines[i + 7 + offset])
+        points = int(lines[i + 8 + offset])
+        j = i + 10 + offset
         form = []
         while j < len(lines) and re.match(r"^[WDL]$", lines[j]):
             form.append(lines[j])
