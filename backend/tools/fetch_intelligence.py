@@ -256,9 +256,6 @@ def _organize_with_agnes(
 - 近期状态：
 - 伤停/阵容：
 - 战术与比赛信息：
-### 情报质量
-- 评级：高/中/低
-- 说明：
 ### 预测总结
 - 总结：仅根据资料中明确出现的因素，概括本场比赛的倾向、风险和可关注方向；资料不足时写“暂无明确预测”。
 
@@ -283,7 +280,8 @@ def _organize_with_agnes(
         content = response.json()["choices"][0]["message"].get("content", "").strip()
         content = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
         if content.startswith("## 外部比赛情报"):
-            content = _remove_markdown_sections(content, ("比赛信息", "来源"))
+            # 情报质量是内部评估字段，不作为比赛情报展示或注入预测模型。
+            content = _remove_markdown_sections(content, ("比赛信息", "来源", "情报质量"))
             cleaned = _clean_markdown(content, max_chars=8000)
             logger.info("情报 LLM 清洗完成: output_chars={}", len(cleaned))
             return cleaned
