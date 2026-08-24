@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from loguru import logger
-import httpx
 
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.models.league import League, Season
 from app.models.team import Team, Venue
 
@@ -28,9 +28,8 @@ def sync_teams(db: Session) -> None:
         logger.info(f"拉取联赛 {season.league_id} 赛季 {season.year} 的球队...")
 
         try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/teams",
-                headers={"x-apisports-key": settings.api_football_key},
+            response = api_football_get_sync(
+                "teams",
                 params={"league": season.league_id, "season": season.year},
                 timeout=30.0,
             )

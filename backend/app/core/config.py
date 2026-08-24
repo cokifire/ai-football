@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # API-Football
     api_football_key: str = ""
+    api_football_key_backup: str = ""   # 备用 key: 主 key 额度耗尽时自动切换
     api_football_base_url: str = ""
 
     # 天气数据（OpenWeatherMap）

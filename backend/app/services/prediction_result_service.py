@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import text
 from loguru import logger
-import httpx
 
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.db.session import SessionLocal
 
 # 已完赛、有最终比分的状态
@@ -118,9 +118,8 @@ def _backfill_one(db, fid: int) -> bool:
 
     if status not in FINISHED or gh is None or ga is None:
         try:
-            r = httpx.get(
-                f"{settings.api_football_base_url}/fixtures",
-                headers={"x-apisports-key": settings.api_football_key},
+            r = api_football_get_sync(
+                "fixtures",
                 params={"id": fid},
                 timeout=10.0,
             )

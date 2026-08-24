@@ -1,8 +1,8 @@
 """重试失败的联赛+赛季"""
 from app.db.session import SessionLocal
 from app.services.fixture_service import sync_fixtures
-import httpx
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.models.fixture import Fixture
 from app.services.fixture_service import _upsert_fixture
 
@@ -15,9 +15,8 @@ try:
     for league_id, year in FAILED:
         print(f"拉取联赛 {league_id} 赛季 {year}...", end=" ")
         try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/fixtures",
-                headers={"x-apisports-key": settings.api_football_key},
+            response = api_football_get_sync(
+                "fixtures",
                 params={"league": str(league_id), "season": str(year)},
                 timeout=60.0,
             )

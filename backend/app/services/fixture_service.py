@@ -7,6 +7,7 @@ import httpx
 import time
 
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.db.session import SessionLocal
 from app.models.league import League, Season
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
@@ -18,52 +19,17 @@ LIVE_SYNC_INTERVAL = 120  # 秒
 # 避免遗漏当天晚间开球的比赛.
 DATE_SYNC_TIMEZONE = "Asia/Shanghai"
 
-# TLS 握手/连接超时重试配置
-API_CONNECT_TIMEOUT = 10.0   # 连接(含 TLS 握手)超时
-API_READ_TIMEOUT = 30.0      # 读取响应超时
-API_RETRY_MAX = 3            # 瞬时故障重试次数
-API_RETRY_BASE_DELAY = 1.5   # 退避基数(秒)
-
 
 class ApiFootballQuotaExceeded(Exception):
     """API-Football 当日请求额度已耗尽。"""
 
 
-def _api_get_http(endpoint: str, params: dict) -> httpx.Response:
-    """带 TLS/连接超时重试的 API GET 请求 (返回 httpx.Response)
+def _api_get_http(endpoint: str, params: dict, timeout: float | None = None) -> httpx.Response:
+    """带主/备 key 切换与超时重试的 API GET 请求 (返回 httpx.Response)。
 
-    仅对瞬时故障重试: TLS 握手超时、连接错误、网络中断、以及
-    429/5xx 等服务端瞬时错误。HTTP 4xx 业务错误(如 401/403)不重试。
+    委托统一 client: app.core.api_football.api_football_get_sync。
     """
-    url = f"{settings.api_football_base_url}/{endpoint}"
-    headers = {"x-apisports-key": settings.api_football_key}
-    timeout = httpx.Timeout(
-        connect=API_CONNECT_TIMEOUT,
-        read=API_READ_TIMEOUT,
-        write=API_CONNECT_TIMEOUT,
-        pool=API_CONNECT_TIMEOUT,
-    )
-    last_err: Exception | None = None
-    for attempt in range(API_RETRY_MAX):
-        try:
-            r = httpx.get(url, headers=headers, params=params, timeout=timeout)
-            if r.status_code == 429:
-                return r
-            if r.status_code in (500, 502, 503, 504):
-                wait = API_RETRY_BASE_DELAY * (2 ** attempt)
-                logger.warning(
-                    f"API {r.status_code} 瞬时错误 {endpoint}, {wait:.1f}s 后重试 #{attempt+1}"
-                )
-                time.sleep(wait)
-                continue
-            return r
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            last_err = e
-            wait = API_RETRY_BASE_DELAY * (2 ** attempt)
-            logger.warning(f"API 请求失败 {endpoint}: {e}, {wait:.1f}s 后重试 #{attempt+1}")
-            time.sleep(wait)
-    # 重试耗尽, 抛出最后一次错误(让调用方按现有逻辑处理)
-    raise last_err or httpx.TransportError(f"API 请求失败 {endpoint}")
+    return api_football_get_sync(endpoint, params, timeout=timeout)
 
 # ──────────── daily sync ────────────
 
@@ -385,48 +351,14 @@ def sync_fixtures(db: Session) -> None:
 BATCH_SIZE = 1
 MAX_WORKERS = 1
 RETRY_MAX = 3
-API_RETRY_MAX = 3          # 单次 API 调用 429 重试次数
-API_BASE_DELAY = 1.5       # API 基础延迟(秒)
 
 
 def _api_get(endpoint: str, params: dict) -> dict:
-    """带 429 / TLS 超时重试和退避的 API GET 请求 (返回解析后的 json dict)"""
-    url = f"{settings.api_football_base_url}/{endpoint}"
-    headers = {"x-apisports-key": settings.api_football_key}
-    timeout = httpx.Timeout(
-        connect=API_CONNECT_TIMEOUT,
-        read=API_READ_TIMEOUT,
-        write=API_CONNECT_TIMEOUT,
-        pool=API_CONNECT_TIMEOUT,
-    )
-    r: httpx.Response | None = None
-    for attempt in range(API_RETRY_MAX):
-        try:
-            r = httpx.get(url, headers=headers, params=params, timeout=timeout)
-            if r.status_code in (429, 500, 502, 503, 504):
-                wait = API_BASE_DELAY * (2 ** attempt)
-                logger.debug(f"{r.status_code} 瞬时错误, 等待 {wait:.1f}s 后重试 #{attempt+1}")
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            return r.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (429, 500, 502, 503, 504):
-                wait = API_BASE_DELAY * (2 ** attempt)
-                logger.debug(f"{e.response.status_code} 瞬时错误, 等待 {wait:.1f}s 后重试 #{attempt+1}")
-                time.sleep(wait)
-                continue
-            raise
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            wait = API_BASE_DELAY * (2 ** attempt)
-            logger.debug(f"TLS/连接错误 {endpoint}: {e}, 等待 {wait:.1f}s 后重试 #{attempt+1}")
-            time.sleep(wait)
-    # 所有重试均失败
-    raise httpx.HTTPStatusError(
-        f"请求失败 after {API_RETRY_MAX} retries for {endpoint}",
-        request=r.request if r is not None else None,
-        response=r if r is not None else None,
-    )
+    """带主/备 key 切换与重试的 API GET 请求 (返回解析后的 json dict)。
+
+    委托统一 client: app.core.api_football.api_football_get_sync。
+    """
+    return api_football_get_sync(endpoint, params).json()
 
 
 def _do_fetch(db: Session, fixture_id: int) -> None:

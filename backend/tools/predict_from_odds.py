@@ -31,15 +31,9 @@ ODDS_PATH = os.path.join(os.path.dirname(__file__), "..", "odds_raw_full.json")
 
 # ── 实时赔率拉取(API-Football) ──────────────────────────────────────────────
 def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
-    """请求 API-Football 指定接口,返回解析后的 JSON。"""
-    from app.core.config import settings
-    import httpx
-    r = httpx.get(
-        f"{settings.api_football_base_url}/{path}",
-        headers={"x-apisports-key": settings.api_football_key},
-        params=params,
-        timeout=timeout,
-    )
+    """请求 API-Football 指定接口,返回解析后的 JSON。使用统一 client(主/备 key)。"""
+    from app.core.api_football import api_football_get_sync
+    r = api_football_get_sync(path, params, timeout=timeout)
     r.raise_for_status()
     return r.json()
 

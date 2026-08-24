@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from loguru import logger
-import httpx
 
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.models.league import League, Season
 from app.models.player import Player, PlayerStats
 
@@ -16,9 +16,8 @@ def _sync_league_players(db: Session, league_id: int, season_year: int) -> None:
 
     while True:
         try:
-            response = httpx.get(
-                f"{settings.api_football_base_url}/players",
-                headers={"x-apisports-key": settings.api_football_key},
+            response = api_football_get_sync(
+                "players",
                 params={
                     "league": league_id,
                     "season": season_year,

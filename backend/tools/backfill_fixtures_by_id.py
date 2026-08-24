@@ -32,15 +32,14 @@ from datetime import datetime
 import time
 import argparse
 
-import httpx
 from app.db.session import SessionLocal
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync, ApiFootballQuotaExceeded, ApiFootballError
 from app.services.fixture_service import _upsert_fixture
 
 # 默认允许的联赛 id 白名单
 DEFAULT_LEAGUES = {1, 2, 3, 5, 10, 39, 45, 61, 71, 78, 135, 140}
 
-RETRY_MAX = 3
 API_TIMEOUT = 30.0
 
 
@@ -62,60 +61,42 @@ def fetch_one(fid: int) -> dict:
         quota     -> 额度耗尽，应退出
         error     -> 其它错误
     """
-    url = f"{settings.api_football_base_url}/fixtures"
-    headers = {"x-apisports-key": settings.api_football_key}
+    try:
+        r = api_football_get_sync(
+            "fixtures", params={"id": str(fid)}, timeout=API_TIMEOUT
+        )
+    except ApiFootballQuotaExceeded as e:
+        return {"status": "quota", "message": str(e)}
+    except ApiFootballError as e:
+        return {"status": "error", "message": str(e)}
 
-    for attempt in range(RETRY_MAX):
-        try:
-            r = httpx.get(url, headers=headers, params={"id": str(fid)}, timeout=API_TIMEOUT)
-        except httpx.TransportError as e:
-            wait = 1.5 * (2 ** attempt)
-            if attempt < RETRY_MAX - 1:
-                time.sleep(wait)
-                continue
-            return {"status": "error", "message": f"网络错误: {e}"}
+    # 额度耗尽: 剩余请求数为 0
+    remaining = r.headers.get("x-ratelimit-requests-remaining")
+    if remaining is not None and remaining.strip() in ("0", "0.0"):
+        return {"status": "quota", "message": "x-ratelimit-requests-remaining = 0"}
 
-        # 额度耗尽: 剩余请求数为 0
-        remaining = r.headers.get("x-ratelimit-requests-remaining")
-        if remaining is not None and remaining.strip() in ("0", "0.0"):
-            return {"status": "quota", "message": "x-ratelimit-requests-remaining = 0"}
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        return {"status": "error", "message": f"HTTP {e}"}
 
-        # 限流: 429 重试，仍失败视为额度耗尽
-        if r.status_code == 429:
-            retry_after = r.headers.get("retry-after")
-            try:
-                wait = float(retry_after) if retry_after else 1.5 * (2 ** attempt)
-            except ValueError:
-                wait = 1.5 * (2 ** attempt)
-            if attempt < RETRY_MAX - 1:
-                time.sleep(wait)
-                continue
-            return {"status": "quota", "message": "持续 429 限流，额度可能已耗尽"}
+    data = r.json()
 
-        try:
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            return {"status": "error", "message": f"HTTP {e.response.status_code}"}
+    # 解析错误字段
+    errors = data.get("errors")
+    if errors:
+        text = _normalize_errors(errors)
+        tl = text.lower()
+        # 免费版窗口限制 (非额度问题) -> 跳过继续
+        if "free plan" in tl or ("plan" in tl and "free" in tl) or "subscription" in tl:
+            return {"status": "free_plan", "message": text}
+        # 订阅/请求额度耗尽 -> 退出
+        if "limit" in tl or "rate" in tl or "exceeded" in tl or "requests" in tl:
+            return {"status": "quota", "message": text}
+        return {"status": "error", "message": text}
 
-        data = r.json()
-
-        # 解析错误字段
-        errors = data.get("errors")
-        if errors:
-            text = _normalize_errors(errors)
-            tl = text.lower()
-            # 免费版窗口限制 (非额度问题) -> 跳过继续
-            if "free plan" in tl or ("plan" in tl and "free" in tl) or "subscription" in tl:
-                return {"status": "free_plan", "message": text}
-            # 订阅/请求额度耗尽 -> 退出
-            if "limit" in tl or "rate" in tl or "exceeded" in tl or "requests" in tl:
-                return {"status": "quota", "message": text}
-            return {"status": "error", "message": text}
-
-        items = data.get("response", [])
-        return {"status": "ok" if items else "empty", "data": data, "remaining": remaining}
-
-    return {"status": "error", "message": "超过最大重试次数"}
+    items = data.get("response", [])
+    return {"status": "ok" if items else "empty", "data": data, "remaining": remaining}
 
 
 def main():
@@ -129,8 +110,8 @@ def main():
                         help="允许的 league id 列表, 逗号分隔 (默认使用内置白名单)")
     args = parser.parse_args()
 
-    if not settings.api_football_key:
-        print("错误: 未配置 API_FOOTBALL_KEY，请在 backend/.env 中设置")
+    if not (settings.api_football_key or settings.api_football_key_backup):
+        print("错误: 未配置 API_FOOTBALL_KEY / API_FOOTBALL_KEY_BACKUP，请在 backend/.env 中设置")
         sys.exit(1)
     if not settings.api_football_base_url:
         print("错误: 未配置 API_FOOTBALL_BASE_URL，请在 backend/.env 中设置")

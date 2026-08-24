@@ -1,12 +1,12 @@
 from sqlalchemy.orm import Session
 from loguru import logger
-import httpx
 import random
 import sys
 import time
 from pathlib import Path
 
 from app.core.config import settings
+from app.core.api_football import api_football_get_sync
 from app.models.league import League, Season
 from app.models.standing import Standing
 
@@ -41,9 +41,8 @@ def _sync_from_api_football(db: Session, season: Season) -> bool:
     临时切回 API-Football，可在 sync_standings() 中显式接入。
     """
     try:
-        response = httpx.get(
-            f"{settings.api_football_base_url}/standings",
-            headers={"x-apisports-key": settings.api_football_key},
+        response = api_football_get_sync(
+            "standings",
             params={"league": season.league_id, "season": season.year},
             timeout=30.0,
         )

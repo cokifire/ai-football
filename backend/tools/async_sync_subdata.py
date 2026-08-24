@@ -7,6 +7,7 @@ from datetime import datetime
 from loguru import logger
 
 from app.core.config import settings
+from app.core.api_football import _available_keys
 from app.core.log_config import setup_logger
 
 setup_logger()
@@ -23,13 +24,15 @@ db_config = {
     "charset": "utf8mb4",
 }
 
+# 优先主 key, 缺失则用备 key
+_KEYS = _available_keys()
 API_BASE = settings.api_football_base_url
-API_KEY = settings.api_football_key
+API_KEY = _KEYS[0] if _KEYS else ""
 
 
 async def fetch_json(client: httpx.AsyncClient, endpoint: str, fixture_id: int):
     r = await client.get(
-        f"{API_BASE}/{endpoint}",
+        f"/{endpoint}",
         headers={"x-apisports-key": API_KEY},
         params={"fixture": fixture_id},
         timeout=30.0,
@@ -155,7 +158,7 @@ async def main():
 
     async def worker(fid: int, idx: int, total: int):
         async with sem:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(base_url=API_BASE.rstrip("/")) as client:
                 for attempt in range(3):
                     try:
                         return await sync_one_fixture(client, pool, fid, idx, total)
