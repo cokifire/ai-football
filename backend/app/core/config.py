@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     prediction_llm_base_url: str = "https://api.deepseek.com/v1"
     prediction_llm_model: str = "deepseek-chat"
 
+    # 备用预测 LLM（主模型请求失败或输出不合规时自动切换；可选）
+    prediction_fallback_llm_api_key: str = ""
+    prediction_fallback_llm_base_url: str = ""
+    prediction_fallback_llm_model: str = ""
+
     # 缓存
     cache_ttl: int = 3600
 

@@ -184,32 +184,49 @@ def _normalize_llm_fields(parsed: dict) -> dict:
     return out
 
 
-def _call_llm(prompt: str, retries: int = 2) -> dict | None:
-    # 多次重试：LLM 偶有返回非标准 JSON 或漏字段，重试可显著提升稳定性。
+def _call_llm_provider(
+    prompt: str,
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    provider_name: str,
+    retries: int = 2,
+    enable_thinking: bool = False,
+) -> dict | None:
+    """调用单个 OpenAI-compatible 预测模型，并校验其结构化输出。"""
+    if not (api_key or "").strip() or not (base_url or "").strip() or not (model or "").strip():
+        logger.warning("{} 未完整配置，跳过调用", provider_name)
+        return None
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        # Gemini 兼容接口会将思考 token 计入 max_tokens；预算过小会在最终 JSON
+        # 输出前截断（finish_reason=length），导致必填字段缺失。
+        "max_tokens": 16000,
+    }
+    if enable_thinking:
+        payload["enable_thinking"] = True
+
+    # 同一提供商内多次重试：偶有非标准 JSON 或短暂网络波动。
     for attempt in range(1, retries + 2):
         try:
             resp = _http_with_deadline(
                 "POST",
-                f"{settings.prediction_llm_base_url.rstrip('/')}/chat/completions",
+                f"{base_url.rstrip('/')}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.prediction_llm_api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": settings.prediction_llm_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    # Gemini 兼容接口会将思考 token 计入 max_tokens；预算过小会在最终 JSON
-                    # 输出前截断（finish_reason=length），导致必填字段缺失。
-                    "max_tokens": 16000,
-                    "enable_thinking": True,
-                },
+                json=payload,
                 timeout=120.0,
-                label="DeepSeek",
+                label=provider_name,
             )
             if resp is None:
-                logger.warning("DeepSeek 请求失败或超时，无法生成 LLM 预测")
-                return None
+                logger.warning("{} 请求失败或超时（第 {} 次）", provider_name, attempt)
+                continue
             resp.raise_for_status()
             message = resp.json()['choices'][0]['message']
             content = message.get('content') or ''
@@ -220,8 +237,8 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
             if parsed and _has_required_llm_fields(parsed):
                 return _normalize_llm_fields(parsed)
             logger.warning(
-                "LLM 返回缺少必要预测字段（第 {} 次），keys={}，content_preview={!r}",
-                attempt,
+                "{} 返回缺少必要预测字段（第 {} 次），keys={}，content_preview={!r}",
+                provider_name, attempt,
                 sorted(parsed.keys()) if isinstance(parsed, dict) else [],
                 content[:500],
             )
@@ -232,8 +249,39 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
                     detail += f" | body: {e.response.text[:500]}"
                 except Exception:
                     pass
-            logger.warning("LLM 失败（第 {} 次）: {}", attempt, detail)
+            logger.warning("{} 失败（第 {} 次）: {}", provider_name, attempt, detail)
     return None
+
+
+def _call_llm(prompt: str, retries: int = 2) -> dict | None:
+    """优先主预测模型；其不可用或输出不合规时，切换到备用模型。"""
+    primary_name = f"主预测 LLM ({settings.prediction_llm_model})"
+    result = _call_llm_provider(
+        prompt,
+        api_key=settings.prediction_llm_api_key,
+        base_url=settings.prediction_llm_base_url,
+        model=settings.prediction_llm_model,
+        provider_name=primary_name,
+        retries=retries,
+        enable_thinking=True,
+    )
+    if result is not None:
+        logger.info("预测 LLM 成功: provider=primary, model={}", settings.prediction_llm_model)
+        return result
+
+    fallback_name = f"备用预测 LLM ({settings.prediction_fallback_llm_model})"
+    logger.warning("主预测 LLM 已失败，开始切换备用模型: {}", fallback_name)
+    result = _call_llm_provider(
+        prompt,
+        api_key=settings.prediction_fallback_llm_api_key,
+        base_url=settings.prediction_fallback_llm_base_url,
+        model=settings.prediction_fallback_llm_model,
+        provider_name=fallback_name,
+        retries=retries,
+    )
+    if result is not None:
+        logger.info("预测 LLM 成功: provider=fallback, model={}", settings.prediction_fallback_llm_model)
+    return result
 
 
 def _parse_llm_json(content: str) -> dict | None:

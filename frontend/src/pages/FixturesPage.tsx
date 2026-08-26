@@ -547,6 +547,16 @@ export default function FixturesPage() {
         </div>
       )}
 
+      <TeamDetailModal
+        teamId={selectedTeamId}
+        onClose={() => setSelectedTeamId(null)}
+        onOpenFixture={(fixtureId) => {
+          // 先关闭球队详情，再打开比赛详情，避免球队弹窗遮挡比赛弹窗。
+          setSelectedTeamId(null)
+          viewDetail({ id: fixtureId } as Fixture)
+        }}
+      />
+
       {/* 比赛详情弹窗 */}
       <Modal
         open={!!selectedFixture}
@@ -860,15 +870,6 @@ export default function FixturesPage() {
         )}
       </Modal>
 
-      <TeamDetailModal
-        teamId={selectedTeamId}
-        onClose={() => setSelectedTeamId(null)}
-        onOpenFixture={(fixtureId) => {
-          // 保留球队详情弹窗，仅叠加打开比赛详情弹窗；
-          // 关闭比赛详情后回到球队详情弹窗
-          viewDetail({ id: fixtureId } as Fixture)
-        }}
-      />
     </div>
   )
 }
