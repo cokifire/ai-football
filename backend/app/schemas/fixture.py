@@ -118,6 +118,7 @@ class FixtureSchema(BaseModel):
     penalty_away: Optional[int] = None
     sub_data_synced: bool = False
     category: Optional[str] = None
+    predicted: bool = False
 
     class Config:
         from_attributes = True

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.db.session import get_db
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
@@ -58,6 +58,16 @@ def _list_sync(db, league_id, season, team_id, team_name, date, status, page, pa
     total = query.count()
     fixtures = (query.order_by(Fixture.date.desc(), Fixture.id.desc())
                 .offset((page - 1) * page_size).limit(page_size).all())
+    if fixtures:
+        fixture_ids = [fixture.id for fixture in fixtures]
+        predicted_ids = set(db.execute(text(
+            "SELECT fixture_id FROM predictions WHERE fixture_id IN :fixture_ids"
+        ).bindparams(bindparam("fixture_ids", expanding=True)), {
+            "fixture_ids": fixture_ids,
+        }).scalars())
+        for fixture in fixtures:
+            # 该字段只用于接口响应，不写入 fixtures 表。
+            fixture.predicted = fixture.id in predicted_ids
     fixtures_apply_denorm_zh(db, fixtures)
     return {"data": fixtures, "total": total, "page": page, "page_size": page_size}
 

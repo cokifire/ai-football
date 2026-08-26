@@ -23,6 +23,7 @@ interface Fixture {
   round?: string
   venue_name?: string
   venue_city?: string
+  predicted?: boolean
 }
 
 interface Team {
@@ -306,9 +307,12 @@ export default function FixturesPage() {
     setPredictingIds((prev) => new Set(prev).add(fixture.id))
     setPredictMsg(null)
     apiClient
-      .post(`/predict/${fixture.id}`, {}, { timeout: 120000 })
+      .post(`/predict/${fixture.id}`, {}, { timeout: 300000 })
       .then((res) => {
         setPredictResult({ fixture, result: res.data.result })
+        setFixtures((prev) => prev.map((item) => (
+          item.id === fixture.id ? { ...item, predicted: true } : item
+        )))
       })
       .catch((err: any) => {
         console.error('[Predict Error]', err)
@@ -502,7 +506,7 @@ export default function FixturesPage() {
                           disabled={FINISHED_STATUSES.has(f.status_short) || predictingIds.has(f.id)}
                           onClick={() => handlePredict(f)}
                         >
-                          {predictingIds.has(f.id) ? '预测中...' : '预测'}
+                          {predictingIds.has(f.id) ? '预测中...' : f.predicted ? '重新预测' : '预测'}
                         </button>
                       </div>
                     </td>
@@ -1146,7 +1150,7 @@ function FixtureCard({
           disabled={finished || predicting}
           onClick={() => onPredict(f)}
         >
-          {predicting ? '预测中...' : '预测'}
+          {predicting ? '预测中...' : f.predicted ? '重新预测' : '预测'}
         </button>
       </div>
     </div>
