@@ -7,7 +7,7 @@ import httpx
 import time
 
 from app.core.config import settings
-from app.core.api_football import api_football_get_sync
+from app.core.api_football import ApiFootballQuotaExceeded, api_football_get_sync
 from app.db.session import SessionLocal
 from app.models.league import League, Season
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
@@ -18,10 +18,6 @@ LIVE_SYNC_INTERVAL = 120  # 秒
 # Asia/Shanghai (UTC+8) 使 24 小时日界覆盖更广的 UTC 范围, 突破默认 UTC 的 ~595 条上限,
 # 避免遗漏当天晚间开球的比赛.
 DATE_SYNC_TIMEZONE = "Asia/Shanghai"
-
-
-class ApiFootballQuotaExceeded(Exception):
-    """API-Football 当日请求额度已耗尽。"""
 
 
 def _api_get_http(endpoint: str, params: dict, timeout: float | None = None) -> httpx.Response:
@@ -351,6 +347,10 @@ def sync_fixtures(db: Session) -> None:
 BATCH_SIZE = 1
 MAX_WORKERS = 1
 RETRY_MAX = 3
+# API-Football 免费/低配套餐常见 per-minute 限制为 30 次。
+# 子数据一场最多 4 个端点，原先 0.5s 间隔会形成约 120 次/分钟的突发。
+SUB_REQUEST_INTERVAL = 3.0
+SUB_BATCH_INTERVAL = 5.0
 
 
 def _api_get(endpoint: str, params: dict) -> dict:
@@ -401,10 +401,10 @@ def _do_fetch(db: Session, fixture_id: int) -> None:
     if need_stats: tasks.append((_fetch_statistics, "statistics"))
     if need_players: tasks.append((_fetch_player_stats, "players"))
 
-    # 串行请求避免 429 限流
+    # 串行请求并放慢端点间隔，避免触发 API-Football per-minute 限流。
     for fn, key in tasks:
         _fetch_one(fn, key)
-        time.sleep(0.5)  # 每个子请求间隔 0.5s
+        time.sleep(SUB_REQUEST_INTERVAL)
 
     fail = [k for k in ["events", "lineups", "statistics", "players"]
             if k in results and not results[k]]
@@ -483,7 +483,7 @@ def sync_completed_sub_data(db: Session) -> None:
             if batch_no == 1 or batch_no % 10 == 0 or batch_no * BATCH_SIZE >= len(ids):
                 print(f"    [{datetime.now().strftime('%H:%M:%S')}] {total_ok}/{len(ids)}", flush=True)
 
-        time.sleep(2.0)  # 批次间隔
+        time.sleep(SUB_BATCH_INTERVAL)  # 批次间隔，进一步平滑请求速率
 
     db.expire_all()
     logger.info(f"子数据同步完成 ({total_ok}/{len(ids)}, 失败 {total_fail})")
@@ -529,11 +529,7 @@ def refresh_fixture(db: Session, fixture_id: int) -> bool:
 
 
 def _fetch_events(db: Session, fixture_id: int) -> None:
-    try:
-        data = _api_get("fixtures/events", {"fixture": fixture_id})
-    except Exception as e:
-        logger.warning(f"拉取事件失败 fixture={fixture_id}: {e}")
-        return
+    data = _api_get("fixtures/events", {"fixture": fixture_id})
 
     for evt in data.get("response", []):
         time_raw = evt.get("time") or {}
@@ -559,11 +555,7 @@ def _fetch_events(db: Session, fixture_id: int) -> None:
 
 
 def _fetch_lineups(db: Session, fixture_id: int) -> None:
-    try:
-        data = _api_get("fixtures/lineups", {"fixture": fixture_id})
-    except Exception as e:
-        logger.warning(f"拉取阵容失败 fixture={fixture_id}: {e}")
-        return
+    data = _api_get("fixtures/lineups", {"fixture": fixture_id})
 
     for team_entry in data.get("response", []):
         team_raw = team_entry.get("team") or {}
@@ -606,11 +598,7 @@ def _fetch_lineups(db: Session, fixture_id: int) -> None:
 
 
 def _fetch_statistics(db: Session, fixture_id: int) -> None:
-    try:
-        data = _api_get("fixtures/statistics", {"fixture": fixture_id})
-    except Exception as e:
-        logger.warning(f"拉取统计失败 fixture={fixture_id}: {e}")
-        return
+    data = _api_get("fixtures/statistics", {"fixture": fixture_id})
 
     for team_entry in data.get("response", []):
         team_raw = team_entry.get("team") or {}
@@ -629,11 +617,7 @@ def _fetch_statistics(db: Session, fixture_id: int) -> None:
 
 
 def _fetch_player_stats(db: Session, fixture_id: int) -> None:
-    try:
-        data = _api_get("fixtures/players", {"fixture": fixture_id})
-    except Exception as e:
-        logger.warning(f"拉取球员统计失败 fixture={fixture_id}: {e}")
-        return
+    data = _api_get("fixtures/players", {"fixture": fixture_id})
 
     for team_entry in data.get("response", []):
         team_raw = team_entry.get("team") or {}

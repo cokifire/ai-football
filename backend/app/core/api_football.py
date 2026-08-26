@@ -1,8 +1,8 @@
 """统一的 API-Football 客户端。
 
 集中处理:
-1. 主/备 API Key 自动切换: 当主 key 触发额度耗尽(429 / 403 / 响应体含
-   "requests limit" / "quota" 等)时, 自动切换到备用 key 重试。
+1. 主/备 API Key 自动切换: 仅当响应明确表示当日额度耗尽时才切换；普通 429
+   按 Retry-After 在当前 key 上重试，避免把短时限流误判为日额度耗尽。
 2. 统一的超时与瞬时故障重试(连接/TLS 超时、5xx)。
 3. 出站请求日志: 记录每个请求的方法/端点/耗时/状态码/使用的 key,
    便于排查"平台有记录、本地查不到"类问题。
@@ -13,8 +13,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
-
+from email.utils import parsedate_to_datetime
 import httpx
 from loguru import logger
 
@@ -26,6 +25,8 @@ READ_TIMEOUT = 30.0
 TRANSPORT_ERROR_RETRIES = 3          # 连接/TLS/网络瞬时故障重试
 TRANSPORT_ERROR_BASE_DELAY = 1.5    # 退避基数(秒)
 SLOW_LOG_THRESHOLD = 5.0            # 慢请求日志阈值(秒)
+RATE_LIMIT_RETRIES = 3              # 非日额度的 429 重试次数
+MAX_RATE_LIMIT_WAIT = 60.0          # 单次限流等待上限，避免任务无限阻塞
 
 
 class ApiFootballError(Exception):
@@ -34,6 +35,10 @@ class ApiFootballError(Exception):
 
 class ApiFootballQuotaExceeded(Exception):
     """所有可用 key 的当日请求额度均耗尽。"""
+
+
+class ApiFootballRateLimited(ApiFootballError):
+    """收到短时限流，重试后仍未恢复。"""
 
 
 def _available_keys() -> list[str]:
@@ -48,24 +53,55 @@ def _available_keys() -> list[str]:
     return keys
 
 
-def _is_quota_exhausted(status_code: int, body: str) -> bool:
-    """判断响应是否表示额度耗尽。
+def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
+    """判断响应是否明确表示 *当日* 请求额度耗尽。
 
-    API-Football 在额度耗尽时常见表现:
-      - HTTP 429 (Too Many Requests)
-      - HTTP 403 + 响应体含 "requests limit" / "quota" 等文案
-      - 200 但 errors 字段含限额提示(免费版常见)
+    HTTP 429 本身只代表请求过多，可能是按 IP/代理节点的短时限流；不能
+    仅凭状态码把 key 判为日额度用完。只有响应体明确提到 day/daily 时才轮换 key。
     """
-    if status_code == 429:
-        return True
     lowered = body.lower()
-    markers = ("requests limit", "quota", "daily limit", "limit exceeded", "free plan")
-    if status_code == 403 and any(m in lowered for m in markers):
-        return True
-    # 200 但业务层报额度
-    if any(m in lowered for m in ("requests limit", "you have reached")):
-        return True
-    return False
+    if status_code not in (200, 403, 429):
+        return False
+    daily_markers = (
+        "request limit for the day",
+        "requests limit for the day",
+        "request limit of the day",
+        "requests limit of the day",
+        "daily request limit",
+        "daily limit",
+        "quota for the day",
+        "daily quota",
+        "you have reached the request limit for the day",
+    )
+    return any(marker in lowered for marker in daily_markers)
+
+
+def _rate_limit_wait_seconds(response: httpx.Response, attempt: int) -> float:
+    """读取 Retry-After；缺失或无效时使用指数退避。"""
+    retry_after = (response.headers.get("retry-after") or "").strip()
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), MAX_RATE_LIMIT_WAIT)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is not None:
+                    return min(max(retry_at.timestamp() - time.time(), 0.0), MAX_RATE_LIMIT_WAIT)
+            except (TypeError, ValueError, IndexError, OverflowError):
+                pass
+    return TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt)
+
+
+def _limit_diagnostics(response: httpx.Response, body: str) -> str:
+    """返回不含 key 的限流诊断信息，方便区分日额度与短时限流。"""
+    headers = response.headers
+    body_preview = " ".join(body.split())[:500]
+    return (
+        "retry_after=" + repr(headers.get("retry-after"))
+        + f", remaining={headers.get('x-ratelimit-requests-remaining')!r}"
+        + f", limit={headers.get('x-ratelimit-requests-limit')!r}"
+        + f", body={body_preview!r}"
+    )
 
 
 def api_football_get_sync(
@@ -95,7 +131,7 @@ def api_football_get_sync(
     last_err: Exception | None = None
     for ki, key in enumerate(keys):
         key_label = "primary" if ki == 0 else f"backup#{ki}"
-        for attempt in range(TRANSPORT_ERROR_RETRIES):
+        for attempt in range(max(TRANSPORT_ERROR_RETRIES, RATE_LIMIT_RETRIES)):
             t0 = time.monotonic()
             try:
                 r = httpx.get(
@@ -112,15 +148,34 @@ def api_football_get_sync(
                     )
 
                 body = r.text or ""
-                if _is_quota_exhausted(r.status_code, body):
+                if _is_daily_quota_exhausted(r.status_code, body):
                     logger.warning(
-                        f"[API-Football][{key_label}] key 额度耗尽 {endpoint} "
-                        f"({r.status_code})，尝试下一个 key"
+                        f"[API-Football][{key_label}] 明确的当日额度耗尽 {endpoint} "
+                        f"({r.status_code})，尝试下一个 key；{_limit_diagnostics(r, body)}"
                     )
                     last_err = ApiFootballQuotaExceeded(
                         f"key[{key_label}] 额度耗尽: {endpoint}"
                     )
                     break  # 切换 key, 不再对该 key 重试
+
+                if r.status_code == 429:
+                    # 429 不等于日额度耗尽。先在当前 key 上等待并重试，避免同一
+                    # 出口 IP 的短时限流下立刻连带消耗/误判备用 key。
+                    if attempt < RATE_LIMIT_RETRIES - 1:
+                        wait = _rate_limit_wait_seconds(r, attempt)
+                        logger.warning(
+                            f"[API-Football][{key_label}] 短时限流 {endpoint} (429)，"
+                            f"{wait:.1f}s 后重试 #{attempt + 1}；{_limit_diagnostics(r, body)}"
+                        )
+                        time.sleep(wait)
+                        continue
+                    logger.warning(
+                        f"[API-Football][{key_label}] 短时限流重试耗尽 {endpoint} (429)；"
+                        f"{_limit_diagnostics(r, body)}"
+                    )
+                    raise ApiFootballRateLimited(
+                        f"key[{key_label}] 短时限流: {endpoint}"
+                    )
 
                 if r.status_code in (500, 502, 503, 504):
                     wait = TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt)
@@ -145,7 +200,7 @@ def api_football_get_sync(
                 )
                 last_err = e
                 time.sleep(wait)
-        # 该 key 已用完重试或明确额度耗尽 -> 进入下一个 key
+        # 仅明确的当日额度耗尽才切换到下一个 key。
         else:
             # for 正常结束(没有 break)意味着传输重试全失败
             continue
@@ -176,7 +231,7 @@ async def api_football_get_async(
         logger.warning(f"[API-Football][async] 慢请求 {endpoint} {elapsed:.1f}s -> {r.status_code}")
 
     body = r.text or ""
-    if _is_quota_exhausted(r.status_code, body):
+    if _is_daily_quota_exhausted(r.status_code, body):
         raise ApiFootballQuotaExceeded(f"额度耗尽: {endpoint}")
 
     logger.debug(f"[API-Football][async] {endpoint} -> {r.status_code} ({elapsed:.2f}s)")
