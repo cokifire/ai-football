@@ -3,7 +3,7 @@
 原因：fetch_fifa_wc2026.py 曾用 `DELETE FROM fixtures WHERE league_id/seasaon`
 整体清空后再从源重建，导致源不再返回的比赛(如已预测过的 1489369)被删掉，
 而 predictions 表无外键保护，留下孤儿记录。本脚本用 predictions 中已冗余保存的
-主队/客队/联赛名、比赛时间、实际比分重建 fixtures 行，恢复数据一致性。
+主队/客队/联赛名、比赛时间重建 fixtures 行，恢复数据一致性。
 
 用法：
     cd backend && python tools/restore_orphan_fixtures.py
@@ -42,7 +42,7 @@ def main():
     try:
         orphans = db.execute(text(
             "SELECT fixture_id, home_name, away_name, home_logo, away_logo, "
-            "league_name, match_date, actual_home_goals, actual_away_goals "
+            "league_name, match_date "
             "FROM predictions p "
             "WHERE NOT EXISTS (SELECT 1 FROM fixtures f WHERE f.id = p.fixture_id)"
         )).fetchall()
@@ -54,7 +54,8 @@ def main():
         for r in orphans:
             fid = r.fixture_id
             league_id, season = _resolve_league(db, r.league_name, r.match_date)
-            status = "FT" if (r.actual_home_goals is not None and r.actual_away_goals is not None) else "NS"
+            # 孤儿记录没有 Fixtures.fulltime_* 来源，恢复后等待赛程同步补齐。
+            status = "NS"
             obj = Fixture(id=fid)
             obj.date = r.match_date
             obj.league_id = league_id
@@ -65,8 +66,6 @@ def main():
             obj.home_logo = r.home_logo
             obj.away_logo = r.away_logo
             obj.status_short = status
-            obj.goals_home = r.actual_home_goals
-            obj.goals_away = r.actual_away_goals
             obj.category = "finished"
             obj.sub_data_synced = False
             db.add(obj)

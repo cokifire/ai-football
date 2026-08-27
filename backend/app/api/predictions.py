@@ -235,7 +235,7 @@ async def get_calibration_report():
 
 
 def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, category):
-    conditions = ["(p.actual_home_goals IS NOT NULL OR f.goals_home IS NOT NULL)"]
+    conditions = ["f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL"]
     params: dict = {}
     if date:
         utc_start, utc_end = _date_to_utc_range(date)
@@ -272,8 +272,7 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
         SELECT p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
                p.llm_win, p.llm_score, p.llm_ou_type, p.llm_ou_line,
                p.llm_handicap_num, p.llm_handicap_team,
-               p.actual_home_goals AS p_ah, p.actual_away_goals AS p_aa,
-               f.goals_home AS actual_h, f.goals_away AS actual_a
+               f.fulltime_home AS actual_h, f.fulltime_away AS actual_a
         FROM predictions p
         LEFT JOIN fixtures f ON p.fixture_id = f.id
         {where}
@@ -283,8 +282,8 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
     corrects = {"win": 0, "over25": 0, "handicap": 0, "score": 0}
     for row in rows:
         d = dict(row._mapping)
-        actual_h = d.get("p_ah") if d.get("p_ah") is not None else d.get("actual_h")
-        actual_a = d.get("p_aa") if d.get("p_aa") is not None else d.get("actual_a")
+        actual_h = d.get("actual_h")
+        actual_a = d.get("actual_a")
         flags = _derive_result_flags(d, actual_h, actual_a)
         for key, flag in zip(("win", "over25", "handicap", "score"), flags):
             # None 表示没有可验证结果，包含大小球/盘口走水，必须排除。
@@ -313,14 +312,14 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
 
 
 def _derive_result_flags(d: dict, actual_h, actual_a):
-    """为已完赛预测补算缺失的结果标记，兼容赛后回填任务尚未执行的记录。"""
+    """根据 Fixtures.fulltime_* 为预测计算实际结果，确保口径统一。"""
     if actual_h is None or actual_a is None:
         return d.get("win_correct"), d.get("over25_correct"), d.get("handicap_correct"), d.get("score_in_top3")
 
-    win_correct = d.get("win_correct")
+    win_correct = None
     predicted_win = (d.get("llm_win") or "").strip()
     actual_win = "主胜" if actual_h > actual_a else ("平局" if actual_h == actual_a else "客胜")
-    if win_correct is None and predicted_win:
+    if predicted_win:
         if "主" in predicted_win:
             win_correct = int(actual_win == "主胜")
         elif "平" in predicted_win:
@@ -328,31 +327,31 @@ def _derive_result_flags(d: dict, actual_h, actual_a):
         elif "客" in predicted_win:
             win_correct = int(actual_win == "客胜")
 
-    over_correct = d.get("over25_correct")
+    over_correct = None
     ou_type = (d.get("llm_ou_type") or "").strip()
     try:
         ou_line = float(d.get("llm_ou_line")) if d.get("llm_ou_line") is not None else None
     except (TypeError, ValueError):
         ou_line = None
-    if over_correct is None and ou_line is not None and ("大" in ou_type or "小" in ou_type):
+    if ou_line is not None and ("大" in ou_type or "小" in ou_type):
         total = actual_h + actual_a
         if total != ou_line:
             actual_side = "大" if total > ou_line else "小"
             over_correct = int(actual_side in ou_type)
 
-    handicap_correct = d.get("handicap_correct")
+    handicap_correct = None
     try:
         handicap_line = float(d.get("llm_handicap_num")) if d.get("llm_handicap_num") is not None else None
     except (TypeError, ValueError):
         handicap_line = None
-    if handicap_correct is None and handicap_line is not None:
+    if handicap_line is not None:
         adjusted_home = actual_h + handicap_line
         home_covers = adjusted_home > actual_a if adjusted_home != actual_a else None
         if home_covers is not None:
             handicap_correct = int(not home_covers if (d.get("llm_handicap_team") or "").strip() == "客队" else home_covers)
 
-    score_correct = d.get("score_in_top3")
-    if score_correct is None and d.get("llm_score"):
+    score_correct = None
+    if d.get("llm_score"):
         actual_score = f"{actual_h}-{actual_a}"
         scores = str(d["llm_score"]).replace("：", ":").split(",")
         score_correct = int(any(s.strip().replace(":", "-") == actual_score for s in scores))
@@ -414,8 +413,7 @@ def _get_predictions_sync(db, date, date_from, date_to, category, league_id, sea
                    COALESCE(at.name_zh, p.away_name) AS away_name,
                    COALESCE(lg.name_zh, p.league_name) AS league_name,
                    f.status_short, f.category,
-                   f.goals_home AS actual_h, f.goals_away AS actual_a,
-                   p.actual_home_goals AS p_ah, p.actual_away_goals AS p_aa
+                   f.fulltime_home AS actual_h, f.fulltime_away AS actual_a
             FROM predictions p
             LEFT JOIN fixtures f ON p.fixture_id = f.id
             LEFT JOIN teams ht ON f.home_id = ht.id
@@ -437,9 +435,9 @@ def _get_predictions_sync(db, date, date_from, date_to, category, league_id, sea
                     except Exception:
                         pass
 
-            # 实际比分优先取 predictions 表已回填的值，回退 fixtures
-            actual_h = d.get("p_ah") if d.get("p_ah") is not None else d.get("actual_h")
-            actual_a = d.get("p_aa") if d.get("p_aa") is not None else d.get("actual_a")
+            # 实际比分只取 Fixtures 表的 fulltime_*，不使用比赛实时/最终累计比分或旧回填值。
+            actual_h = d.get("actual_h")
+            actual_a = d.get("actual_a")
             # 只有主客队比分都已落库，才展示完整的结果对比，避免半条比分触发误显示。
             has_result = actual_h is not None and actual_a is not None
             win_correct, over25_correct, handicap_correct, score_in_top3 = _derive_result_flags(d, actual_h, actual_a)

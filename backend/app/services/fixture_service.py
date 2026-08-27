@@ -694,6 +694,7 @@ def sync_live_fixtures(db: Session) -> None:
         goals_raw = row.get("goals", {})
         score_raw = row.get("score", {})
         halftime_raw = score_raw.get("halftime") or {}
+        fulltime_raw = score_raw.get("fulltime") or {}
 
         obj = db.query(Fixture).filter(Fixture.id == fid).first()
         if obj is None:
@@ -724,6 +725,14 @@ def sync_live_fixtures(db: Session) -> None:
                 if obj.halftime_home != hh or obj.halftime_away != ha:
                     obj.halftime_home = hh
                     obj.halftime_away = ha
+                    changed = True
+
+            fh = fulltime_raw.get("home")
+            fa = fulltime_raw.get("away")
+            if fh is not None and fa is not None:
+                if obj.fulltime_home != fh or obj.fulltime_away != fa:
+                    obj.fulltime_home = fh
+                    obj.fulltime_away = fa
                     changed = True
 
             if changed:

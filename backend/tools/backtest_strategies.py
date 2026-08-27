@@ -42,9 +42,11 @@ def load_predictions(db):
                p.llm_ou_type, p.llm_ou_line, p.llm_ou_pct,
                p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                p.llm_score, p.top3_scores, p.score_in_top3,
-               p.actual_home_goals, p.actual_away_goals
+               f.fulltime_home AS actual_home_goals,
+               f.fulltime_away AS actual_away_goals
         FROM predictions p
-        WHERE p.actual_home_goals IS NOT NULL AND p.actual_away_goals IS NOT NULL
+        JOIN fixtures f ON f.id = p.fixture_id
+        WHERE f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL
     """)).fetchall()
     return rows
 

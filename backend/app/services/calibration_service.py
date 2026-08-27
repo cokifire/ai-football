@@ -105,9 +105,11 @@ def collect_samples(db):
         SELECT win_home, win_draw, win_away,
                llm_ou_type, llm_ou_line, llm_ou_pct, over25_prob,
                llm_handicap_num, llm_handicap_team, llm_handicap_pct,
-               actual_home_goals, actual_away_goals
-        FROM predictions
-        WHERE actual_home_goals IS NOT NULL AND actual_away_goals IS NOT NULL
+               f.fulltime_home AS actual_home_goals,
+               f.fulltime_away AS actual_away_goals
+        FROM predictions p
+        JOIN fixtures f ON f.id = p.fixture_id
+        WHERE f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL
     """)).fetchall()
 
     def pf(v):

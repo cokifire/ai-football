@@ -40,8 +40,9 @@ def backfill_results(db=None):
         # 超出时间窗的历史遗留记录：一次性放弃，不再进入轮询
         stale = db.execute(text(
             """SELECT fixture_id FROM predictions
-               WHERE actual_home_goals IS NULL
-                 AND verify_skipped = 0
+               WHERE verify_skipped = 0
+                 AND win_correct IS NULL AND over25_correct IS NULL
+                 AND handicap_correct IS NULL AND score_in_top3 IS NULL
                  AND match_date IS NOT NULL
                  AND match_date < :cutoff"""
         ), {"cutoff": cutoff}).fetchall()
@@ -53,9 +54,10 @@ def backfill_results(db=None):
 
         rows = db.execute(text(
             """SELECT fixture_id FROM predictions
-               WHERE actual_home_goals IS NULL
-                 AND verify_skipped = 0
+               WHERE verify_skipped = 0
                  AND (match_date IS NULL OR match_date >= :cutoff)
+                 AND (win_correct IS NULL OR over25_correct IS NULL
+                      OR handicap_correct IS NULL OR score_in_top3 IS NULL)
                ORDER BY match_date"""
         ), {"cutoff": cutoff}).fetchall()
         if not rows:
@@ -101,7 +103,7 @@ def _bump_attempts(db, fid: int, reason: str):
 
 def _backfill_one(db, fid: int) -> bool:
     row = db.execute(text(
-        "SELECT status_short, goals_home, goals_away FROM fixtures WHERE id = :fid"
+        "SELECT status_short, fulltime_home, fulltime_away FROM fixtures WHERE id = :fid"
     ), {"fid": fid}).fetchone()
 
     if not row:
@@ -128,7 +130,7 @@ def _backfill_one(db, fid: int) -> bool:
             if items:
                 f_info = items[0].get("fixture", {})
                 st = (f_info.get("status") or {}).get("short")
-                g = items[0].get("goals", {})
+                g = (items[0].get("score") or {}).get("fulltime") or {}
                 status = st or status
                 gh = g.get("home") if g.get("home") is not None else gh
                 ga = g.get("away") if g.get("away") is not None else ga
@@ -136,7 +138,7 @@ def _backfill_one(db, fid: int) -> bool:
                     # 无论完赛还是取消，都把最新状态写回本地，
                     # 这样下一轮不必再发请求即可判定
                     db.execute(text(
-                        "UPDATE fixtures SET status_short=:st, goals_home=:gh, goals_away=:ga WHERE id=:fid"
+                        "UPDATE fixtures SET status_short=:st, fulltime_home=:gh, fulltime_away=:ga WHERE id=:fid"
                     ), {"st": st, "gh": gh, "ga": ga, "fid": fid})
                 if st in UNPLAYABLE:
                     _give_up(db, fid, f"API 返回状态 {st}，无有效比分")
@@ -250,7 +252,6 @@ def _backfill_one(db, fid: int) -> bool:
 
     db.execute(text("""
         UPDATE predictions SET
-            actual_home_goals=:gh, actual_away_goals=:ga,
             win_correct=:wc, over25_correct=:oc,
             handicap_correct=:hcc, score_in_top3=:sc,
             verify_skipped=0, verify_note=NULL
