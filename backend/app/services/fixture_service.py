@@ -21,7 +21,7 @@ DATE_SYNC_TIMEZONE = "Asia/Shanghai"
 
 
 def _api_get_http(endpoint: str, params: dict, timeout: float | None = None) -> httpx.Response:
-    """带主/备 key 切换与超时重试的 API GET 请求 (返回 httpx.Response)。
+    """带单一 key 与超时重试的 API GET 请求 (返回 httpx.Response)。
 
     委托统一 client: app.core.api_football.api_football_get_sync。
     """
@@ -354,7 +354,7 @@ SUB_BATCH_INTERVAL = 5.0
 
 
 def _api_get(endpoint: str, params: dict) -> dict:
-    """带主/备 key 切换与重试的 API GET 请求 (返回解析后的 json dict)。
+    """带单一 key 与重试的 API GET 请求 (返回解析后的 json dict)。
 
     委托统一 client: app.core.api_football.api_football_get_sync。
     """

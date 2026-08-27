@@ -7,7 +7,6 @@ from datetime import datetime
 from loguru import logger
 
 from app.core.config import settings
-from app.core.api_football import _available_keys
 from app.core.log_config import setup_logger
 
 setup_logger()
@@ -24,10 +23,8 @@ db_config = {
     "charset": "utf8mb4",
 }
 
-# 优先主 key, 缺失则用备 key
-_KEYS = _available_keys()
 API_BASE = settings.api_football_base_url
-API_KEY = _KEYS[0] if _KEYS else ""
+API_KEY = settings.api_football_key
 
 
 async def fetch_json(client: httpx.AsyncClient, endpoint: str, fixture_id: int):

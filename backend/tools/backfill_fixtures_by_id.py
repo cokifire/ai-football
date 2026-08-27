@@ -110,8 +110,8 @@ def main():
                         help="允许的 league id 列表, 逗号分隔 (默认使用内置白名单)")
     args = parser.parse_args()
 
-    if not (settings.api_football_key or settings.api_football_key_backup):
-        print("错误: 未配置 API_FOOTBALL_KEY / API_FOOTBALL_KEY_BACKUP，请在 backend/.env 中设置")
+    if not settings.api_football_key:
+        print("错误: 未配置 API_FOOTBALL_KEY，请在 backend/.env 中设置")
         sys.exit(1)
     if not settings.api_football_base_url:
         print("错误: 未配置 API_FOOTBALL_BASE_URL，请在 backend/.env 中设置")
