@@ -1061,7 +1061,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             :top3, :lh, :la, :hc,
             :lw, :ls, :lwp,
             :lb, :lcd, :ldr,
-            :lhc, :lou,
             :hcn, :hct, :hcp,
             :oun, :out, :oup,
             :now, :now

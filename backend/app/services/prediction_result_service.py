@@ -220,7 +220,7 @@ def _backfill_one(db, fid: int) -> bool:
     db.execute(text("""
         UPDATE predictions SET
             win_correct=:wc, over25_correct=:oc,
-            handicap_correct=:hcc, score_in_top3=:sc,
+            handicap_correct=:hcc, score_in_top3=:sc
         WHERE fixture_id=:fid
     """), {
         "gh": gh, "ga": ga,
