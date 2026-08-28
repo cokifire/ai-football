@@ -966,11 +966,11 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
               <span className="text-gray-500">大2.5球概率(模型)</span>
               <span className="font-medium">{fmtPct(xgb.over25_prob)}</span>
             </div>
-            {(llm.over_under || (llm.ou_line != null && llm.ou_type)) && (
+            {(llm.ou_line != null && llm.ou_type) && (
               <div className="flex justify-between">
                 <span className="text-gray-500">推荐</span>
                 <span className="font-medium">
-                  {toText(llm.over_under) || `${toText(llm.ou_line)} ${toText(llm.ou_type)} (${fmtPct(llm.ou_pct)})`}
+                  {`${toText(llm.ou_line)} ${toText(llm.ou_type)} (${fmtPct(llm.ou_pct)})`}
                 </span>
               </div>
             )}
@@ -995,11 +995,11 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
               <span className="text-gray-500">模型盘口</span>
               <span className="font-medium">{xgb.handicap || '-'}</span>
             </div>
-            {(llm.handicap || (llm.handicap_team && llm.handicap_num != null)) && (
+            {(llm.handicap_team && llm.handicap_num != null) && (
               <div className="flex justify-between">
                 <span className="text-gray-500">推荐</span>
                 <span className="font-medium">
-                  {toText(llm.handicap) || `${toText(llm.handicap_team)} ${toText(llm.handicap_num)} (${fmtPct(llm.handicap_pct)})`}
+                  {`${toText(llm.handicap_team)} ${toText(llm.handicap_num)} (${fmtPct(llm.handicap_pct)})`}
                 </span>
               </div>
             )}

@@ -1,0 +1,9 @@
+移除 predictions 表废弃列及对应死代码
+
+- 删除 llm_handicap / llm_over_under 自由文本列（已被结构化
+  llm_handicap_num/_team/_pct 与 llm_ou_line/_type/_pct 取代，始终为 NULL）
+- 删除 verify_attempts / verify_skipped / verify_note 三列，回填轮询保护
+  改为扫描 SQL 按 fixtures.status_short 排除 UNPLAYABLE 状态 + 时间窗过滤
+- 清理 predict.py / prediction_result_service.py / api/predictions.py
+  及前端 FixturesPage / PredictionsPage 的相关死引用
+- 新增迁移 e3f5a6b7c8d9、f4a6b7c8d9e0

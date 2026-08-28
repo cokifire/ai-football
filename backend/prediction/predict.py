@@ -1051,7 +1051,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             top3_scores, lambda_home, lambda_away, handicap,
             llm_win, llm_score, llm_win_pct,
             llm_brief, llm_core_data, llm_deep_report,
-            llm_handicap, llm_over_under,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
             llm_ou_line, llm_ou_type, llm_ou_pct,
             created_at, updated_at
@@ -1072,7 +1071,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             top3_scores=:top3, lambda_home=:lh, lambda_away=:la, handicap=:hc,
             llm_win=:lw, llm_score=:ls, llm_win_pct=:lwp,
             llm_brief=:lb, llm_core_data=:lcd, llm_deep_report=:ldr,
-            llm_handicap=:lhc, llm_over_under=:lou,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
             model_group=:mgroup, updated_at=:now
@@ -1090,7 +1088,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
         'lw': llm.get('win'), 'ls': llm.get('score'), 'lwp': llm.get('win_pct'),
         'lb': llm.get('brief_analysis'), 'lcd': llm.get('core_data'),
         'ldr': llm.get('deep_report'),
-        'lhc': llm.get('handicap'), 'lou': llm.get('over_under'),
         'hcn': llm.get('handicap_num'), 'hct': llm.get('handicap_team'), 'hcp': llm.get('handicap_pct'),
         'oun': llm.get('ou_line'), 'out': llm.get('ou_type'), 'oup': llm.get('ou_pct'),
         'now': datetime.now(),

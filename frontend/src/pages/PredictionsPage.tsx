@@ -33,11 +33,9 @@ interface PredictionDetail {
     win: string | null
     win_pct: number | null
     score: string | null
-    handicap: string | null
     handicap_num: number | null
     handicap_team: string | null
     handicap_pct: number | null
-    over_under: string | null
     ou_line: number | null
     ou_type: string | null
     ou_pct: number | null
@@ -587,12 +585,6 @@ export default function PredictionsPage() {
                     <div>
                       <h4 className="text-sm font-medium text-gray-500 mb-1">比分预测</h4>
                       <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.score}</p>
-                    </div>
-                  )}
-                  {selectedPred.llm.handicap && (
-                    <div>
-                      <h4 className="text-sm font-medium text-gray-500 mb-1">盘口分析</h4>
-                      <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.handicap}</p>
                     </div>
                   )}
                   {selectedPred.llm.core_data && (

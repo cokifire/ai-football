@@ -1,9 +1,11 @@
 """赛后验证回填：扫描 predictions 表，回填实际结果并计算正确性
 
 轮询保护（防止无限消耗 API-Football 配额）：
-  1. UNPLAYABLE 状态（取消/腰斩/延期等）直接标记放弃，不再请求 API；
-  2. verify_attempts 超过 MAX_VERIFY_ATTEMPTS 后放弃；
-  3. 只扫描 VERIFY_WINDOW_DAYS 天内的比赛，更早的直接放弃。
+  1. 已为 UNPLAYABLE 终态（取消/腰斩/延期等）的比赛，扫描 SQL 直接排除，
+     不再请求 API；
+  2. 只扫描 VERIFY_WINDOW_DAYS 天内的比赛，更早的不再轮询。
+  原 verify_attempts/verify_skipped/verify_note 三列已删除，放弃态改由
+  fixtures.status_short 在查询层过滤实现。
 """
 
 from datetime import datetime, timedelta
@@ -19,11 +21,8 @@ from app.db.session import SessionLocal
 FINISHED = {"FT", "AET", "PEN", "AWD", "WO"}
 
 # 永远不会产生有效比分的终态：取消 / 腰斩 / 延期 / 中断 / 待定。
-# 这类比赛必须直接放弃，否则每轮都会白发一次 GET /fixtures?id=<id>。
+# 扫描 SQL 直接排除这些状态，避免每轮白发一次 GET /fixtures?id=<id>。
 UNPLAYABLE = {"CANC", "ABD", "PST", "SUSP", "INT", "TBD"}
-
-# 单场最多尝试验证次数，兜底任何未预料的状态
-MAX_VERIFY_ATTEMPTS = 5
 
 # 只回填最近 N 天的比赛，更早的不再轮询
 VERIFY_WINDOW_DAYS = 7
@@ -37,29 +36,29 @@ def backfill_results(db=None):
     try:
         cutoff = datetime.now() - timedelta(days=VERIFY_WINDOW_DAYS)
 
-        # 超出时间窗的历史遗留记录：一次性放弃，不再进入轮询
+        # 超出时间窗的历史遗留记录：扫描 SQL 已用 match_date < cutoff 排除，
+        # 这里仅做日志统计，不修改任何数据
         stale = db.execute(text(
-            """SELECT fixture_id FROM predictions
-               WHERE verify_skipped = 0
-                 AND win_correct IS NULL AND over25_correct IS NULL
-                 AND handicap_correct IS NULL AND score_in_top3 IS NULL
-                 AND match_date IS NOT NULL
-                 AND match_date < :cutoff"""
-        ), {"cutoff": cutoff}).fetchall()
-        for (fid,) in stale:
-            _give_up(db, fid, f"超出 {VERIFY_WINDOW_DAYS} 天验证时间窗")
+            """SELECT COUNT(*) FROM predictions p
+               JOIN fixtures f ON f.id = p.fixture_id
+               WHERE f.status_short NOT IN :unplayable
+                 AND p.win_correct IS NULL AND p.over25_correct IS NULL
+                 AND p.handicap_correct IS NULL AND p.score_in_top3 IS NULL
+                 AND p.match_date IS NOT NULL
+                 AND p.match_date < :cutoff"""
+        ), {"unplayable": tuple(sorted(UNPLAYABLE)), "cutoff": cutoff}).scalar() or 0
         if stale:
-            db.commit()
-            logger.info(f"回填: {len(stale)} 场超出时间窗，已停止轮询")
+            logger.info(f"回填: {stale} 场超出 {VERIFY_WINDOW_DAYS} 天验证时间窗，已自然停止轮询")
 
         rows = db.execute(text(
-            """SELECT fixture_id FROM predictions
-               WHERE verify_skipped = 0
-                 AND (match_date IS NULL OR match_date >= :cutoff)
-                 AND (win_correct IS NULL OR over25_correct IS NULL
-                      OR handicap_correct IS NULL OR score_in_top3 IS NULL)
-               ORDER BY match_date"""
-        ), {"cutoff": cutoff}).fetchall()
+            """SELECT p.fixture_id FROM predictions p
+               JOIN fixtures f ON f.id = p.fixture_id
+               WHERE f.status_short NOT IN :unplayable
+                 AND (p.match_date IS NULL OR p.match_date >= :cutoff)
+                 AND (p.win_correct IS NULL OR p.over25_correct IS NULL
+                      OR p.handicap_correct IS NULL OR p.score_in_top3 IS NULL)
+               ORDER BY p.match_date"""
+        ), {"unplayable": tuple(sorted(UNPLAYABLE)), "cutoff": cutoff}).fetchall()
         if not rows:
             return
 
@@ -81,41 +80,20 @@ def backfill_results(db=None):
             db.close()
 
 
-def _give_up(db, fid: int, reason: str):
-    """标记该预测放弃赛后验证，后续扫描不再选中它。"""
-    db.execute(text(
-        "UPDATE predictions SET verify_skipped = 1, verify_note = :note WHERE fixture_id = :fid"
-    ), {"note": reason[:255], "fid": fid})
-    logger.info(f"  放弃验证 fixture={fid}: {reason}")
-
-
-def _bump_attempts(db, fid: int, reason: str):
-    """累计尝试次数；达到上限则放弃，防止任何未预料状态造成无限轮询。"""
-    db.execute(text(
-        "UPDATE predictions SET verify_attempts = verify_attempts + 1 WHERE fixture_id = :fid"
-    ), {"fid": fid})
-    n = db.execute(text(
-        "SELECT verify_attempts FROM predictions WHERE fixture_id = :fid"
-    ), {"fid": fid}).scalar()
-    if n is not None and n >= MAX_VERIFY_ATTEMPTS:
-        _give_up(db, fid, f"{reason}（已尝试 {n} 次，达上限）")
-
-
 def _backfill_one(db, fid: int) -> bool:
     row = db.execute(text(
         "SELECT status_short, fulltime_home, fulltime_away FROM fixtures WHERE id = :fid"
     ), {"fid": fid}).fetchone()
 
     if not row:
-        # fixtures 表无此比赛，累计尝试次数，超限则放弃
-        _bump_attempts(db, fid, "fixtures 表缺失该比赛")
+        # fixtures 表无此比赛，跳过（下一轮窗口过期后自然排除）
+        logger.warning(f"  回填跳过 fixture={fid}: fixtures 表缺失该比赛")
         return False
 
     status, gh, ga = row[0], row[1], row[2]
 
-    # 本地状态已是不可完成终态 -> 直接放弃，不发 API 请求
+    # 本地状态已是不可完成终态 -> 不在扫描内（SQL 已排除），此处为兜底
     if status in UNPLAYABLE:
-        _give_up(db, fid, f"比赛状态 {status}，无有效比分")
         return False
 
     if status not in FINISHED or gh is None or ga is None:
@@ -141,16 +119,13 @@ def _backfill_one(db, fid: int) -> bool:
                         "UPDATE fixtures SET status_short=:st, fulltime_home=:gh, fulltime_away=:ga WHERE id=:fid"
                     ), {"st": st, "gh": gh, "ga": ga, "fid": fid})
                 if st in UNPLAYABLE:
-                    _give_up(db, fid, f"API 返回状态 {st}，无有效比分")
                     return False
         except Exception as e:
             logger.warning(f"  API 查询失败 fixture={fid}: {e}")
-            _bump_attempts(db, fid, "API 查询多次失败")
             return False
 
     if status not in FINISHED or gh is None or ga is None:
-        # 比赛可能还没开始/正在进行，属正常情况；累计次数兜底未预料状态
-        _bump_attempts(db, fid, f"状态 {status} 始终未达终态")
+        # 比赛可能还没开始/正在进行，属正常情况，下一轮继续
         return False
 
     total = (gh or 0) + (ga or 0)
@@ -165,7 +140,7 @@ def _backfill_one(db, fid: int) -> bool:
 
     # 读取 LLM 预测（含让球盘结构化字段、大小球盘口类型与盘口线）
     pred = db.execute(text(
-        "SELECT llm_win, llm_over_under, llm_handicap, llm_handicap_num, llm_handicap_team, "
+        "SELECT llm_win, llm_handicap_num, llm_handicap_team, "
         "llm_score, over25_prob, llm_ou_type, llm_ou_line "
         "FROM predictions WHERE fixture_id=:fid"
     ), {"fid": fid}).fetchone()
@@ -176,8 +151,8 @@ def _backfill_one(db, fid: int) -> bool:
     win_correct = 1 if pred[0] == actual_win else 0
 
     # 大小球正确性：依据 LLM 盘口类型(llm_ou_type)与盘口线(llm_ou_line)，基准为 llm_ou_line
-    ou_type = pred[7] or ""
-    ou_line = pred[8]
+    ou_type = pred[5] or ""
+    ou_line = pred[6]
     if ou_type and ou_line is not None:
         try:
             line = float(ou_line)
@@ -200,20 +175,12 @@ def _backfill_one(db, fid: int) -> bool:
     else:
         over25_correct = None
 
-    # 让球盘正确性：优先用结构化字段 llm_handicap_num（负数=主队让，正值=客队让），
-    # 回退兼容旧的自由文本 llm_handicap
+    # 让球盘正确性：用结构化字段 llm_handicap_num（负数=主队让，正值=客队让）
     handicap_correct = None
     hc_val = None
-    if pred[3] is not None:
+    if pred[1] is not None:
         try:
-            hc_val = float(pred[3])
-        except (ValueError, TypeError):
-            hc_val = None
-    elif pred[2]:
-        try:
-            parts = (pred[2] or "").split()
-            if parts:
-                hc_val = float(parts[0])
+            hc_val = float(pred[1])
         except (ValueError, TypeError):
             hc_val = None
 
@@ -254,7 +221,6 @@ def _backfill_one(db, fid: int) -> bool:
         UPDATE predictions SET
             win_correct=:wc, over25_correct=:oc,
             handicap_correct=:hcc, score_in_top3=:sc,
-            verify_skipped=0, verify_note=NULL
         WHERE fixture_id=:fid
     """), {
         "gh": gh, "ga": ga,
