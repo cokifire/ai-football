@@ -2,7 +2,6 @@
 import asyncio
 import asyncmy
 import httpx
-import json
 from datetime import datetime
 from loguru import logger
 
@@ -41,41 +40,17 @@ async def fetch_json(client: httpx.AsyncClient, endpoint: str, fixture_id: int):
 async def sync_one_fixture(client: httpx.AsyncClient, pool: asyncmy.Pool, fixture_id: int, idx: int, total: int):
     logger.debug(f"[{idx}/{total}] fixture={fixture_id} 开始拉取")
 
-    # 并行拉取 4 端点
+    # 并行拉取启用的 2 个端点；events/players 接口已禁用。
     results = await asyncio.gather(
-        fetch_json(client, "fixtures/events", fixture_id),
         fetch_json(client, "fixtures/lineups", fixture_id),
         fetch_json(client, "fixtures/statistics", fixture_id),
-        fetch_json(client, "fixtures/players", fixture_id),
         return_exceptions=True,
     )
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            # events — 先收集所有行再 executemany
-            data = results[0]
-            if isinstance(data, Exception):
-                logger.warning(f"events 拉取失败 fixture={fixture_id}: {data}")
-            else:
-                await cur.execute("SELECT 1 FROM fixture_events WHERE fixture_id = %s LIMIT 1", (fixture_id,))
-                if not await cur.fetchone():
-                    rows = []
-                    for evt in data.get("response", []):
-                        t = evt.get("time") or {}
-                        team = evt.get("team") or {}
-                        player = evt.get("player") or {}
-                        assist = evt.get("assist") or {}
-                        rows.append((fixture_id, t.get("elapsed"), t.get("extra"), evt.get("type"),
-                                     evt.get("detail"), evt.get("comments"),
-                                     team.get("id"), team.get("name"),
-                                     player.get("id"), player.get("name"),
-                                     assist.get("id"), assist.get("name")))
-                    if rows:
-                        sql = "INSERT INTO fixture_events (fixture_id, elapsed, extra, type, detail, comments, team_id, team_name, player_id, player_name, assist_id, assist_name) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-                        await cur.executemany(sql, rows)
-
             # lineups
-            data = results[1]
+            data = results[0]
             if isinstance(data, Exception):
                 logger.warning(f"lineups 拉取失败 fixture={fixture_id}: {data}")
             else:
@@ -99,7 +74,7 @@ async def sync_one_fixture(client: httpx.AsyncClient, pool: asyncmy.Pool, fixtur
                         await cur.executemany(sql, rows)
 
             # statistics
-            data = results[2]
+            data = results[1]
             if isinstance(data, Exception):
                 logger.warning(f"statistics 拉取失败 fixture={fixture_id}: {data}")
             else:
@@ -115,32 +90,6 @@ async def sync_one_fixture(client: httpx.AsyncClient, pool: asyncmy.Pool, fixtur
                                          str(val) if val is not None else None))
                     if rows:
                         sql = "INSERT INTO fixture_statistics (fixture_id, team_id, team_name, stat_type, stat_value) VALUES (%s,%s,%s,%s,%s)"
-                        await cur.executemany(sql, rows)
-
-            # player stats
-            data = results[3]
-            if isinstance(data, Exception):
-                logger.warning(f"players 拉取失败 fixture={fixture_id}: {data}")
-            else:
-                await cur.execute("SELECT 1 FROM fixture_player_stats WHERE fixture_id = %s LIMIT 1", (fixture_id,))
-                if not await cur.fetchone():
-                    rows = []
-                    for team in data.get("response", []):
-                        t = team.get("team") or {}
-                        tid, tname = t.get("id"), t.get("name")
-                        for p_entry in team.get("players", []):
-                            player = p_entry.get("player") or {}
-                            st = (p_entry.get("statistics") or [{}])[0]
-                            rows.append((fixture_id, tid, tname, player.get("id"), player.get("name"),
-                                         player.get("photo"),
-                                         json.dumps(st.get("games")), st.get("offsides"),
-                                         json.dumps(st.get("shots")), json.dumps(st.get("goals")),
-                                         json.dumps(st.get("passes")), json.dumps(st.get("tackles")),
-                                         json.dumps(st.get("duels")), json.dumps(st.get("dribbles")),
-                                         json.dumps(st.get("fouls")), json.dumps(st.get("cards")),
-                                         json.dumps(st.get("penalty"))))
-                    if rows:
-                        sql = "INSERT INTO fixture_player_stats (fixture_id, team_id, team_name, player_id, player_name, player_photo, games, offsides, shots, goals, passes, tackles, duels, dribbles, fouls, cards, penalty) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                         await cur.executemany(sql, rows)
 
             await cur.execute("UPDATE fixtures SET sub_data_synced = 1 WHERE id = %s", (fixture_id,))

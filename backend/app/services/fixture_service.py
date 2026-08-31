@@ -352,26 +352,43 @@ RETRY_MAX = 3
 SUB_REQUEST_INTERVAL = 3.0
 SUB_BATCH_INTERVAL = 5.0
 
+# 暂停抓取这两类子数据，避免继续消耗 API-Football 配额。
+# 已写入数据库的历史数据仍可通过比赛详情接口读取。
+DISABLED_SUB_DATA = {"events", "players"}
+DISABLED_SUB_ENDPOINTS = {
+    "fixtures/events": "events",
+    "fixtures/players": "players",
+}
+
 
 def _api_get(endpoint: str, params: dict) -> dict:
     """带单一 key 与重试的 API GET 请求 (返回解析后的 json dict)。
 
     委托统一 client: app.core.api_football.api_football_get_sync。
     """
+    disabled_data = DISABLED_SUB_ENDPOINTS.get(endpoint)
+    if disabled_data in DISABLED_SUB_DATA:
+        raise RuntimeError(f"子数据接口已禁用: {endpoint}")
     return api_football_get_sync(endpoint, params).json()
 
 
 def _do_fetch(db: Session, fixture_id: int) -> None:
-    """串行请求 4 个 API，已存在则跳过，纯 INSERT 无 DELETE"""
+    """串行请求启用的子数据 API，已存在则跳过，纯 INSERT 无 DELETE。"""
     from app.models.fixture import FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
 
     results = {}
     check_db = SessionLocal()
     try:
-        need_events = not check_db.query(FixtureEvent).filter(FixtureEvent.fixture_id == fixture_id).first()
+        need_events = (
+            "events" not in DISABLED_SUB_DATA
+            and not check_db.query(FixtureEvent).filter(FixtureEvent.fixture_id == fixture_id).first()
+        )
         need_lineups = not check_db.query(FixtureLineup).filter(FixtureLineup.fixture_id == fixture_id).first()
         need_stats = not check_db.query(FixtureStatistic).filter(FixtureStatistic.fixture_id == fixture_id).first()
-        need_players = not check_db.query(FixturePlayerStat).filter(FixturePlayerStat.fixture_id == fixture_id).first()
+        need_players = (
+            "players" not in DISABLED_SUB_DATA
+            and not check_db.query(FixturePlayerStat).filter(FixturePlayerStat.fixture_id == fixture_id).first()
+        )
     finally:
         check_db.close()
 
@@ -493,7 +510,8 @@ def refresh_fixture(db: Session, fixture_id: int) -> bool:
     """手动刷新单场比赛: 重新从 API-Football 拉取主表与子数据并覆盖更新。
 
     与每日同步不同，这里**强制覆盖**已有子数据（先删除再重新抓取），
-    因此无论本地是否已有数据，都会拿到最新比分/状态/事件/阵容/统计。
+    因此无论本地是否已有数据，都会拿到最新比分/状态/阵容/统计；
+    events 与球员统计接口已禁用，已有对应数据会保留。
     返回 True 表示主表刷新成功（子数据失败不影响主表）。
     """
     if not settings.api_football_key:
@@ -514,8 +532,10 @@ def refresh_fixture(db: Session, fixture_id: int) -> bool:
         logger.warning(f"刷新主表失败 fixture={fixture_id}: {err}")
         return False
 
-    # 2. 清空旧子数据后重新抓取（覆盖式更新）
-    for model in (FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat):
+    # 2. 清空已启用的子数据后重新抓取（覆盖式更新）。
+    # 禁用的 events/players 数据保留，且 _do_fetch 不会再次请求对应接口。
+    enabled_models = (FixtureLineup, FixtureStatistic)
+    for model in enabled_models:
         db.query(model).filter(model.fixture_id == fixture_id).delete(synchronize_session=False)
     db.commit()
 
