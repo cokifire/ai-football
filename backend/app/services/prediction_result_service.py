@@ -194,7 +194,7 @@ def _backfill_one(db, fid: int) -> bool:
         else:
             home_covers = None  # 走水
 
-        team = (pred[4] or "").strip()
+        team = str(pred[4]).strip() if pred[4] is not None else ""
         if home_covers is None:
             handicap_correct = None
         elif team == "客队":
