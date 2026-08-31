@@ -45,9 +45,13 @@ URLS = {
     39: "https://www.flashscore.com/football/england/premier-league/standings/GO4S62sM/standings/overall/",
     135: "https://www.flashscore.com/football/italy/serie-a/standings/S0nT1X7q/standings/overall/",
     61: "https://www.flashscore.com/football/france/ligue-1/standings/4R7iGq1l/standings/overall/",
+    78: "https://www.flashscore.com/football/germany/bundesliga/standings/jg0MwVuC/standings/overall/",
 }
 
 OVERRIDE_FILE = Path(__file__).resolve().parent / "flashscore_team_map.json"
+
+# 逐队解析明细默认不打日志(太吵); CLI 传 --verbose 时打开, 便于排查映射
+VERBOSE = False
 
 # 俱乐部常见前后缀, 归一化时剥离, 以对齐 "Hammarby" <-> "Hammarby FF" 这类差异
 CLUB_TOKENS = {
@@ -108,6 +112,30 @@ def load_teams(db):
             }
         )
     return result
+
+
+def load_team_extra(db) -> dict:
+    """从 fixtures 表补充 (team_id -> 队名/徽标)。
+
+    有些球队(如 Lask Linz id=1026)尚未进入 teams 表, 但在已同步的赛程里出现过,
+    这里取出其队名与徽标 URL 作为兜底, 避免写入的 standings 行缺少队名/徽标。
+    仅作信息补充, 不参与队名解析(以免影响既有解析优先级)。
+    """
+    extra = {}
+    rows = db.execute(
+        text(
+            "SELECT DISTINCT home_id, home_name, home_logo FROM fixtures "
+            "WHERE home_id IS NOT NULL AND home_name IS NOT NULL AND home_name <> '' "
+            "UNION "
+            "SELECT DISTINCT away_id, away_name, away_logo FROM fixtures "
+            "WHERE away_id IS NOT NULL AND away_name IS NOT NULL AND away_name <> ''"
+        )
+    ).fetchall()
+    for rid, rname, rlogo in rows:
+        if rid in extra and extra[rid]["logo"]:
+            continue
+        extra[rid] = {"name": rname, "logo": rlogo or ""}
+    return extra
 
 
 def load_override() -> dict:
@@ -291,6 +319,7 @@ def run(league_id: int, db=None, dry_run: bool = False):
         db = SessionLocal()
     try:
         team_rows = load_teams(db)
+        team_extra = load_team_extra(db)
         override = load_override()
         # group_name 用联赛名称(与 API-Football 来源一致, 如 "Allsvenskan"),
         # 而不是写死的 "overall"
@@ -309,13 +338,20 @@ def run(league_id: int, db=None, dry_run: bool = False):
                 unresolved.append(t["name"])
                 logger.warning(f"  [未解析] {t['name']} (Flashscore hash={fs_hash})")
                 continue
-            # 取 api_football 规范队名 + 徽标 URL
+            # 取 api_football 规范队名 + 徽标 URL;
+            # teams/standings 里都没有该队时, 用 fixtures 里的规范队名/徽标兜底
             row = next((r for r in team_rows if r["id"] == tid), None)
-            team_name = row["name"] if row else t["name"]
-            team_logo = row["logo"] if row else ""
+            ex = team_extra.get(tid, {})
+            team_name = (row["name"] if row else "") or ex.get("name") or t["name"]
+            team_logo = (row["logo"] if row else "") or ex.get("logo") or ""
             # 持久化 hash->id 以便审阅/覆盖
             if fs_hash:
                 override[fs_hash] = tid
+            if VERBOSE:
+                logger.info(
+                    f"  {t['rank']:>2}. {t['name']:<24} -> id={tid:<6} ({how}) "
+                    f"name={team_name} logo={'Y' if team_logo else 'N'} hash={fs_hash}"
+                )
 
             if dry_run:
                 continue
@@ -357,4 +393,5 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     lid = int(args[0]) if args and args[0].isdigit() else 113
     dry = "--dry-run" in args
+    VERBOSE = "--verbose" in args or "-v" in args
     run(lid, dry_run=dry)
