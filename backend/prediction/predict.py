@@ -841,6 +841,15 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     model_top_pct = model_probs[model_top]
     competition_context = _competition_context(fixture)
 
+    # 赔率段落预先拼好：f-string 里不要再嵌多行三元表达式（可读性差且易写成
+    # `if x:` 的语句语法导致 SyntaxError）。无赔率（含纯空白）时显式告知模型，
+    # 避免它在没有市场定价依据的情况下臆造让球/大小球盘口，此时要求用 "-" 占位。
+    odds_section = (
+        "【市场赔率】各庄家逐日行情(1X2 / 亚盘 / 大小球)，括号内为原始赔率、前面为隐含概率:" + odds_text
+        if (odds_text or "").strip()
+        else '【市场赔率】暂无，不用预测盘口及大小球，对应的数据输出用 "-" 替代'
+    )
+
     return f"""# Role 
     你是一名顶级职业足球量化分析师与战术推演专家（Sharp Analyst）。你的目标是不受大众偏见和机构诱盘影响，基于底层数据、战术克制与市场定价偏差，寻找具有长期正期望值（+EV）的投注价值。
 
@@ -866,7 +875,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     近10场战绩: {away_stats}
 
     *【赔率数据】
-    {"" if not odds_text else "【市场赔率】各庄家逐日行情(1X2 / 亚盘 / 大小球)，括号内为原始赔率、前面为隐含概率:" + odds_text}
+    {odds_section}
 
     *【机器模型数据】仅作校准，不是结论
     胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
@@ -880,7 +889,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     ### 战意、背景与外部环境
     - 积分与战意：区分争冠、保级、争欧战、无欲无求或战略放弃。
     - 赛程疲劳度：计算近 15 天比赛密集度、多线作战轮换压力、长途旅行飞行距离。
-    - 外部环境：结合比赛地当天的天气（降雨、大风、极端气温）和地理/海拔，评估对两队技术流打法或体能消耗的具体影响。
+    - 外部环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响。
 
     ### 虚实辨析与底层数据
     - 重点看球队在相似战术风格对手面前创造的 Open-Play xG。
