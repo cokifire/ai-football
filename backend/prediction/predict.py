@@ -608,8 +608,15 @@ def _odds_to_text(odds_data: list) -> str:
     return "\n" + "\n".join(lines)
 
 
-def _fetch_weather_text(city_name: str) -> str:
-    """获取比赛城市的天气及海拔，转换为供 LLM 使用的文本。"""
+def _fetch_weather_text(city_name: str, kickoff_ts: int | None = None) -> str:
+    """获取比赛城市在**开球时刻**的天气及海拔，转换为供 LLM 使用的文本。
+
+    ``kickoff_ts`` 必须是 UTC 时间戳（fixtures.timestamp）。注意 fixtures.date 存的是
+    MySQL 服务器本地时间（北京 +08）的 naive datetime，直接用它对不齐开球时刻。
+
+    开球时刻在 5 天预报窗口内时取预报中时间上最接近的那一格；超出窗口则降级为当前
+    实况，并在文本末尾明确标注，避免 LLM 把实况当成开球时的天气。
+    """
     if not city_name:
         return "未提供比赛城市，无法获取天气及海拔数据。"
     if not settings.openweathermap_api_key:
@@ -618,7 +625,7 @@ def _fetch_weather_text(city_name: str) -> str:
     try:
         from tools.weather import get_weather_and_elevation
 
-        raw = get_weather_and_elevation(city_name, settings.openweathermap_api_key)
+        raw = get_weather_and_elevation(city_name, settings.openweathermap_api_key, kickoff_ts)
         data = json.loads(raw)
         if data.get("status") != "success":
             return "天气及海拔数据获取失败，不能据此推断外部环境。"
@@ -627,18 +634,36 @@ def _fetch_weather_text(city_name: str) -> str:
         weather = data.get("weather", {})
         elevation = location.get("elevation_meters")
         elevation_text = f"{elevation}米" if elevation is not None else "未知"
-        weather_text = (
-            f"城市:{location.get('city') or city_name} "
-            f"天气:{weather.get('description', '未知')} "
-            f"气温:{weather.get('temperature_celsius', '未知')}°C "
-            f"体感:{weather.get('feels_like_celsius', '未知')}°C "
-            f"最低/最高:{weather.get('temp_min', '未知')}/{weather.get('temp_max', '未知')}°C "
-            f"湿度:{weather.get('humidity_percent', '未知')}% "
-            f"气压:{weather.get('pressure_hpa', '未知')}hPa "
-            f"风速:{weather.get('wind_speed_m_s', '未知')}m/s "
-            f"海拔:{elevation_text}"
-        )
-        return weather_text
+
+        parts = [
+            f"城市:{location.get('city') or city_name}",
+            f"天气:{weather.get('description', '未知')}",
+            f"气温:{weather.get('temperature_celsius', '未知')}°C",
+            f"体感:{weather.get('feels_like_celsius', '未知')}°C",
+        ]
+        # 3 小时预报格的 min/max 只是该格区间抖动，只在实况下呈现当天最低/最高
+        if weather.get("source") == "current":
+            parts.append(f"最低/最高:{weather.get('temp_min', '未知')}/{weather.get('temp_max', '未知')}°C")
+        parts += [
+            f"湿度:{weather.get('humidity_percent', '未知')}%",
+            f"气压:{weather.get('pressure_hpa', '未知')}hPa",
+            f"风速:{weather.get('wind_speed_m_s', '未知')}m/s",
+        ]
+        pop = weather.get("pop")
+        if pop is not None:
+            parts.append(f"降水概率:{round(float(pop) * 100)}%")
+        parts.append(f"海拔:{elevation_text}")
+
+        if weather.get("source") == "forecast":
+            parts.append(
+                f"(以上为开球时刻预报，取值时刻 {weather.get('valid_at')} 当地时间，"
+                f"与开球时间相差 {weather.get('offset_minutes')} 分钟)"
+            )
+        else:
+            note = weather.get("note") or "开球时刻无可用预报"
+            parts.append(f"(注意:以上为当前实况而非开球时刻天气——{note})")
+
+        return " ".join(parts)
     except Exception:  # noqa: BLE001 - 外部环境数据不得阻断主预测流程
         return "天气及海拔数据处理失败，不能据此推断外部环境。"
 
@@ -1000,10 +1025,13 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         # 1. 读取比赛
         row = db.execute(text("""
             SELECT f.id, f.home_id, f.away_id, f.league_id, f.season,
-                   f.date, f.goals_home, f.goals_away,
+                   f.date, f.timestamp, f.goals_home, f.goals_away,
                    f.home_name, f.away_name, f.home_logo, f.away_logo,
-                   f.league_name, f.venue_name, f.venue_city
-            FROM fixtures f WHERE f.id = :fid
+                   f.league_name, f.venue_name, f.venue_city,
+                   COALESCE(NULLIF(f.venue_city, ''), NULLIF(v.city, '')) AS weather_city
+            FROM fixtures f
+            LEFT JOIN venues v ON v.id = f.venue_id
+            WHERE f.id = :fid
         """), {"fid": fixture_id}).fetchone()
         if not row:
             raise PredictionDataError(f"比赛不存在 fixture_id={fixture_id}")
@@ -1070,7 +1098,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'])
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
-        weather_text = _fetch_weather_text(fixture.get('venue_city'))
+        weather_text = _fetch_weather_text(fixture.get('weather_city'), fixture.get('timestamp'))
         intelligence_markdown = _fetch_intelligence_markdown(fixture)
 
         # 5. LLM
