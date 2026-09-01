@@ -202,11 +202,25 @@ async def get_predictions_accuracy(
     season: int | None = Query(None, description="按赛季（年份）筛选"),
     team: str | None = Query(None, description="按球队名（含）筛选"),
     category: str | None = Query(None, description="按模型分组/类别筛选，如 胜平负/WDL"),
+    win_pct_min: float | None = Query(None, description="胜负信心百分比下限，如 60 表示 >=60%"),
+    win_pct_max: float | None = Query(None, description="胜负信心百分比上限"),
+    ou_pct_min: float | None = Query(None, description="大小球概率百分比下限"),
+    ou_pct_max: float | None = Query(None, description="大小球概率百分比上限"),
+    hand_pct_min: float | None = Query(None, description="盘口赢盘概率百分比下限"),
+    hand_pct_max: float | None = Query(None, description="盘口赢盘概率百分比上限"),
     db: Session = Depends(get_db),
 ):
-    """整体分类预测准确率：胜负 / 大小球 / 盘口 / 比分Top3。"""
+    """整体分类预测准确率：胜负 / 大小球 / 盘口 / 比分Top3。
+
+    各类别可单独按置信度（pct）范围筛选，仅影响该类自己的样本与命中统计。
+    """
+    pct_ranges = {
+        "win": (win_pct_min, win_pct_max),
+        "over25": (ou_pct_min, ou_pct_max),
+        "handicap": (hand_pct_min, hand_pct_max),
+    }
     return await asyncio.to_thread(
-        _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team, category
+        _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team, category, pct_ranges
     )
 
 
@@ -234,7 +248,26 @@ async def get_calibration_report():
     return {"report": get_diagnostics()}
 
 
-def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, category):
+# 各类别对应的置信度（pct）字段；比分 Top3 没有独立的 pct 字段，故不参与筛选。
+ACCURACY_PCT_FIELD = {
+    "win": "llm_win_pct",
+    "over25": "llm_ou_pct",
+    "handicap": "llm_handicap_pct",
+}
+
+
+def _parse_pct(val) -> float | None:
+    """pct 字段来自 LLM 输出，存为字符串（如 '75%'），解析为 0-100 的浮点数。"""
+    if val is None:
+        return None
+    try:
+        return float(str(val).strip().rstrip('%').strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, category, pct_ranges=None):
+    pct_ranges = pct_ranges or {}
     conditions = ["f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL"]
     params: dict = {}
     if date:
@@ -272,6 +305,7 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
         SELECT p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
                p.llm_win, p.llm_score, p.llm_ou_type, p.llm_ou_line,
                p.llm_handicap_num, p.llm_handicap_team,
+               p.llm_win_pct, p.llm_ou_pct, p.llm_handicap_pct,
                f.fulltime_home AS actual_h, f.fulltime_away AS actual_a
         FROM predictions p
         LEFT JOIN fixtures f ON p.fixture_id = f.id
@@ -287,9 +321,21 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
         flags = _derive_result_flags(d, actual_h, actual_a)
         for key, flag in zip(("win", "over25", "handicap", "score"), flags):
             # None 表示没有可验证结果，包含大小球/盘口走水，必须排除。
-            if flag is not None:
-                totals[key] += 1
-                corrects[key] += int(flag)
+            if flag is None:
+                continue
+            # 按该类别自己的置信度区间筛选：区间只对当前类别生效，
+            # 且 pct 缺失（未解析出数值）的记录不纳入该类别样本。
+            pct_min, pct_max = pct_ranges.get(key) or (None, None)
+            if pct_min is not None or pct_max is not None:
+                pct = _parse_pct(d.get(ACCURACY_PCT_FIELD.get(key)))
+                if pct is None:
+                    continue
+                if pct_min is not None and pct < pct_min:
+                    continue
+                if pct_max is not None and pct > pct_max:
+                    continue
+            totals[key] += 1
+            corrects[key] += int(flag)
 
     def item(key: str, label: str):
         total = totals[key]
