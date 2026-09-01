@@ -4,7 +4,7 @@
 流程:
   1. 从 DB 读取比赛信息
   2. 提取特征 → XGBoost 推理(λ, Top3, 参考概率)
-  3. 赔率API(实时)
+  3. 赔率(API-Football 实时; 失败时回退到 Flashscore 爬取)
   4. LLM(全量数据 + XGBoost 参考) 最终决策
   5. 写入 predictions 表
 """
@@ -509,6 +509,64 @@ def _fetch_odds(fixture_id: int, match_date=None,
     return None
 
 
+# Flashscore 散列表 / 赔率兜底所需：Flashscore 8位 hash -> API-Football team_id
+_FLASHSCORE_TEAM_MAP_FILE = os.path.join(
+    os.path.dirname(__file__), '..', 'tools', 'flashscore_team_map.json')
+
+
+def _fetch_flashscore_odds(fixture: dict) -> dict | None:
+    """API-Football 赔率拉取失败时的兜底：爬取 Flashscore 的 1X2 / 亚盘 / 大小球。
+
+    仅当双方球队都能在 flashscore_team_map.json 中找到对应 hash 时可用。
+    抓取前会核对页面比赛日期与双方队名，避免拿到两队之间另一场比赛的赔率。
+    成功返回 {"odds_data": [...]}（与 _fetch_odds 同构），否则返回 None。
+    """
+    if not os.path.exists(_FLASHSCORE_TEAM_MAP_FILE):
+        logger.warning("未找到 flashscore_team_map.json，跳过 Flashscore 赔率兜底")
+        return None
+    try:
+        with open(_FLASHSCORE_TEAM_MAP_FILE, encoding="utf-8") as f:
+            team_map = json.load(f)
+    except Exception as e:
+        logger.warning(f"读取 flashscore_team_map.json 失败，跳过兜底: {e}")
+        return None
+
+    id_to_hash = {tid: h for h, tid in team_map.items()}
+    home_hash = id_to_hash.get(fixture.get('home_id'))
+    away_hash = id_to_hash.get(fixture.get('away_id'))
+    if not home_hash or not away_hash:
+        logger.info(
+            f"Flashscore 赔率兜底不可用（球队缺少 hash 映射）fixture={fixture.get('id')}: "
+            f"home={fixture.get('home_name')} away={fixture.get('away_name')}"
+        )
+        return None
+
+    hash_to_name = {
+        home_hash: fixture.get('home_name'),
+        away_hash: fixture.get('away_name'),
+    }
+    try:
+        from tools.fetch_flashscore_odds import scrape_match_odds
+
+        result = scrape_match_odds(
+            home_hash, away_hash, hash_to_name, match_date=fixture.get('date'))
+    except Exception as e:
+        logger.warning(f"Flashscore 赔率抓取失败 fixture={fixture.get('id')}: {e}")
+        return None
+
+    odds_data = result.get("odds_data")
+    if not odds_data:
+        logger.warning(
+            f"Flashscore 未抓到可用赔率 fixture={fixture.get('id')}: {result.get('error')}"
+        )
+        return None
+    logger.info(
+        f"Flashscore 赔率兜底成功 fixture={fixture.get('id')} "
+        f"via={result.get('resolved_via')} page_date={result.get('page_date')}"
+    )
+    return {"odds_data": odds_data}
+
+
 def _odds_to_text(odds_data: list) -> str:
     """将结构化赔率数据转换为可读文本，供 LLM 提示词使用（含 1X2 / 亚盘 / 大小球）。"""
     from datetime import datetime as _dt
@@ -954,6 +1012,9 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         # 2. 赔率（尽早抓取并落库，独立于后续特征/模型/LLM 是否成功，
         #        确保点击「预测」即把可用赔率写入 odds 表）
         odds = _fetch_odds(fixture_id, fixture.get('date'))
+        if not (odds and odds.get("odds_data")):
+            # api-football 无赔率（联赛未覆盖 / 配额耗尽等），回退爬取 Flashscore
+            odds = _fetch_flashscore_odds(fixture)
         odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
         if odds and odds.get("odds_data"):
             try:
