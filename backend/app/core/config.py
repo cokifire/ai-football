@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # 外部比赛情报（Firecrawl）
     firecrawl_api_key: str = ""
+    firecrawl_base_url: str = "http://127.0.0.1:3002"
 
     # 情报整理 LLM（OpenAI-compatible）
     intelligence_llm_api_key: str = ""

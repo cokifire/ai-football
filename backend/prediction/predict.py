@@ -683,6 +683,7 @@ def _fetch_intelligence_markdown(fixture: dict) -> str:
             competition=str(fixture.get("league_name") or ""),
             year=fixture.get("season") or datetime.now().year,
             api_key=settings.firecrawl_api_key,
+            firecrawl_base_url=settings.firecrawl_base_url,
             intelligence_llm_api_key=settings.intelligence_llm_api_key,
             intelligence_llm_base_url=settings.intelligence_llm_base_url,
             intelligence_llm_model=settings.intelligence_llm_model,

@@ -299,6 +299,7 @@ def scrape_match_analysis(
     competition: str,
     year: int | str,
     api_key: str,
+    firecrawl_base_url: str = "http://127.0.0.1:3002",
     intelligence_llm_api_key: str = "",
     intelligence_llm_base_url: str = "https://apihub.agnes-ai.com/v1",
     intelligence_llm_model: str = "agnes-2.5-flash",
@@ -310,9 +311,7 @@ def scrape_match_analysis(
     Failures are returned as a short Markdown status so callers can include it
     in a prompt without making external intelligence a hard prediction error.
     """
-    if not api_key:
-        logger.warning("Firecrawl 情报获取跳过: FIRECRAWL_API_KEY 未配置")
-        return "# 外部比赛情报\n\n未配置 Firecrawl API key。"
+    firecrawl_base_url = (firecrawl_base_url or "http://127.0.0.1:3002").strip().rstrip("/")
 
     limit = max(1, min(limit, 3))
 
@@ -325,7 +324,13 @@ def scrape_match_analysis(
             from firecrawl import FirecrawlApp as FirecrawlClient
         from firecrawl.v1.client import V1ScrapeOptions
 
-        app = FirecrawlClient(api_key=api_key)
+        # Self-hosted Firecrawl is normally exposed on port 3002. The API key
+        # is optional for local deployments, while api_url makes sure the SDK
+        # never falls back to the hosted Firecrawl service.
+        app = FirecrawlClient(
+            api_key=api_key or None,
+            api_url=firecrawl_base_url,
+        )
         sites = [site] if isinstance(site, str) and site else list(site or INTELLIGENCE_SITES)
         sites = [item.strip().rstrip("/") for item in sites if item and item.strip()]
         if not sites:
