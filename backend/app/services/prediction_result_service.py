@@ -194,7 +194,10 @@ def _backfill_one(db, fid: int) -> bool:
         else:
             home_covers = None  # 走水
 
-        team = str(pred[4]).strip() if pred[4] is not None else ""
+        # 查询字段顺序为：llm_win, llm_handicap_num, llm_handicap_team,
+        # llm_score, over25_prob, llm_ou_type, llm_ou_line；下注方是 pred[2]。
+        # 误用 pred[4] 会把大小球概率当成下注方，导致客队让盘结果判错。
+        team = str(pred[2]).strip() if pred[2] is not None else ""
         if home_covers is None:
             handicap_correct = None
         elif team == "客队":

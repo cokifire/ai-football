@@ -608,6 +608,53 @@ def _odds_to_text(odds_data: list) -> str:
     return "\n" + "\n".join(lines)
 
 
+def _consensus_handicap_line(odds_data: list) -> float | None:
+    """从当前赔率快照选出亚盘共识线。
+
+    odds 表保存的是各博彩公司各自的盘口，不能直接拿第一条作为唯一盘口。
+    以博彩公司条目中出现次数最多的盘口作为共识；出现次数相同时，选择盘口
+    两侧隐含概率最接近的条目。这样可避免 LLM 根据赔率文本自由输出不存在的线。
+    """
+    candidates = []
+    for bookmaker in odds_data or []:
+        for entry in bookmaker.get("entries") or []:
+            line = entry.get("ah_line")
+            if line is None or entry.get("ah_home_odd") is None or entry.get("ah_away_odd") is None:
+                continue
+            try:
+                candidates.append((round(float(line), 2), abs(
+                    float(entry["ah_home_odd"]) - float(entry["ah_away_odd"])
+                )))
+            except (TypeError, ValueError):
+                continue
+    if not candidates:
+        return None
+
+    counts = {}
+    balance = {}
+    for line, diff in candidates:
+        counts[line] = counts.get(line, 0) + 1
+        balance[line] = min(balance.get(line, float("inf")), diff)
+    return min(counts, key=lambda line: (-counts[line], balance[line], abs(line)))
+
+
+def _lock_llm_handicap_to_market(llm_result: dict, odds_data: list) -> None:
+    """确保落库的 LLM 盘口线与本次赔率快照的共识线一致。"""
+    line = _consensus_handicap_line(odds_data)
+    if line is None:
+        return
+    try:
+        llm_line = float(llm_result.get("handicap_num"))
+    except (TypeError, ValueError):
+        llm_line = None
+    if llm_line != line:
+        logger.warning(
+            "修正 LLM 亚盘线: %s -> %s（以赔率共识为准）",
+            llm_result.get("handicap_num"), line,
+        )
+        llm_result["handicap_num"] = line
+
+
 def _fetch_weather_text(city_name: str, kickoff_ts: int | None = None) -> str:
     """获取比赛城市在**开球时刻**的天气及海拔，转换为供 LLM 使用的文本。
 
@@ -1116,6 +1163,10 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         if llm_result is None:
             logger.warning(f"预测失败 fixture={fixture_id}: LLM 未返回完整预测，跳过入库")
             raise PredictionLLMError("LLM 未返回完整/合规的预测结果（解析失败或字段缺失）")
+
+        # LLM 只能选择盘口方向，盘口线必须锁定到本次赔率快照的共识值，
+        # 避免 predictions.llm_handicap_num 与 odds 表出现不存在的盘口线。
+        _lock_llm_handicap_to_market(llm_result, odds.get("odds_data", []) if odds else [])
 
         # 6. 写库
         _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group)
