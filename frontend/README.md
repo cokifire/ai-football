@@ -183,6 +183,10 @@ npm run build      # tsc 类型检查 + vite 生产构建，产物在 dist/
 npm run preview    # 本地预览构建产物
 ```
 
+生产部署使用 `npm run build` 构建前端，再由 `npm run start` 同时启动
+Vite 生产预览服务器和后端 Uvicorn。systemd 服务文件会在每次启动前自动执行
+构建，因此不会把 Vite 开发服务器用于线上服务。
+
 ---
 
 ## 主要依赖接口

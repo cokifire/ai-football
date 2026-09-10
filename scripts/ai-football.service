@@ -12,7 +12,11 @@ WorkingDirectory=/home/ubuntu/ai-football/frontend
 # node/npm 由 apt 安装，位于 /usr/bin（已在 systemd 默认 PATH 中）。
 # 这里仍显式声明 PATH，避免某些最小化环境下缺省 PATH 不含 /usr/bin。
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/bin/npm run dev
+Environment=NODE_ENV=production
+
+# 每次服务启动前生成前端生产构建，运行时只提供 dist/ 静态产物。
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/npm run start
 
 # 数据库/依赖未就绪时避免无限快速重启风暴
 Restart=always
