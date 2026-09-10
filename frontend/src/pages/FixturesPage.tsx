@@ -251,6 +251,29 @@ export default function FixturesPage() {
     fetchFixtures()
   }
 
+  // 预测会调用外部情报和 LLM，可能在浏览器/网关断开后仍继续在后端执行。
+  // 请求失败时按 fixture 查询数据库，避免把“已入库但响应丢失”显示成预测失败。
+  const recoverPrediction = async (fixtureId: number): Promise<boolean> => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        const res = await apiClient.get('/predictions', {
+          params: { fixture_id: fixtureId, page: 1, page_size: 1 },
+          timeout: 10000,
+        })
+        if ((res.data?.data || []).some((item: any) => item?.basic?.fixture_id === fixtureId)) {
+          setFixtures((prev) => prev.map((item) => (
+            item.id === fixtureId ? { ...item, predicted: true } : item
+          )))
+          return true
+        }
+      } catch {
+        // 后端仍在处理，继续轮询；最终由调用方显示原始错误。
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 3000))
+    }
+    return false
+  }
+
   const viewDetail = (fixture: Fixture) => {
     setSelectedFixture(fixture as FixtureDetail)
     setFixtureDetail(null)
@@ -316,15 +339,22 @@ export default function FixturesPage() {
       })
       .catch((err: any) => {
         console.error('[Predict Error]', err)
-        if (err?.response?.data?.detail) {
-          setPredictMsg(`预测失败: ${err.response.data.detail}`)
-        } else if (err?.code === 'ECONNABORTED') {
-          setPredictMsg('预测请求超时，请稍后重试')
-        } else if (err?.message) {
-          setPredictMsg(`预测失败: ${err.message}`)
-        } else {
-          setPredictMsg('预测失败: 网络请求异常')
-        }
+        // 5xx、连接中断和超时都可能发生在后端写库之后，先确认数据库状态。
+        recoverPrediction(fixture.id).then((recovered) => {
+          if (recovered) {
+            setPredictMsg('预测已完成，结果已保存（响应连接曾中断）')
+            return
+          }
+          if (err?.response?.data?.detail) {
+            setPredictMsg(`预测失败: ${err.response.data.detail}`)
+          } else if (err?.code === 'ECONNABORTED') {
+            setPredictMsg('预测请求超时，请稍后重试')
+          } else if (err?.message) {
+            setPredictMsg(`预测失败: ${err.message}`)
+          } else {
+            setPredictMsg('预测失败: 网络请求异常')
+          }
+        })
       })
       .finally(() => {
         setPredictingIds((prev) => {

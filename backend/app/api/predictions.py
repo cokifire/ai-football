@@ -177,6 +177,7 @@ async def predict_from_odds_endpoint(fixture_id: int, _: AdminAuth):
 
 @router.get("/predictions")
 async def get_predictions(
+    fixture_id: int | None = Query(None),
     date: str | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
@@ -189,7 +190,7 @@ async def get_predictions(
     db: Session = Depends(get_db),
 ):
     return await asyncio.to_thread(
-        _get_predictions_sync, db, date, date_from, date_to, category, league_id, season, team, page, page_size
+        _get_predictions_sync, db, fixture_id, date, date_from, date_to, category, league_id, season, team, page, page_size
     )
 
 
@@ -405,10 +406,13 @@ def _derive_result_flags(d: dict, actual_h, actual_a):
     return win_correct, over_correct, handicap_correct, score_correct
 
 
-def _get_predictions_sync(db, date, date_from, date_to, category, league_id, season, team, page, page_size):
+def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, league_id, season, team, page, page_size):
     try:
         conditions = []
         params: dict = {}
+        if fixture_id is not None:
+            conditions.append("p.fixture_id = :fixture_id")
+            params["fixture_id"] = fixture_id
         if date:
             utc_start, utc_end = _date_to_utc_range(date)
             conditions.append("p.match_date >= :utc_start AND p.match_date < :utc_end")
