@@ -18,6 +18,153 @@ if _TOOLS_DIR not in sys.path:
 # Flashscore 连续爬取之间的随机等待区间(秒), 降低被反爬封锁的概率
 FLASHSCORE_SCRAPE_INTERVAL = (5, 12)
 
+# 淘汰赛对阵图缓存: league_id -> (过期时间戳, 数据)。抓取一次约 10s, 需缓存。
+DRAW_CACHE_TTL = 600
+_draw_cache: dict[int, tuple[float, dict]] = {}
+
+
+def _norm(s: str) -> str:
+    import re
+    import unicodedata
+
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+# 队名中的虚词, 比对前丢弃 ("LDU de Quito" 与 "LDU Quito" 应视为同队)
+_NAME_STOPWORDS = {
+    "de", "del", "da", "do", "di", "dos", "las", "los", "la", "el",
+    "the", "and", "y", "of", "at",
+}
+
+
+def _words(s: str) -> list[str]:
+    import re
+    import unicodedata
+
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return [w for w in re.findall(r"[a-z0-9]+", s.lower()) if w not in _NAME_STOPWORDS]
+
+
+def _score_team(name: str, cand: dict) -> float:
+    """队名相似度打分。Flashscore 常把 Independiente 缩写成 Ind.,
+    因此除全名相等外, 还允许「同词数 + 逐词前缀」匹配。"""
+    n = _norm(name)
+    if n and n == cand["norm"]:
+        return 4.0
+    wn, wc = _words(name), cand["words"]
+    if wn and wc:
+        if wn == wc:
+            return 3.0
+        if len(wn) == len(wc) and all(
+            a == b or a.startswith(b) or b.startswith(a) for a, b in zip(wn, wc)
+        ):
+            return 2.0
+    if n and cand["norm"] and (n in cand["norm"] or cand["norm"] in n):
+        return 1.0
+    return 0.0
+
+
+def _match_team(name: str, candidates: list[dict]) -> dict | None:
+    """在候选集里按队名找球队, 取得分最高者。"""
+    best, best_score = None, 0.0
+    for c in candidates:
+        s = _score_team(name, c)
+        if s > best_score:
+            best, best_score = c, s
+    return best
+
+
+def get_league_draw(db: Session, league_id: int, force: bool = False) -> dict | None:
+    """返回某联赛的淘汰赛对阵图(含 api_football team_id 与徽标)。
+
+    数据来自 Flashscore 的 /draw/ 页。队名到 team_id 的匹配优先在该联赛
+    自己的积分榜候选集内进行, 避免跨联赛误匹配
+    (如 "Barcelona SC" 被匹配成西甲 "Barcelona")。
+    """
+    import time
+
+    cached = _draw_cache.get(league_id)
+    if not force and cached and cached[0] > time.time():
+        return cached[1]
+
+    try:
+        from fetch_flashscore_draw import get_draw
+    except Exception as e:
+        logger.error(f"无法导入 Flashscore 对阵抓取脚本: {e}")
+        return None
+
+    data = get_draw(league_id)
+    if not data:
+        return None
+
+    # 候选集 A: 该联赛积分榜里出现过的球队(权威)
+    rows = (
+        db.query(Standing.team_id, Standing.team_name, Standing.team_logo)
+        .filter(Standing.league_id == league_id, Standing.team_name.isnot(None))
+        .distinct()
+        .all()
+    )
+    cands_a, seen = [], set()
+    for tid, tname, tlogo in rows:
+        if not tid or not tname or (tid, tname) in seen:
+            continue
+        seen.add((tid, tname))
+        cands_a.append({
+            "id": tid, "name": tname, "logo": tlogo or "",
+            "norm": _norm(tname), "words": _words(tname),
+        })
+
+    # 候选集 B: teams 全表(兜底, 仅在 A 未命中时使用)
+    from app.models.team import Team
+
+    cands_b = [
+        {
+            "id": t.id, "name": t.name, "logo": t.logo or "",
+            "norm": _norm(t.name), "words": _words(t.name),
+        }
+        for t in db.query(Team.id, Team.name, Team.logo).all()
+        if t.name
+    ]
+
+    unresolved = []
+    for rnd in data["rounds"]:
+        for m in rnd["matches"]:
+            for side in ("home", "away"):
+                side_data = m.get(side)
+                if not side_data:
+                    continue
+                hit = _match_team(side_data["name"], cands_a) or _match_team(
+                    side_data["name"], cands_b
+                )
+                if hit:
+                    side_data["team_id"] = hit["id"]
+                    side_data["team_name"] = hit["name"]
+                    side_data["team_logo"] = hit["logo"] or side_data.get("logo", "")
+                else:
+                    side_data["team_id"] = None
+                    side_data["team_name"] = side_data["name"]
+                    side_data["team_logo"] = side_data.get("logo", "")
+                    unresolved.append(side_data["name"])
+
+    if unresolved:
+        logger.warning(f"联赛 {league_id} 对阵图有 {len(unresolved)} 支队未匹配到 team_id: {unresolved}")
+
+    data["league_id"] = league_id
+    _draw_cache[league_id] = (time.time() + DRAW_CACHE_TTL, data)
+    return data
+
+
+def has_league_draw(league_id: int) -> bool:
+    """该联赛是否配置了 Flashscore 对阵页。"""
+    try:
+        from fetch_flashscore_draw import DRAW_URLS
+    except Exception:
+        return False
+    return league_id in DRAW_URLS
+
 
 def _sync_from_flashscore(db: Session, league_id: int) -> bool:
     """用 Flashscore 抓取并写入该联赛积分榜。返回是否成功触发抓取。"""

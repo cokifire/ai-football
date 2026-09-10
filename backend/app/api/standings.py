@@ -7,8 +7,28 @@ from app.models.standing import Standing
 from app.schemas.standing import StandingSchema
 from app.schemas.league import PaginatedResponse
 from app.core.zh import standings_apply_denorm_zh
+from app.services.standing_service import get_league_draw, has_league_draw
 
 router = APIRouter()
+
+
+@router.get("/standings/draw/available")
+async def get_draw_available(league_id: int = Query(...)):
+    """该联赛是否配置了淘汰赛对阵图(用于前端决定是否显示「淘汰赛」页签)"""
+    return {"league_id": league_id, "available": has_league_draw(league_id)}
+
+
+@router.get("/standings/draw")
+async def get_draw(
+    league_id: int = Query(...),
+    refresh: bool = Query(False, description="忽略缓存重新抓取"),
+    db: Session = Depends(get_db),
+):
+    """返回该联赛的淘汰赛对阵图(Flashscore /draw/ 页)。
+
+    首次抓取约需 10 秒, 结果在服务端缓存 10 分钟。
+    """
+    return await asyncio.to_thread(get_league_draw, db, league_id, refresh)
 
 
 @router.get("/standings/seasons")

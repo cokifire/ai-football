@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import apiClient from '../api/client'
 import Loading from '../components/Loading'
+import BracketView, { DrawData, DrawLoading } from '../components/BracketView'
 
 interface LeagueOption {
   id: number
@@ -74,6 +75,12 @@ export default function StandingsPage() {
   const [loadingMeta, setLoadingMeta] = useState(true)
   const [searchParams, setSearchParams] = useSearchParams()
   const initialLeagueRef = useRef(searchParams.get('league'))
+  // 视图: 表格积分榜 / 淘汰赛对阵图
+  const [view, setView] = useState<'table' | 'draw'>('table')
+  const [drawAvailable, setDrawAvailable] = useState(false)
+  const [draw, setDraw] = useState<DrawData | null>(null)
+  const [drawLoading, setDrawLoading] = useState(false)
+  const [drawError, setDrawError] = useState('')
 
   // 加载启用的联赛
   useEffect(() => {
@@ -132,6 +139,36 @@ export default function StandingsPage() {
       .catch(() => setStandings([]))
       .finally(() => setLoading(false))
   }, [leagueId, season])
+
+  // 联赛是否有淘汰赛对阵图
+  useEffect(() => {
+    if (leagueId === '') return
+    setDrawAvailable(false)
+    apiClient
+      .get('/standings/draw/available', { params: { league_id: leagueId } })
+      .then((res) => {
+        const ok = !!res.data?.available
+        setDrawAvailable(ok)
+        if (!ok && view === 'draw') setView('table')
+      })
+      .catch(() => setDrawAvailable(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leagueId])
+
+  // 切到对阵视图时加载(服务端有 10 分钟缓存)
+  useEffect(() => {
+    if (leagueId === '' || view !== 'draw' || !drawAvailable) return
+    setDrawLoading(true)
+    setDrawError('')
+    apiClient
+      .get('/standings/draw', { params: { league_id: leagueId } })
+      .then((res) => setDraw(res.data || null))
+      .catch(() => {
+        setDraw(null)
+        setDrawError('淘汰赛对阵加载失败，请稍后重试')
+      })
+      .finally(() => setDrawLoading(false))
+  }, [leagueId, view, drawAvailable])
 
   // 按分组聚合
   const groups = useMemo(() => {
@@ -197,8 +234,53 @@ export default function StandingsPage() {
         </div>
       </div>
 
+      {/* 视图切换 */}
+      <div className="flex gap-1 mb-4">
+        <button
+          className={`px-4 py-2 text-sm rounded-md ${
+            view === 'table'
+              ? 'bg-primary-600 text-white'
+              : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+          }`}
+          onClick={() => setView('table')}
+        >
+          积分榜
+        </button>
+        {drawAvailable && (
+          <button
+            className={`px-4 py-2 text-sm rounded-md ${
+              view === 'draw'
+                ? 'bg-primary-600 text-white'
+                : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+            }`}
+            onClick={() => setView('draw')}
+          >
+            淘汰赛对阵
+          </button>
+        )}
+      </div>
+
+      {/* 淘汰赛对阵图 */}
+      {view === 'draw' && (
+        <>
+          {drawLoading ? (
+            <DrawLoading />
+          ) : drawError ? (
+            <div className="card">
+              <div className="text-center text-gray-400 py-12">{drawError}</div>
+            </div>
+          ) : draw ? (
+            <BracketView data={draw} />
+          ) : (
+            <div className="card">
+              <div className="text-center text-gray-400 py-12">暂无淘汰赛对阵数据</div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* 积分榜内容 */}
-      {loading ? (
+      {view === 'table' && (loading ? (
         <Loading />
       ) : standings.length === 0 ? (
         <div className="card">
@@ -284,7 +366,7 @@ export default function StandingsPage() {
             </div>
           </div>
         ))
-      )}
+      ))}
     </div>
   )
 }
