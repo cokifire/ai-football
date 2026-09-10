@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -157,54 +158,121 @@ def _short_team_name(team: str) -> str:
 
 
 def _is_usable_article(item: dict[str, Any]) -> bool:
-    """Reject live-score and navigation pages before using an LLM."""
+    """Reject live-score, home, category and aggregation pages."""
     title = str(item.get("title") or item.get("name") or "").casefold()
     url = str(item.get("url") or item.get("link") or "").casefold()
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
     blocked = (
         "live score", "live scores", "gamecast", "scoreboard", "box score",
-        "match center", "matchcentre", "results", "fixture list",
+        "match center", "matchcentre", "results", "fixture list", "standings",
     )
-    return not any(term in title or term in url for term in blocked)
+    if any(term in title or term in url for term in blocked):
+        return False
+
+    # Search engines often return the source's landing page. These pages are
+    # full of team names in menus and must never be treated as match articles.
+    generic_paths = {
+        "/", "/soccer-betting/predictions", "/soccer-betting/predictions/",
+        "/footballpredictions", "/footballpredictions/",
+        "/en/news/predictions", "/en/news/predictions/",
+    }
+    if path in generic_paths:
+        return False
+    if any(marker in path for marker in ("/category/", "/tag/", "/author/", "/page/")):
+        return False
+
+    # An article result normally advertises its intent in the URL or title.
+    article_markers = ("prediction", "preview", "betting", "tips", "analysis")
+    return any(marker in path or marker in title for marker in article_markers)
+
+
+def _same_source_domain(url: str, source_site: str) -> bool:
+    """Prevent a search result from one site leaking into another site slot."""
+    host = urlparse(url).netloc.casefold().removeprefix("www.")
+    expected = source_site.split("/", 1)[0].casefold().removeprefix("www.")
+    return bool(host and expected and (host == expected or host.endswith("." + expected)))
+
+
+def _article_score(item: dict[str, Any], *, home_team: str, away_team: str) -> int:
+    """Score identity signals without trusting page navigation text."""
+    title = str(item.get("title") or item.get("name") or "")
+    url = str(item.get("url") or item.get("link") or "")
+    score = 0
+    for team in (home_team, away_team):
+        if _team_in_text(team, url):
+            score += 4
+        elif _team_in_text(team, title):
+            score += 3
+        elif _team_in_text(team, str(item.get("description") or "")):
+            score += 1
+    if any(marker in (url + " " + title).casefold() for marker in ("prediction", "preview", "analysis")):
+        score += 2
+    return score
 
 
 def _matching_items(result: Any, *, home_team: str, away_team: str, source_site: str) -> list[tuple[str, dict[str, Any]]]:
-    """Keep usable results that mention both teams, including common short names."""
+    """Keep high-confidence article URLs, never generic page content."""
     matches = []
     for source, item in _result_items(result):
         if not _is_usable_article(item):
             continue
-        haystack = " ".join(
-            str(item.get(key) or "")
-            for key in ("title", "name", "description", "content", "markdown", "url", "link")
-        )
-        if _team_in_text(home_team, haystack) and _team_in_text(away_team, haystack):
-            matches.append((source, {**item, "source_site": source_site}))
+        url = str(item.get("url") or item.get("link") or "")
+        if not _same_source_domain(url, source_site):
+            continue
+        title = str(item.get("title") or item.get("name") or "")
+        identity = f"{title} {url} {item.get('description') or ''}"
+        if not (_team_in_text(home_team, identity) and _team_in_text(away_team, identity)):
+            continue
+        score = _article_score(item, home_team=home_team, away_team=away_team)
+        if score < 6:
+            continue
+        matches.append((source, {**item, "source_site": source_site, "article_score": score}))
+    matches.sort(key=lambda pair: pair[1].get("article_score", 0), reverse=True)
     return matches
 
 
+def _scrape_article_pages(app: Any, matches: list[tuple[str, dict[str, Any]]], *, limit: int, scrape_options: Any) -> list[tuple[str, dict[str, Any]]]:
+    """Replace search snippets with Markdown scraped from article detail URLs."""
+    scraped = []
+    for source, item in matches[:limit]:
+        url = str(item.get("url") or item.get("link") or "")
+        try:
+            response = app.scrape_url(
+                url,
+                formats=["markdown"],
+                only_main_content=True,
+                remove_base64_images=True,
+                block_ads=True,
+            )
+            data = _to_jsonable(response)
+            if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                data = data["data"]
+            markdown = data.get("markdown") if isinstance(data, dict) else ""
+            markdown = _clean_markdown(markdown)
+            if not markdown:
+                logger.warning("Firecrawl 详情页无正文: url={}", url)
+                continue
+            scraped.append((source, {**item, "markdown": markdown}))
+        except Exception as exc:
+            logger.warning("Firecrawl 详情页抓取失败: url={}, error={}", url, exc)
+    return scraped
+
+
 def _as_markdown(result: Any, *, query: str, limit: int = 3) -> str:
-    """Render Firecrawl search output into bounded Markdown for the LLM."""
-    lines = ["# 外部比赛情报", "", f"> 搜索条件：`{query}`", ""]
+    """Render scraped article bodies only; search metadata is not intelligence."""
+    lines = ["# 外部比赛情报", ""]
     count = 0
     for source, item in _result_items(result):
         if count >= limit:
             break
-        title = item.get("title") or item.get("name") or "未命名来源"
-        url = item.get("url") or item.get("link") or ""
         markdown = item.get("markdown") or item.get("content") or item.get("description") or ""
         if isinstance(markdown, (dict, list)):
             markdown = json.dumps(markdown, ensure_ascii=False)
         markdown = _clean_markdown(markdown)
-        if not markdown and not url:
+        if not markdown:
             continue
-        lines.append(f"## {title}")
-        source_site = item.get("source_site")
-        if url and source_site:
-            lines.append(f"来源：{source_site} — {url}")
-        else:
-            lines.append(f"来源：{url}" if url else f"来源类型：{source}")
-        if markdown:
-            lines.extend(["", markdown])
+        lines.append(markdown)
         lines.append("")
         count += 1
 
@@ -385,7 +453,17 @@ def scrape_match_analysis(
                 if site_matches:
                     break
             if site_matches:
-                relevant.append(site_matches[0])
+                # Search only discovers candidate URLs. Never pass its page
+                # snippets directly to Agnes: they may be category pages or
+                # search-engine summaries containing navigation text.
+                scraped_matches = _scrape_article_pages(
+                    app,
+                    site_matches,
+                    limit=1,
+                    scrape_options=scrape_options,
+                )
+                if scraped_matches:
+                    relevant.append(scraped_matches[0])
 
         raw_markdown = _as_markdown(
             {"data": [item for _, item in relevant]},
