@@ -26,6 +26,7 @@ import sys
 import json
 import time
 import argparse
+import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -53,10 +54,14 @@ UA = (
 
 
 def slugify(name: str) -> str:
-    """生成 Flashscore 风格的 slug: 小写 + 去变音符 + 去非字母数字。"""
-    s = name.lower()
-    s = "".join(c for c in s if c.isalnum())  # 最简单稳妥: 只保留字母数字
-    return s
+    """生成 Flashscore URL 可接受的 ASCII slug。
+
+    Flashscore 的路由不接受 ``Bayern München`` 这类 Unicode slug，且会把
+    ``Bodo/Glimt`` 规范为 ``bodo-glimt``。保留词间分隔符也让 Flashscore
+    有机会将别名重定向到它的 canonical URL。
+    """
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
 
 def load_hash_to_name(db):
@@ -248,13 +253,19 @@ def _resolve_via_h2h(page, stats_url, match_date, home_hash=None, away_hash=None
                 continue
             if not _dates_match(row_date, match_date, tol_days=1):
                 continue
-            # 要求行内同时包含双方队名 (短名), 排除其它比赛的 Last matches 行
-            if home_label and away_label:
-                if home_label not in row_text or away_label not in row_text:
-                    continue
             match_url = row.get_attribute("href")
             if not match_url:
                 continue
+            # H2H 行的 href 包含双方 Flashscore hash。优先以它验证球队，避免
+            # 本地名称与页面英文名称不同（如 Bayern München / Bayern Munich）
+            # 而误过滤掉正确比赛。没有 hash 时才退回到文本名称校验。
+            match_url_lower = match_url.lower()
+            if home_hash and away_hash:
+                if home_hash.lower() not in match_url_lower or away_hash.lower() not in match_url_lower:
+                    continue
+            elif home_label and away_label:
+                if home_label not in row_text or away_label not in row_text:
+                    continue
             diff = abs((date(*row_date) - date(*_as_date_tuple(match_date))).days)
             if best_diff is None or diff < best_diff:
                 best_diff = diff
