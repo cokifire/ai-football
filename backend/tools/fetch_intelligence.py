@@ -22,6 +22,19 @@ INTELLIGENCE_SITES = (
     "livescore.com/en/news/predictions",
 )
 
+# 无 site: 限制的兜底搜索只接受这些编辑型足球网站。它扩大了覆盖面，
+# 但不会把比分页、聚合站或任意博彩落地页带入预测提示词。
+TRUSTED_FALLBACK_DOMAINS = (
+    "soccernews.com",
+    "footballpredictions.com",
+    "livescore.com",
+    "sportsmole.co.uk",
+    "90min.com",
+    "goal.com",
+    "onefootball.com",
+    "football365.com",
+)
+
 # 最终注入主预测 LLM 的情报上限；原始文章可较长，但最终只保留关键观点。
 FINAL_INTELLIGENCE_MAX_CHARS = 1800
 
@@ -194,6 +207,17 @@ def _same_source_domain(url: str, source_site: str) -> bool:
     return bool(host and expected and (host == expected or host.endswith("." + expected)))
 
 
+def _result_domain(url: str) -> str:
+    """Return a canonical result host without a leading www."""
+    return urlparse(url).netloc.casefold().removeprefix("www.")
+
+
+def _is_trusted_fallback_domain(url: str) -> bool:
+    """Accept only whitelisted editorial sources in unscoped web search."""
+    host = _result_domain(url)
+    return any(host == domain or host.endswith("." + domain) for domain in TRUSTED_FALLBACK_DOMAINS)
+
+
 def _article_score(item: dict[str, Any], *, home_team: str, away_team: str) -> int:
     """Score identity signals without trusting page navigation text."""
     title = str(item.get("title") or item.get("name") or "")
@@ -227,12 +251,25 @@ def _matching_items(result: Any, *, home_team: str, away_team: str, source_site:
         score = _article_score(item, home_team=home_team, away_team=away_team)
         if score < 6:
             continue
-        matches.append((source, {**item, "source_site": source_site, "article_score": score}))
+        matches.append((source, {
+            **item,
+            "source_site": source_site,
+            "home_team": home_team,
+            "away_team": away_team,
+            "article_score": score,
+        }))
     matches.sort(key=lambda pair: pair[1].get("article_score", 0), reverse=True)
     return matches
 
 
-def _scrape_article_pages(app: Any, matches: list[tuple[str, dict[str, Any]]], *, limit: int, scrape_options: Any) -> list[tuple[str, dict[str, Any]]]:
+def _scrape_article_pages(
+    app: Any,
+    matches: list[tuple[str, dict[str, Any]]],
+    *,
+    limit: int,
+    scrape_options: Any,
+    expected_year: int | str,
+) -> list[tuple[str, dict[str, Any]]]:
     """Replace search snippets with Markdown scraped from article detail URLs."""
     scraped = []
     for source, item in matches[:limit]:
@@ -253,10 +290,49 @@ def _scrape_article_pages(app: Any, matches: list[tuple[str, dict[str, Any]]], *
             if not markdown:
                 logger.warning("Firecrawl 详情页无正文: url={}", url)
                 continue
+            if str(expected_year) not in markdown:
+                # A broad search can surface an old head-to-head preview. An
+                # article for another season is worse than no intelligence.
+                logger.info(
+                    "Firecrawl 详情页赛季不匹配，已丢弃: url={}, expected_year={}",
+                    url, expected_year,
+                )
+                continue
+            # Search titles/snippets can be wrong or stale. Confirm both teams
+            # in the actual article before any content reaches Agnes.
+            if not (_team_in_text(item.get("home_team", ""), markdown) and
+                    _team_in_text(item.get("away_team", ""), markdown)):
+                logger.info("Firecrawl 详情页球队不匹配，已丢弃: url={}", url)
+                continue
             scraped.append((source, {**item, "markdown": markdown}))
         except Exception as exc:
             logger.warning("Firecrawl 详情页抓取失败: url={}, error={}", url, exc)
     return scraped
+
+
+def _fallback_matching_items(result: Any, *, home_team: str, away_team: str) -> list[tuple[str, dict[str, Any]]]:
+    """Select high-confidence articles from the unscoped trusted-source fallback."""
+    matches = []
+    for source, item in _result_items(result):
+        url = str(item.get("url") or item.get("link") or "")
+        if not _is_trusted_fallback_domain(url) or not _is_usable_article(item):
+            continue
+        title = str(item.get("title") or item.get("name") or "")
+        identity = f"{title} {url} {item.get('description') or ''}"
+        if not (_team_in_text(home_team, identity) and _team_in_text(away_team, identity)):
+            continue
+        score = _article_score(item, home_team=home_team, away_team=away_team)
+        if score < 6:
+            continue
+        matches.append((source, {
+            **item,
+            "source_site": _result_domain(url),
+            "home_team": home_team,
+            "away_team": away_team,
+            "article_score": score,
+        }))
+    matches.sort(key=lambda pair: pair[1].get("article_score", 0), reverse=True)
+    return matches
 
 
 def _as_markdown(result: Any, *, query: str, limit: int = 3) -> str:
@@ -407,6 +483,7 @@ def scrape_match_analysis(
         # Search each approved source separately so one noisy site cannot
         # consume the whole result budget. One result per site, at most three.
         relevant = []
+        used_urls: set[str] = set()
         query_list = []
         scrape_options = V1ScrapeOptions(
             formats=["markdown"],
@@ -461,9 +538,62 @@ def scrape_match_analysis(
                     site_matches,
                     limit=1,
                     scrape_options=scrape_options,
+                    expected_year=year,
                 )
                 if scraped_matches:
                     relevant.append(scraped_matches[0])
+                    used_urls.add(str(scraped_matches[0][1].get("url") or scraped_matches[0][1].get("link") or ""))
+
+        # If the curated sources do not cover the fixture, broaden discovery
+        # without trusting the entire web. Candidate domains, result identity,
+        # article type, and scraped body are all checked before acceptance.
+        if not relevant:
+            fallback_queries = [
+                build_query(
+                    home_team=home_team,
+                    away_team=away_team,
+                    competition=competition,
+                    year=year,
+                ),
+                f'"{_short_team_name(home_team)}" "{_short_team_name(away_team)}" football preview prediction',
+            ]
+            for query in dict.fromkeys(fallback_queries):
+                if len(relevant) >= limit:
+                    break
+                query_list.append(query)
+                try:
+                    result = app.search(
+                        query=query,
+                        limit=8,
+                        scrape_options=scrape_options,
+                    )
+                except Exception as exc:
+                    logger.warning("Firecrawl 全网兜底搜索失败: error={}", exc)
+                    continue
+                candidates = _fallback_matching_items(
+                    result,
+                    home_team=home_team,
+                    away_team=away_team,
+                )
+                candidates = [
+                    pair for pair in candidates
+                    if str(pair[1].get("url") or pair[1].get("link") or "") not in used_urls
+                ]
+                scraped_matches = _scrape_article_pages(
+                    app,
+                    candidates,
+                    limit=limit - len(relevant),
+                    scrape_options=scrape_options,
+                    expected_year=year,
+                )
+                for scraped in scraped_matches:
+                    url = str(scraped[1].get("url") or scraped[1].get("link") or "")
+                    if url in used_urls:
+                        continue
+                    relevant.append(scraped)
+                    used_urls.add(url)
+                    if len(relevant) >= limit:
+                        break
 
         raw_markdown = _as_markdown(
             {"data": [item for _, item in relevant]},
