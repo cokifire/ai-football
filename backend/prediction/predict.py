@@ -192,7 +192,7 @@ def _call_llm_provider(
     model: str,
     provider_name: str,
     retries: int = 2,
-    enable_thinking: bool = False,
+    enable_thinking: bool | None = None,
 ) -> dict | None:
     """调用单个 OpenAI-compatible 预测模型，并校验其结构化输出。"""
     if not (api_key or "").strip() or not (base_url or "").strip() or not (model or "").strip():
@@ -207,8 +207,8 @@ def _call_llm_provider(
         # 输出前截断（finish_reason=length），导致必填字段缺失。
         "max_tokens": 16000,
     }
-    if enable_thinking:
-        payload["enable_thinking"] = True
+    if enable_thinking is not None:
+        payload["enable_thinking"] = enable_thinking
 
     # 同一提供商内多次重试：偶有非标准 JSON 或短暂网络波动。
     for attempt in range(1, retries + 2):
@@ -263,7 +263,9 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
         model=settings.prediction_llm_model,
         provider_name=primary_name,
         retries=retries,
-        enable_thinking=True,
+        # Qwen 的思考模式可能先耗尽响应预算，仅返回 Thinking Process 而没有最终 JSON。
+        # 预测接口需要严格结构化输出，因此显式关闭思考模式。
+        enable_thinking=False,
     )
     if result is not None:
         logger.info("预测 LLM 成功: provider=primary, model={}", settings.prediction_llm_model)
@@ -648,8 +650,8 @@ def _lock_llm_handicap_to_market(llm_result: dict, odds_data: list) -> None:
     except (TypeError, ValueError):
         llm_line = None
     if llm_line != line:
-        logger.warning(
-            "修正 LLM 亚盘线: %s -> %s（以赔率共识为准）",
+        logger.info(
+            "LLM 亚盘线与赔率共识不同，已校正: {} -> {}",
             llm_result.get("handicap_num"), line,
         )
         llm_result["handicap_num"] = line

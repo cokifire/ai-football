@@ -253,14 +253,35 @@ export default function FixturesPage() {
 
   // 预测会调用外部情报和 LLM，可能在浏览器/网关断开后仍继续在后端执行。
   // 请求失败时按 fixture 查询数据库，避免把“已入库但响应丢失”显示成预测失败。
-  const recoverPrediction = async (fixtureId: number): Promise<boolean> => {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+  const recoverPrediction = async (fixture: Fixture): Promise<boolean> => {
+    const fixtureId = fixture.id
+    // 与预测请求链路的 900 秒超时对齐；任何中间代理意外断开时仍可等到预测入库。
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       try {
         const res = await apiClient.get('/predictions', {
           params: { fixture_id: fixtureId, page: 1, page_size: 1 },
           timeout: 10000,
         })
-        if ((res.data?.data || []).some((item: any) => item?.basic?.fixture_id === fixtureId)) {
+        const saved = (res.data?.data || []).find((item: any) => item?.basic?.fixture_id === fixtureId)
+        if (saved) {
+          const xgb = saved.xgb || {}
+          const probabilities = xgb.prob || {}
+          const llm = saved.llm || {}
+          setPredictResult({
+            fixture,
+            result: {
+              win_home: probabilities.home,
+              win_draw: probabilities.draw,
+              win_away: probabilities.away,
+              over25_prob: xgb.over25?.over,
+              top3: xgb.top3,
+              lambda_home: xgb.lambda?.home,
+              lambda_away: xgb.lambda?.away,
+              handicap: xgb.handicap,
+              llm: { ...llm, brief_analysis: llm.brief },
+              model_group: xgb.model_group,
+            },
+          })
           setFixtures((prev) => prev.map((item) => (
             item.id === fixtureId ? { ...item, predicted: true } : item
           )))
@@ -330,7 +351,7 @@ export default function FixturesPage() {
     setPredictingIds((prev) => new Set(prev).add(fixture.id))
     setPredictMsg(null)
     apiClient
-      .post(`/predict/${fixture.id}`, {}, { timeout: 300000 })
+      .post(`/predict/${fixture.id}`, {}, { timeout: 900000 })
       .then((res) => {
         setPredictResult({ fixture, result: res.data.result })
         setFixtures((prev) => prev.map((item) => (
@@ -340,9 +361,9 @@ export default function FixturesPage() {
       .catch((err: any) => {
         console.error('[Predict Error]', err)
         // 5xx、连接中断和超时都可能发生在后端写库之后，先确认数据库状态。
-        recoverPrediction(fixture.id).then((recovered) => {
+        recoverPrediction(fixture).then((recovered) => {
           if (recovered) {
-            setPredictMsg('预测已完成，结果已保存（响应连接曾中断）')
+            setPredictMsg(null)
             return
           }
           if (err?.response?.data?.detail) {

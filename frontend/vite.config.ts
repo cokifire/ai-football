@@ -5,6 +5,13 @@ import react from '@vitejs/plugin-react'
 // 远程开发时（前端在 A 机、后端在 Ubuntu）可用环境变量覆盖，例如：
 //   VITE_API_TARGET=http://10.0.0.5:8000 npm run dev
 const apiTarget = process.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
+const apiProxy = {
+  target: apiTarget,
+  changeOrigin: true,
+  // 预测会依次抓取外部情报并调用 LLM，必须与浏览器/Nginx 的 900 秒保持一致。
+  timeout: 900_000,
+  proxyTimeout: 900_000,
+}
 
 export default defineConfig({
   plugins: [react()],
@@ -18,10 +25,13 @@ export default defineConfig({
       interval: 1000,
     },
     proxy: {
-      '/api': {
-        target: apiTarget,
-        changeOrigin: true,
-      },
+      '/api': apiProxy,
+    },
+  },
+  preview: {
+    host: true,
+    proxy: {
+      '/api': apiProxy,
     },
   },
 })
