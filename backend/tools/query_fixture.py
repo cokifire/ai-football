@@ -34,9 +34,9 @@ def get_fixture_info(fixture_id: int) -> dict:
 
 def get_prediction_info(fixture_id: int) -> dict:
     pred = db.execute(text("""
-    SELECT win_home, win_draw, win_away, over25_prob, llm_win, llm_win_pct, llm_brief,
+    SELECT win_home, win_draw, win_away, over25_prob, llm_win, llm_win_pct,
            llm_handicap_team, llm_handicap_num, llm_handicap_pct,
-           llm_ou_type, llm_ou_line, llm_ou_pct, llm_score
+           llm_ou_type, llm_ou_line, llm_ou_pct, llm_score, llm_deep_report
     FROM predictions WHERE fixture_id = :fid
     """), {'fid': fixture_id}).fetchone()
     return dict(pred._mapping) if pred else None
@@ -98,7 +98,7 @@ def main():
         table.add_row("让球预测", f"{pred['llm_handicap_team'] or '-'} {pred['llm_handicap_num'] or '-'} {pred['llm_handicap_pct'] or ''}")
         table.add_row("大小球预测", f"{pred['llm_ou_type'] or '-'} {pred['llm_ou_line'] or '-'} {pred['llm_ou_pct'] or ''}")
         table.add_row("比分预测", pred['llm_score'] or '-')
-        table.add_row("分析摘要", pred['llm_brief'] or '-')
+        table.add_row("深度分析", pred['llm_deep_report'] or '-')
         console.print(table)
 
     # 完赛统计

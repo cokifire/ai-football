@@ -116,7 +116,7 @@ def _load_prediction(db, fixture_id: int) -> dict | None:
                    p.win_home, p.win_draw, p.win_away, p.over25_prob,
                    p.top3_scores, p.lambda_home, p.lambda_away, p.handicap,
                    p.llm_win, p.llm_score, p.llm_win_pct,
-                   p.llm_brief, p.llm_core_data, p.llm_deep_report,
+                   p.llm_deep_report,
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
                    p.home_name, p.away_name, p.league_name,
@@ -207,8 +207,6 @@ def _render_prediction(data: dict) -> None:
     analysis = "\n".join(
         line
         for line in [
-            f"[bold]一句话:[/bold] {data.get('llm_brief')}" if data.get("llm_brief") else "",
-            f"[bold]核心数据:[/bold] {data.get('llm_core_data')}" if data.get("llm_core_data") else "",
             f"[bold]深度分析:[/bold] {data.get('llm_deep_report')}" if data.get("llm_deep_report") else "",
         ]
         if line

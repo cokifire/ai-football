@@ -453,7 +453,7 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                    p.top3_scores, p.lambda_home, p.lambda_away, p.handicap,
                    p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
                    p.llm_win, p.llm_score, p.llm_win_pct,
-                   p.llm_brief, p.llm_core_data, p.llm_deep_report,
+                   p.llm_deep_report,
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
                    p.home_logo, p.away_logo,
@@ -533,8 +533,6 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                     "ou_line": d.get("llm_ou_line"),
                     "ou_type": d.get("llm_ou_type"),
                     "ou_pct": d.get("llm_ou_pct"),
-                    "brief": d.get("llm_brief"),
-                    "core_data": d.get("llm_core_data"),
                     "deep_report": d.get("llm_deep_report"),
                 },
                 "result": {

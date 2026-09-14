@@ -1020,7 +1020,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     ### 战意、背景与外部环境
     - 积分与战意：区分争冠、保级、争欧战、无欲无求或战略放弃。
     - 赛程疲劳度：计算近 15 天比赛密集度、多线作战轮换压力、长途旅行飞行距离。
-    - 外部环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响。
+    - 外部环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响（如非特性气候特征，可略过该分析）。
 
     ### 虚实辨析与底层数据
     - 重点看球队在相似战术风格对手面前创造的 Open-Play xG。
@@ -1035,8 +1035,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     ### 价值评估与盘口定位
     - 依据上述分析，估算你心中的“真实合理盘口”。
-    - 让球(handicap)：handicap_num，大小球(ou)：ou_line 取赔率中双方赔率最接近的盘口线。对比当前实际盘口（让球 handicap_num、大小球 ou_line）：
-    - 寻找市场过热（Public Bias）导致的盘口让步过深或过浅。
+    - 让球(handicap)：handicap_num，大小球(ou)：ou_line 取赔率数据中双方赔率最接近的盘口线。
+    - 对比当前实际盘口，寻找市场过热（Public Bias）导致的盘口让步过深或过浅。
     - 识别大小球盘口在极端天气、锋线伤停或保守战术下的价值偏差   
 
     # 请严格输出JSON格式:
@@ -1045,11 +1045,9 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
     "handicap_num":"让球数,负数=主队让,正数=客队让,如-1",
     "handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%",
-    "ou_line":"大小球线如2.5(优先取赔率中最均衡盘口线)",
+    "ou_line":"大小球线如2.5(取赔率中最均衡盘口线)",
     "ou_type":"大或小",
     "ou_pct":"大小球概率百分比如60%",
-    "brief_analysis":"一句话结论(20字内)",
-    "core_data":"简述核心动机与赛程影响(100字内)",
     "deep_report":"深度分析(300字内)"}}
     """
 
@@ -1200,7 +1198,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             win_home, win_draw, win_away, over25_prob,
             top3_scores, lambda_home, lambda_away, handicap,
             llm_win, llm_score, llm_win_pct,
-            llm_brief, llm_core_data, llm_deep_report,
+            llm_deep_report,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
             llm_ou_line, llm_ou_type, llm_ou_pct,
             created_at, updated_at
@@ -1210,7 +1208,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             :wh, :wd, :wa, :o25,
             :top3, :lh, :la, :hc,
             :lw, :ls, :lwp,
-            :lb, :lcd, :ldr,
+            :ldr,
             :hcn, :hct, :hcp,
             :oun, :out, :oup,
             :now, :now
@@ -1219,7 +1217,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             win_home=:wh, win_draw=:wd, win_away=:wa, over25_prob=:o25,
             top3_scores=:top3, lambda_home=:lh, lambda_away=:la, handicap=:hc,
             llm_win=:lw, llm_score=:ls, llm_win_pct=:lwp,
-            llm_brief=:lb, llm_core_data=:lcd, llm_deep_report=:ldr,
+            llm_deep_report=:ldr,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
             model_group=:mgroup, updated_at=:now
@@ -1235,7 +1233,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
         'lh': xgb['lambda_home'], 'la': xgb['lambda_away'],
         'hc': xgb['handicap'],
         'lw': llm.get('win'), 'ls': llm.get('score'), 'lwp': llm.get('win_pct'),
-        'lb': llm.get('brief_analysis'), 'lcd': llm.get('core_data'),
         'ldr': llm.get('deep_report'),
         'hcn': llm.get('handicap_num'), 'hct': llm.get('handicap_team'), 'hcp': llm.get('handicap_pct'),
         'oun': llm.get('ou_line'), 'out': llm.get('ou_type'), 'oup': llm.get('ou_pct'),

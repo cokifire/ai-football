@@ -1070,18 +1070,6 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
       )}
 
       {/* 文本分析 */}
-      {llm.brief_analysis && (
-        <div>
-          <h4 className="font-semibold mb-2">简析</h4>
-          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.brief_analysis}</p>
-        </div>
-      )}
-      {llm.core_data && (
-        <div>
-          <h4 className="font-semibold mb-2">核心数据</h4>
-          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{llm.core_data}</p>
-        </div>
-      )}
       {llm.deep_report && (
         <div>
           <h4 className="font-semibold mb-2">深度报告</h4>

@@ -39,8 +39,6 @@ interface PredictionDetail {
     ou_line: number | null
     ou_type: string | null
     ou_pct: number | null
-    brief: string | null
-    core_data: string | null
     deep_report: string | null
   } | null
   result: {
@@ -585,18 +583,6 @@ export default function PredictionsPage() {
                     <div>
                       <h4 className="text-sm font-medium text-gray-500 mb-1">比分预测</h4>
                       <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.score}</p>
-                    </div>
-                  )}
-                  {selectedPred.llm.core_data && (
-                    <div>
-                      <h4 className="text-sm font-medium text-gray-500 mb-1">核心数据对比</h4>
-                      <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.core_data}</p>
-                    </div>
-                  )}
-                  {selectedPred.llm.brief && (
-                    <div>
-                      <h4 className="text-sm font-medium text-gray-500 mb-1">简要分析</h4>
-                      <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.brief}</p>
                     </div>
                   )}
                   {selectedPred.llm.deep_report && (
