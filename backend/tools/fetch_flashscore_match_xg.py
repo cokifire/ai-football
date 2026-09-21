@@ -289,10 +289,13 @@ def extract_stats(page):
         <统计项名称>          例如 'Expected goals (xG)' / 'Goals prevented'
         <客队值>
     因此解析时: 找到标签行, 其上=home, 其下=away。
+
+    注意: 并非每场都展示 'Goals prevented' (部分比赛只有 Expected goals)。
+    因此只等待 'Expected goals' 出现即可; 'Goals prevented' 缺失时返回 None,
+    由上层 upsert 跳过 (不写入)。
     """
     page.wait_for_function(
-        "() => document.body.innerText.includes('Expected goals') "
-        "&& document.body.innerText.includes('Goals prevented')",
+        "() => document.body.innerText.includes('Expected goals')",
         timeout=30000,
     )
     lines = page.evaluate(
