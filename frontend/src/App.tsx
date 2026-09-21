@@ -11,6 +11,7 @@ import PlayersPage from './pages/PlayersPage'
 import FixturesPage from './pages/FixturesPage'
 import PredictionsPage from './pages/PredictionsPage'
 import SchedulerPage from './pages/SchedulerPage'
+import LogsPage from './pages/LogsPage'
 
 export default function App() {
   // 已登录（localStorage 有 token）则隐藏登录框；触发 401 或手动登出时弹出
@@ -48,6 +49,7 @@ export default function App() {
         <Route path="/fixtures" element={<FixturesPage />} />
         <Route path="/predictions" element={<PredictionsPage />} />
         <Route path="/scheduler" element={<SchedulerPage />} />
+        <Route path="/logs" element={<LogsPage />} />
       </Routes>
     </Layout>
   )

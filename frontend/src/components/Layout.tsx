@@ -12,6 +12,7 @@ const navItems = [
   { path: '/fixtures', label: '比赛中心', icon: '📅' },
   { path: '/predictions', label: '预测中心', icon: '🔮' },
   { path: '/scheduler', label: '数据同步', icon: '🔄' },
+  { path: '/logs', label: '运行日志', icon: '🧾' },
 ]
 
 export default function Layout({
