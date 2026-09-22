@@ -166,6 +166,15 @@ def has_league_draw(league_id: int) -> bool:
     return league_id in DRAW_URLS
 
 
+def _has_standings_url(league_id: int) -> bool:
+    """该联赛是否配置了 Flashscore 积分榜 URL (含多子页面分组形式)。"""
+    try:
+        from fetch_flashscore_standings import MULTI_URLS, URLS
+    except Exception:
+        return False
+    return league_id in URLS or league_id in MULTI_URLS
+
+
 def _sync_from_flashscore(db: Session, league_id: int) -> bool:
     """用 Flashscore 抓取并写入该联赛积分榜。返回是否成功触发抓取。"""
     try:
@@ -259,13 +268,16 @@ def sync_standings(db: Session) -> None:
         return
 
     for index, season in enumerate(seasons):
-        logger.info(
-            f"从 Flashscore 拉取联赛 {season.league_id} 赛季 {season.year} 的积分榜..."
-        )
-        if not _sync_from_flashscore(db, season.league_id):
-            logger.warning(
-                f"联赛 {season.league_id} 积分榜未同步：未配置 Flashscore URL 或抓取失败"
+        lid = season.league_id
+        # 处于淘汰赛阶段的赛事没有积分榜表格, 只有对阵图, 同步时直接跳过
+        if not _has_standings_url(lid) and has_league_draw(lid):
+            logger.info(
+                f"联赛 {lid} 处于淘汰赛阶段, 无积分榜可同步 (对阵图见「积分榜 → 淘汰赛对阵」页签)"
             )
+            continue
+        logger.info(f"从 Flashscore 拉取联赛 {lid} 赛季 {season.year} 的积分榜...")
+        if not _sync_from_flashscore(db, lid):
+            logger.warning(f"联赛 {lid} 积分榜未同步：未配置 Flashscore URL 或抓取失败")
         # 多次 Flashscore 爬取之间设置随机等待, 避免被反爬封锁
         if index < len(seasons) - 1:
             wait = random.uniform(*FLASHSCORE_SCRAPE_INTERVAL)

@@ -18,8 +18,10 @@
     python tools/fetch_flashscore_standings.py [league_id] [--dry-run]
 """
 import json
+import random
 import re
 import sys
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -48,7 +50,23 @@ URLS = {
     78: "https://www.flashscore.com/football/germany/bundesliga/standings/jg0MwVuC/standings/overall/",
 }
 
+# 需要抓取「多个子页面」的联赛: 每个子页面各自还有分组(Group)。
+# 格式: league_id -> [(子页面标签, URL), ...]
+# 例: UEFA Nations League 分 League A/B/C/D 四个独立比赛页, 每个内部再分 Group 1..4,
+# 最终 group_name 形如 "League A, Group 1"。
+MULTI_URLS = {
+    5: [
+        ("League A", "https://www.flashscore.com/football/europe/uefa-nations-league/standings/A1uGXGgK/standings/overall/"),
+        ("League B", "https://www.flashscore.com/football/europe/uefa-nations-league/standings/UoMnSfHs/standings/overall/"),
+        ("League C", "https://www.flashscore.com/football/europe/uefa-nations-league/standings/O8LjREWm/standings/overall/"),
+        ("League D", "https://www.flashscore.com/football/europe/uefa-nations-league/standings/6Hr3QYof/standings/overall/"),
+    ],
+}
+
 OVERRIDE_FILE = Path(__file__).resolve().parent / "flashscore_team_map.json"
+
+# 多子页面抓取之间的随机等待区间(秒), 降低被反爬封锁的概率
+SCRAPE_INTERVAL = (5, 12)
 
 # 逐队解析明细默认不打日志(太吵); CLI 传 --verbose 时打开, 便于排查映射
 VERBOSE = False
@@ -179,8 +197,13 @@ def resolve(fs_name: str, fs_hash: str, teams, override: dict):
 # ---------------------------------------------------------------------------
 # Flashscore 抓取与解析
 # ---------------------------------------------------------------------------
-def fetch_blob(url: str):
-    """用真实浏览器打开页面, 返回 (积分榜文本, [球队 hash 列表])。"""
+def fetch_tables(url: str):
+    """打开页面, 返回 [{"group": 组名, "blob": 表格文本, "links": [球队hash...]}]。
+
+    Flashscore 的分组赛制(如 Nations League、解放者杯小组赛)会把每个小组渲染成
+    独立的 div.tableWrapper, 表头带组名(GROUP 1 / Group 1)。单表格联赛则只有一项,
+    group 为空字符串 —— 解析结果与旧的 fetch_blob 兼容。
+    """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(
@@ -191,39 +214,55 @@ def fetch_blob(url: str):
             locale="en-US",
         )
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        # 处理隐私/同意弹窗
         for sel in ["text=AGREE", "text=I ACCEPT", "text=Accept", "text=OK"]:
             try:
                 page.click(sel, timeout=3000)
                 break
             except Exception:
                 pass
-        # 淘汰赛/抽签类页面(如欧冠)会重定向到 /draw/ 而没有积分榜表格, 直接放弃
+        # 淘汰赛/抽签类页面会重定向到 /draw/, 没有积分榜表格
         if "/draw/" in page.url:
             logger.warning(f"页面重定向到抽签视图, 无积分榜表格: {page.url}")
             browser.close()
-            return "", []
-        # 等待积分榜文本块渲染
-        page.wait_for_function(
-            "() => { const els=[...document.querySelectorAll('div,section')];"
-            " return els.some(e=>{const t=e.innerText||''; return t.includes('TEAM')&&t.includes('PTS');}); }",
-            timeout=30000,
-        )
-        data = page.evaluate(
+            return []
+
+        try:
+            page.wait_for_selector("div.tableWrapper", timeout=30000)
+        except Exception:
+            logger.warning(f"未等到积分榜表格: {url}")
+            browser.close()
+            return []
+        page.wait_for_timeout(1500)
+
+        tables = page.evaluate(
             """() => {
-                const els=[...document.querySelectorAll('div,section')];
-                const el = els.find(e=>{const t=e.innerText||'';
-                    return t.includes('TEAM')&&t.includes('PTS')&&e.querySelectorAll('a[href*="/team/"]').length>=10;});
-                if(!el) return {blob:'', links:[]};
-                const links=[...el.querySelectorAll('a[href*="/team/"]')].map(a=>({
-                    name: a.textContent.trim(),
-                    hash: a.getAttribute('href').split('/').filter(Boolean).pop(),
-                }));
-                return {blob: el.innerText, links};
+                const out = [];
+                document.querySelectorAll('div.tableWrapper').forEach(tw => {
+                    const txt = tw.innerText || '';
+                    if (!txt.includes('PTS')) return;
+                    const hdr = tw.querySelector('[class*="headerCell--participant"]');
+                    const group = hdr
+                        ? (hdr.getAttribute('title') || (hdr.innerText || '').trim())
+                        : '';
+                    const links = [...tw.querySelectorAll('a[href*="/team/"]')].map(a => ({
+                        name: (a.innerText || '').trim()
+                              || ((a.querySelector('img') || {}).alt || ''),
+                        hash: a.getAttribute('href').split('/').filter(Boolean).pop(),
+                    }));
+                    out.push({group: group, blob: txt, links: links});
+                });
+                return out;
             }"""
         )
         browser.close()
-    return data["blob"], data["links"]
+
+    # 同一队可能在表内出现两次(队名 + 队徽各一个链接), 去重
+    for tb in tables or []:
+        uniq = {}
+        for ln in tb["links"]:
+            uniq.setdefault(ln["hash"], ln["name"])
+        tb["links"] = [{"hash": h, "name": n} for h, n in uniq.items()]
+    return tables or []
 
 
 def parse_standings(blob: str):
@@ -288,31 +327,50 @@ def _apply(standing: Standing, t: dict, team_name: str, team_logo: str = "", gro
     standing.all_goals_against = t["ga"]
 
 
+def _sources(league_id: int):
+    """返回 [(子页面标签 or None, URL), ...]。"""
+    if league_id in MULTI_URLS:
+        return MULTI_URLS[league_id]
+    url = URLS.get(league_id)
+    return [(None, url)] if url else []
+
+
+def _group_name(league_name: str, label, group: str, n_tables: int) -> str:
+    """决定写入 standings.group_name 的名称。
+
+    * 多子页面 + 组名  -> "League A, Group 1"
+    * 仅子页面         -> "League A"
+    * 单表格联赛       -> 联赛名(如 "Eredivisie"), 与 API-Football 来源一致
+    * 单页面多组       -> "联赛名, Group A"
+    """
+    if label and group:
+        return f"{label}, {group}"
+    if label:
+        return label
+    if group and n_tables > 1:
+        return f"{league_name}, {group}"
+    return league_name
+
+
 def run(league_id: int, db=None, dry_run: bool = False):
     """抓取并写入某联赛积分榜。
 
     db: 传入外部 Session 时复用它(由调用方负责最终 commit/close);
         为 None 时自行创建 SessionLocal 并提交/关闭。
     """
-    url = URLS.get(league_id)
-    if not url:
-        logger.error(f"未配置 league_id={league_id} 的 Flashscore URL")
+    sources = _sources(league_id)
+    if not sources:
+        try:
+            from fetch_flashscore_draw import DRAW_URLS as _DRAW_URLS
+        except Exception:
+            _DRAW_URLS = {}
+        if league_id in _DRAW_URLS:
+            logger.info(
+                f"联赛 {league_id} 处于淘汰赛阶段, 无积分榜表格 (已配置对阵页, 见 /standings/draw)"
+            )
+        else:
+            logger.error(f"未配置 league_id={league_id} 的 Flashscore URL")
         return False
-
-    logger.info(f"抓取联赛 {league_id} 积分榜: {url}")
-    blob, links = fetch_blob(url)
-    if not blob:
-        logger.error("未能抓取到积分榜文本 (可能被反爬拦截)")
-        return False
-
-    season = detect_season(blob)
-    teams = parse_standings(blob)
-    logger.info(f"解析到 {len(teams)} 支球队, 赛季={season}")
-
-    # 用队名(归一化)对齐 Flashscore hash, 避免链接顺序与文本行错位
-    hash_by_name = {}
-    for ln in links:
-        hash_by_name.setdefault(norm(ln["name"]), ln["hash"])
 
     own_db = db is None
     if own_db:
@@ -321,8 +379,6 @@ def run(league_id: int, db=None, dry_run: bool = False):
         team_rows = load_teams(db)
         team_extra = load_team_extra(db)
         override = load_override()
-        # group_name 用联赛名称(与 API-Football 来源一致, 如 "Allsvenskan"),
-        # 而不是写死的 "overall"
         league_name = (
             db.query(League.name)
             .filter(League.id == league_id)
@@ -330,59 +386,97 @@ def run(league_id: int, db=None, dry_run: bool = False):
             or f"league_{league_id}"
         )
         unresolved = []
+        season = None
+        written = 0
 
-        for t in teams:
-            fs_hash = hash_by_name.get(norm(t["name"]))
-            tid, how = resolve(t["name"], fs_hash, team_rows, override)
-            if tid == 0:
-                unresolved.append(t["name"])
-                logger.warning(f"  [未解析] {t['name']} (Flashscore hash={fs_hash})")
-                continue
-            # 取 api_football 规范队名 + 徽标 URL;
-            # teams/standings 里都没有该队时, 用 fixtures 里的规范队名/徽标兜底
-            row = next((r for r in team_rows if r["id"] == tid), None)
-            ex = team_extra.get(tid, {})
-            team_name = (row["name"] if row else "") or ex.get("name") or t["name"]
-            team_logo = (row["logo"] if row else "") or ex.get("logo") or ""
-            # 持久化 hash->id 以便审阅/覆盖
-            if fs_hash:
-                override[fs_hash] = tid
-            if VERBOSE:
-                logger.info(
-                    f"  {t['rank']:>2}. {t['name']:<24} -> id={tid:<6} ({how}) "
-                    f"name={team_name} logo={'Y' if team_logo else 'N'} hash={fs_hash}"
-                )
+        for idx, (label, url) in enumerate(sources):
+            # 多个子页面之间随机等待, 降低被反爬封锁的概率
+            if idx > 0:
+                wait = random.uniform(*SCRAPE_INTERVAL)
+                logger.info(f"Flashscore 子页面间隔等待 {wait:.1f}s")
+                time.sleep(wait)
 
-            if dry_run:
+            logger.info(f"抓取联赛 {league_id} 积分榜: {url}")
+            tables = fetch_tables(url)
+            if not tables:
+                logger.error(f"未能抓取到积分榜表格 (可能被反爬拦截或页面改版): {url}")
                 continue
 
-            # 以 (league_id, season, team_id) 为主键刷新, 复用已有 group_name 避免重复
-            existing = (
-                db.query(Standing)
-                .filter(
-                    Standing.league_id == league_id,
-                    Standing.season == season,
-                    Standing.team_id == tid,
-                )
-                .first()
-            )
-            if existing:
-                _apply(existing, t, team_name, team_logo, league_name)
-            else:
-                s = Standing(
-                    league_id=league_id, season=season,
-                    group_name=league_name, team_id=tid,
-                    team_name=team_name,
-                )
-                _apply(s, t, team_name, team_logo, league_name)
-                db.add(s)
+            for tb in tables:
+                group_name = _group_name(league_name, label, tb["group"], len(tables))
+                if season is None:
+                    season = detect_season(tb["blob"])
+                teams = parse_standings(tb["blob"])
+                if not teams:
+                    logger.warning(f"  [{group_name}] 未解析到任何球队")
+                    continue
+                if VERBOSE:
+                    logger.info(f"  [{group_name}] 解析到 {len(teams)} 支球队")
 
-        if not dry_run:
+                # 用队名(归一化)对齐 Flashscore hash, 避免链接顺序与文本行错位
+                hash_by_name = {}
+                for ln in tb["links"]:
+                    hash_by_name.setdefault(norm(ln["name"]), ln["hash"])
+
+                for t in teams:
+                    fs_hash = hash_by_name.get(norm(t["name"]))
+                    tid, how = resolve(t["name"], fs_hash, team_rows, override)
+                    if tid == 0:
+                        unresolved.append(t["name"])
+                        logger.warning(
+                            f"  [未解析] {t['name']} (group={group_name}, hash={fs_hash})"
+                        )
+                        continue
+                    # 取 api_football 规范队名 + 徽标 URL;
+                    # teams/standings 里都没有该队时, 用 fixtures 里的队名/徽标兜底
+                    row = next((r for r in team_rows if r["id"] == tid), None)
+                    ex = team_extra.get(tid, {})
+                    team_name = (row["name"] if row else "") or ex.get("name") or t["name"]
+                    team_logo = (row["logo"] if row else "") or ex.get("logo") or ""
+                    # 持久化 hash->id 以便审阅/覆盖
+                    if fs_hash:
+                        override[fs_hash] = tid
+                    if VERBOSE:
+                        logger.info(
+                            f"  {t['rank']:>2}. {t['name']:<24} -> id={tid:<6} ({how}) "
+                            f"name={team_name} logo={'Y' if team_logo else 'N'} hash={fs_hash}"
+                        )
+                    written += 1
+
+                    if dry_run:
+                        continue
+
+                    # 以 (league_id, season, team_id) 为主键刷新
+                    existing = (
+                        db.query(Standing)
+                        .filter(
+                            Standing.league_id == league_id,
+                            Standing.season == season,
+                            Standing.team_id == tid,
+                        )
+                        .first()
+                    )
+                    if existing:
+                        _apply(existing, t, team_name, team_logo, group_name)
+                    else:
+                        s = Standing(
+                            league_id=league_id, season=season,
+                            group_name=group_name, team_id=tid,
+                            team_name=team_name,
+                        )
+                        _apply(s, t, team_name, team_logo, group_name)
+                        db.add(s)
+
+        if not dry_run and season is not None:
             db.commit()
-            logger.info(f"已写入/更新 {len(teams) - len(unresolved)} 条 standings (league={league_id}, season={season})")
+            logger.info(
+                f"已写入/更新 {written} 条 standings (league={league_id}, season={season})"
+            )
         save_override(override)
         if unresolved:
-            logger.warning(f"有 {len(unresolved)} 支队未解析, 请手动填入 {OVERRIDE_FILE.name}: {unresolved}")
+            logger.warning(
+                f"有 {len(unresolved)} 支队未解析, 请手动填入 {OVERRIDE_FILE.name}: {unresolved}"
+            )
         return True
     finally:
         if own_db:
