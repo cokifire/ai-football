@@ -431,12 +431,21 @@ def _audit_articles_with_agnes(
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
-                "max_tokens": 160,
+                # agnes-2.5-flash 会思考，且供应商把 reasoning token 计入
+                # max_tokens。预算过小会在产出 JSON 前被截断
+                # （finish_reason=length，content 为空），json.loads 随即报
+                # "Expecting value: line 1 column 1 (char 0)"。
+                "max_tokens": 2048,
             },
             timeout=45.0,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"].get("content", "").strip()
+        choice = response.json()["choices"][0]
+        content = (choice["message"].get("content") or "").strip()
+        if not content:
+            raise ValueError(
+                f"审核模型返回空内容: finish_reason={choice.get('finish_reason')}"
+            )
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
         payload = json.loads(content)
         accepted_ids = payload.get("accepted_ids")
