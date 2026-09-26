@@ -263,9 +263,6 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
         model=settings.prediction_llm_model,
         provider_name=primary_name,
         retries=retries,
-        # Qwen 的思考模式可能先耗尽响应预算，仅返回 Thinking Process 而没有最终 JSON。
-        # 预测接口需要严格结构化输出，因此显式关闭思考模式。
-        enable_thinking=False,
     )
     if result is not None:
         logger.info("预测 LLM 成功: provider=primary, model={}", settings.prediction_llm_model)
