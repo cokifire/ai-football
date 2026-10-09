@@ -1,0 +1,1745 @@
+﻿club,elo,match_name,match_id,method
+Bayern München,2046,Bayern München,157,exact_norm
+Arsenal,2040,Arsenal,42,exact_norm
+Man City,2028,Manchester City,50,prefix
+Barcelona,2024,Barcelona,529,exact_norm
+Real Madrid,1972,Real Madrid,541,exact_norm
+Paris SG,1956,Paris Saint Germain,85,manual
+Internazionale,1946,Inter,505,manual
+Liverpool,1937,Liverpool,40,exact_norm
+Atlético,1903,Atletico Madrid,530,manual
+Dortmund,1900,Borussia Dortmund,165,token
+Aston Villa,1895,Aston Villa,66,exact_norm
+Brighton,1891,Brighton,51,exact_norm
+Chelsea,1881,Chelsea,49,exact_norm
+Newcastle,1879,Newcastle,34,exact_norm
+Man United,1879,Manchester United,33,prefix
+Sporting,1871,Sporting CP,228,token
+Leverkusen,1870,Bayer Leverkusen,168,token
+Flamengo,1869,Flamengo,127,exact_norm
+Brentford,1862,Brentford,55,exact_norm
+Bournemouth,1861,Bournemouth,35,exact_norm
+Roma,1857,AS Roma,497,token
+Palmeiras,1855,Palmeiras,121,exact_norm
+Benfica,1854,Benfica,211,exact_norm
+Juventus,1841,Juventus,496,exact_norm
+Porto,1839,FC Porto,212,token
+Napoli,1833,Napoli,492,exact_norm
+Everton,1827,Everton,45,exact_norm
+Crystal Palace,1824,Crystal Palace,52,exact_norm
+Milan,1823,AC Milan,489,token
+Stuttgart,1818,VfB Stuttgart,172,token
+Betis,1818,Real Betis,543,token
+Leeds,1817,Leeds,63,exact_norm
+RB Leipzig,1816,RB Leipzig,173,exact_norm
+St Gillis,1812,Union St. Gilloise,1393,manual
+Lens,1812,Lens,116,exact_norm
+Zenit,1809,Zenit,596,exact_norm
+Brugge,1809,Club Brugge KV,569,manual
+Fulham,1807,Fulham,36,exact_norm
+Atalanta,1807,Atalanta,499,exact_norm
+Como,1806,Como,895,exact_norm
+Forest,1805,Nottingham Forest,65,manual
+Monaco,1802,Monaco,91,exact_norm
+Lyon,1800,Lyon,80,exact_norm
+Villarreal,1798,Villarreal,533,exact_norm
+Tottenham,1798,Tottenham,47,exact_norm
+Galatasaray,1795,Galatasaray,645,exact_norm
+Freiburg,1790,SC Freiburg,160,token
+PSV,1784,PSV Eindhoven,197,manual
+Ind del Valle,1783,Independiente del Valle,1153,prefix
+Fenerbahçe,1780,Fenerbahçe,611,exact_norm
+Lille,1780,Lille,79,exact_norm
+Bodø/Glimt,1779,,,unmatched
+Lazio,1777,Lazio,487,exact_norm
+West Ham,1777,West Ham,48,exact_norm
+Boca Juniors,1776,Boca Juniors,451,exact_norm
+Cruzeiro,1775,Cruzeiro,135,exact_norm
+Fluminense,1769,Fluminense,124,exact_norm
+Real Sociedad,1769,Real Sociedad,548,exact_norm
+FC Krasnodar,1764,FC Krasnodar,621,exact_norm
+Athletic Club,1764,Athletic Club,531,exact_norm
+Slavia Praha,1762,Slavia Praha,560,exact_norm
+Marseille,1762,Marseille,81,exact_norm
+Rennes,1754,Rennes,94,exact_norm
+Bologna,1753,Bologna,500,exact_norm
+Celta,1750,Celta Vigo,538,token
+Al Hilal,1747,Al-Hilal Saudi FC,2932,token
+Argentinos Junior,1745,Argentinos JRS,458,exact_norm
+Rayo Vallecano,1744,Rayo Vallecano,728,exact_norm
+Mainz,1742,FSV Mainz 05,164,token
+Strasbourg,1742,Strasbourg,95,exact_norm
+Valencia,1741,Valencia,532,exact_norm
+Frankfurt,1740,Eintracht Frankfurt,169,token
+Sunderland,1737,Sunderland,746,exact_norm
+Rosario Central,1735,Rosario Central,437,exact_norm
+River Plate,1732,River Plate,435,exact_norm
+Ind Rivadavia,1731,Independ. Rivadavia,473,prefix
+Braga,1730,SC Braga,217,token
+Bahia,1729,Bahia,118,exact_norm
+Ath Paranaense,1728,Atletico Paranaense,134,manual
+Hoffenheim,1728,1899 Hoffenheim,167,token
+Toluca,1727,Toluca,2281,exact_norm
+Wolves,1726,Wolves,39,exact_norm
+Atlético Nacional,1726,Atletico Nacional,1137,exact_norm
+Sevilla,1725,Sevilla,536,exact_norm
+Vélez Sarsfield,1725,Velez Sarsfield,438,exact_norm
+Augsburg,1724,FC Augsburg,170,token
+Estudiantes,1724,Estudiantes L.P.,450,token
+Alaves,1723,Alaves,542,exact_norm
+Spartak Moskva,1722,Spartak Moscow,558,exact_norm
+Fiorentina,1721,Fiorentina,502,exact_norm
+Santos,1721,Santos,128,exact_norm
+Atlético Mineiro,1721,,,unmatched
+Olympiakos,1720,Olympiakos Piraeus,553,token
+Girona,1720,Girona,547,exact_norm
+Mirassol,1719,Mirassol,7848,exact_norm
+Feyenoord,1718,Feyenoord,209,exact_norm
+Osasuna,1717,Osasuna,727,exact_norm
+Midtjylland,1716,FC Midtjylland,397,token
+São Paulo,1716,Sao Paulo,126,exact_norm
+Corinthians,1713,Corinthians,131,exact_norm
+Mallorca,1713,Mallorca,798,exact_norm
+Cruz Azul,1712,Cruz Azul,2295,exact_norm
+Botafogo,1711,Botafogo,120,exact_norm
+Vasco da Gama,1710,Vasco DA Gama,133,exact_norm
+Racing Club,1710,Racing Club,436,exact_norm
+La Roche VF,1709,,,unmatched
+Levante,1708,Levante,539,exact_norm
+América,1708,Club America,2287,manual
+LDU Quito,1707,LDU de Quito,1158,token
+Amed SK,1706,Amed,3579,manual
+Novorizontino,1705,,,unmatched
+Paris FC,1705,Paris FC,114,exact_norm
+AEK,1704,AEK Larnaca,614,token
+Belgrano,1703,Belgrano Cordoba,440,token
+Peñarol,1703,Penarol,2348,exact_norm
+Elche,1701,Elche,797,exact_norm
+Kashima Antlers,1701,Kashima,290,manual
+Getafe,1700,Getafe,546,exact_norm
+Lanús,1699,Lanus,446,exact_norm
+Southampton,1699,Southampton,41,exact_norm
+Besiktas,1699,Beşiktaş,549,exact_norm
+Sassuolo,1697,Sassuolo,488,exact_norm
+Espanyol,1697,Espanyol,540,exact_norm
+Dynamo Moskva,1696,Dynamo,1088,core
+Udinese,1696,Udinese,494,exact_norm
+Almeria,1696,Almeria,723,exact_norm
+Huracán,1695,Huracan,445,exact_norm
+Ipswich,1694,Ipswich,57,exact_norm
+FC Kobenhavn,1694,FC Copenhagen,400,exact_norm
+Eibar,1693,Eibar,545,exact_norm
+Internacional,1693,Internacional,119,exact_norm
+Viking,1693,Viking,759,exact_norm
+Fortaleza,1693,,,unmatched
+Depor,1691,Deportes Tolima,1142,prefix
+AZ,1691,Jong AZ,418,token
+Castellon,1691,Castellón,5254,exact_norm
+Colo-Colo,1690,Colo Colo,2315,exact_norm
+Frosinone,1690,Frosinone,512,exact_norm
+Shakhtar,1689,Shakhtar Donetsk,550,token
+Coventry,1689,Coventry,1346,exact_norm
+Grêmio,1689,Gremio,130,exact_norm
+Independiente,1689,Independiente,453,exact_norm
+Bragantino,1689,RB Bragantino,794,token
+Instituto,1688,Instituto Cordoba,478,token
+Toulouse,1688,Toulouse,96,exact_norm
+Lorient,1688,Lorient,97,exact_norm
+Werder,1688,Werder Bremen,162,token
+Ajax,1687,Ajax,194,exact_norm
+Santander,1685,Racing Santander,4665,token
+Uni Catolica,1685,Universidad Catolica,1157,prefix
+Al Nassr,1685,Al-Nassr,2939,exact_norm
+CSKA Moskva,1684,CSKA Moscow,555,exact_norm
+Bolívar,1684,Bolívar,3702,exact_norm
+Nashville,1682,Nashville SC,9569,token
+Gimnasia L,1682,Gimnasia L.P.,434,token
+Torino,1682,Torino,503,exact_norm
+Sanfrecce Hiroshi,1680,Sanfrecce Hiroshima,282,prefix
+Inter Miami,1680,Inter Miami,9568,exact_norm
+Cagliari,1678,Cagliari,490,exact_norm
+Wolfsburg,1677,VfL Wolfsburg,161,token
+Union Berlin,1676,Union Berlin,182,exact_norm
+Genk,1676,Genk,742,exact_norm
+América de Cali,1676,America de Cali,1138,exact_norm
+Vissel Kobe,1675,Vissel Kobe,289,exact_norm
+Elversberg,1675,SV Elversberg,1660,token
+Lech,1674,Lech Poznan,347,token
+Guadalajara,1674,Guadalajara Chivas,2278,token
+Juventude,1673,Juventud,2353,substr
+Celtic,1673,Celtic,247,exact_norm
+FC Machida Zelvia,1673,Machida Zelvia,303,substr
+Brest,1672,Dinamo Brest,386,token
+Dinamo Zagreb,1672,Dinamo Zagreb,620,exact_norm
+Gladbach,1672,Borussia Mönchengladbach,163,manual
+Hamburg,1671,Hamburger SV,175,prefix
+UANL,1670,Tigres UANL,2279,token
+PAOK,1670,PAOK,619,exact_norm
+Nice,1667,Nice,84,exact_norm
+Vitória,1667,Vitoria,136,exact_norm
+Malaga,1666,Malaga,535,exact_norm
+Twente,1666,Twente,415,exact_norm
+Ferencvaros,1665,Ferencvarosi TC,651,prefix
+Criciúma,1665,,,unmatched
+Paderborn,1665,SC Paderborn 07,185,token
+Trabzonspor,1664,Trabzonspor,998,exact_norm
+Crvena Zvezda,1664,FK Crvena Zvezda,598,token
+Anderlecht,1663,Anderlecht,554,exact_norm
+Uni de Chile,1662,Universidad de Chile,2323,prefix
+Santa Fe,1661,Santa Fe,1139,exact_norm
+Las Palmas,1661,Las Palmas,534,exact_norm
+Burgos,1661,Burgos,9580,exact_norm
+Uni Católica,1661,Universidad Catolica,1157,prefix
+Genoa,1660,Genoa,495,exact_norm
+Club Olimpia,1659,Olimpia,1182,manual
+DIM,1659,Independiente Medellin,1128,manual
+RB Salzburg,1658,Red Bull Salzburg,571,manual
+Cerro Porteño,1656,Cerro Porteno,1176,exact_norm
+Hertha,1655,Hertha BSC,159,token
+Macará,1655,Macara,1155,exact_norm
+Nacional,1654,Nacional,225,exact_norm
+LAFC,1654,Los Angeles FC,1616,manual
+Vancouver,1653,Vancouver Whitecaps,1603,token
+Köln,1652,1. FC Köln,192,token
+Sparta Praha,1652,Sparta Praha,628,exact_norm
+Panathinaikos,1652,Panathinaikos,617,exact_norm
+Defensa y Justici,1652,Defensa Y Justicia,442,substr
+Tigre,1652,Tigre,452,exact_norm
+Auxerre,1651,Auxerre,108,exact_norm
+Al Ahli SFC,1650,,,unmatched
+Atl Goianiense,1650,,,unmatched
+Middlesbrough,1650,Middlesbrough,70,exact_norm
+Schalke,1649,FC Schalke 04,174,token
+Parma,1648,Parma,523,exact_norm
+Millonarios,1647,Millonarios,1125,exact_norm
+Palermo,1647,,,unmatched
+Tolima,1647,Deportes Tolima,1142,token
+Philadelphia,1646,Philadelphia Union,1599,token
+Pachuca,1646,CF Pachuca,2292,token
+Burnley,1646,Burnley,44,exact_norm
+Ceará,1646,,,unmatched
+Venezia,1645,Venezia,517,exact_norm
+Coritiba,1645,Coritiba,147,exact_norm
+Omonia,1643,Omonia Nicosia,3402,token
+Nordsjaelland,1643,,,unmatched
+GyE Mendoza,1643,,,unmatched
+Barcelona,1643,Barcelona,529,exact_norm
+Bucaramanga,1643,Bucaramanga,1131,exact_norm
+Cuiabá,1643,,,unmatched
+Monza,1642,Monza,1579,exact_norm
+Lugano,1642,FC Lugano,606,token
+Heidenheim,1640,1. FC Heidenheim,180,token
+Millwall,1639,Millwall,58,exact_norm
+Lok Moskva,1638,,,unmatched
+San Lorenzo,1637,San Lorenzo,460,exact_norm
+LASK,1637,Lask Linz,1026,token
+Talleres,1637,Talleres Cordoba,456,token
+Oviedo,1636,Oviedo,718,exact_norm
+Unión de Santa Fe,1636,Union Santa Fe,441,manual
+Monterrey,1635,Monterrey,2282,exact_norm
+Coquimbo,1635,Coquimbo Unido,2330,token
+Atlético Tucumán,1635,Atletico Tucuman,455,exact_norm
+Al Qadsiah,1634,,,unmatched
+Hull,1634,Hull City,64,token
+Reims,1634,Reims,93,exact_norm
+Bandırmaspor,1634,Bandırmaspor,3584,exact_norm
+Remo,1633,Remo,1198,exact_norm
+Platense,1632,Platense,1064,exact_norm
+Mamelodi Sundowns,1632,,,unmatched
+Gent,1632,Gent,631,exact_norm
+Hannover,1631,Hannover 96,166,token
+Club Nacional,1631,Club Nacional,2356,exact_norm
+Barracas Central,1631,Barracas Central,2432,exact_norm
+CR Brasil,1631,,,unmatched
+Sturm Graz,1631,Sturm Graz,637,exact_norm
+Viktoria Plzeň,1629,,,unmatched
+Başakşehir,1629,Başakşehir,564,exact_norm
+UNAM,1628,,,unmatched
+Kashiwa Reysol,1628,Kashiwa Reysol,281,exact_norm
+Newell's Old Boys,1628,,,unmatched
+Charleroi,1627,Charleroi,736,exact_norm
+Gijon,1627,Sporting Gijon,731,token
+Vila Nova GO,1627,,,unmatched
+Godoy Cruz,1626,,,unmatched
+Madryn,1626,,,unmatched
+Náutico,1625,,,unmatched
+FC Tokyo,1625,FC Tokyo,292,exact_norm
+Beer-Sheva,1625,Hapoel Beer Sheva,563,token
+Atlético Junior,1623,,,unmatched
+Hammarby,1622,Hammarby FF,363,token
+Birmingham,1622,Birmingham,54,exact_norm
+Goiás,1621,,,unmatched
+Always Ready,1621,Always Ready,3700,exact_norm
+St. Louis City,1620,St. Louis City,20787,exact_norm
+Angers,1620,Angers,77,exact_norm
+Legia,1619,Legia Warszawa,339,token
+Waasland-Beveren,1619,,,unmatched
+Central Córdoba,1618,Central Cordoba de Santiago,1065,token
+Wrexham,1617,Wrexham,1837,exact_norm
+Guadalajara,1617,Guadalajara Chivas,2278,token
+Sport,1617,Helmond Sport,424,token
+Nürnberg,1617,1. FC Nürnberg,171,token
+Deportivo Morón,1617,,,unmatched
+Once Caldas,1617,,,unmatched
+Universitario,1616,Universitario,2540,exact_norm
+Rangers,1616,Rangers,257,exact_norm
+Young Boys,1616,BSC Young Boys,565,token
+Sarmiento,1616,Sarmiento Junin,474,token
+Tristan Suárez,1616,,,unmatched
+Alianza Lima,1616,Alianza Lima,2553,exact_norm
+Temperley,1615,,,unmatched
+Lecce,1615,Lecce,867,exact_norm
+Riestra,1615,Deportivo Riestra,476,token
+Granada,1615,Granada CF,715,token
+Seattle Sounders,1614,Seattle Sounders,1595,exact_norm
+Swansea,1614,Swansea,76,exact_norm
+Tenerife,1614,,,unmatched
+Aucas,1613,,,unmatched
+Famalicao,1613,Famalicao,242,exact_norm
+The Strongest,1613,The Strongest,3711,exact_norm
+Saint-Etienne,1612,Saint Etienne,1063,exact_norm
+St Truiden,1612,St. Truiden,735,exact_norm
+Djurgarden,1612,Djurgardens IF,364,prefix
+San Diego FC,1611,San Diego,25484,substr
+Norwich,1611,Norwich,71,exact_norm
+FC Dallas,1611,FC Dallas,1597,exact_norm
+Maccabi Tel Aviv,1611,Maccabi Tel Aviv,604,exact_norm
+St Pauli,1611,FC St. Pauli,186,token
+São Bernardo,1610,,,unmatched
+Lincoln City,1610,Lincoln,1379,core
+Ferrocarril Midla,1610,,,unmatched
+Sheffield United,1609,Sheffield,7667,core
+Lautern,1607,,,unmatched
+Cremonese,1607,Cremonese,520,exact_norm
+Le Havre,1606,Le Havre,111,exact_norm
+Kawasaki Frontale,1606,Kawasaki Frontale,294,exact_norm
+Tijuana,1606,Club Tijuana,2280,token
+Guaraní,1605,Club Guarani,1174,token
+Baltika,1605,Baltika,2006,exact_norm
+Jagiellonia,1605,Jagiellonia,336,exact_norm
+Charlotte,1604,Charlotte,18310,exact_norm
+FC Seoul,1604,FC Seoul,2766,exact_norm
+Libertad,1603,Libertad,18762,exact_norm
+Sportivo Triniden,1603,Sportivo Trinidense,1187,prefix
+Troyes,1603,Estac Troyes,110,token
+Operário,1603,,,unmatched
+Jeonbuk FC,1603,Jeonbuk Motors,2762,manual
+Bochum,1601,VfL Bochum,176,token
+Karabakh Agdam,1601,,,unmatched
+Aarhus,1600,,,unmatched
+Chicago Fire,1600,Chicago Fire,1607,exact_norm
+Leganes,1600,Leganes,537,exact_norm
+Göztepe,1600,Göztepe,994,exact_norm
+Banfield,1599,Banfield,449,exact_norm
+Columbus,1599,Columbus Crew,1613,token
+O'Higgins,1598,O'Higgins,2320,exact_norm
+Deportivo Cali,1598,,,unmatched
+Cordoba,1598,Cordoba,713,exact_norm
+GE Jujuy,1598,,,unmatched
+Al Ahly,1598,,,unmatched
+Cannes,1597,,,unmatched
+Le Mans,1596,Le Mans,1298,exact_norm
+Athletic,1596,VCD Athletic,7258,token
+NYC FC,1596,,,unmatched
+Samsunspor,1596,Samsunspor,3603,exact_norm
+Albacete,1595,Albacete,722,exact_norm
+St. Gallen,1595,,,unmatched
+Cincinnati,1595,FC Cincinnati,2242,token
+Libertad de Loja,1595,Libertad,18762,core
+Larnaca,1595,AEK Larnaca,614,token
+Torque,1594,Atletico Torque,2365,token
+Yokohama F. Marin,1593,Yokohama F. Marinos,296,substr
+Querétaro,1592,Club Queretaro,2290,token
+Liverpool,1591,Liverpool,40,exact_norm
+West Brom,1590,West Brom,60,exact_norm
+Eldense,1590,,,unmatched
+Orlando City,1590,Orlando City SC,1598,token
+FC Andorra,1590,FC Andorra,8157,exact_norm
+Ferro,1590,,,unmatched
+Cerezo Osaka,1589,Cerezo Osaka,291,exact_norm
+Pyramids FC,1588,,,unmatched
+Paphos,1588,,,unmatched
+Villarreal B,1588,Villarreal,533,substr
+Al Ittihad,1588,Al-Ittihad FC,2938,token
+Brann,1588,Brann,319,exact_norm
+Houston Dynamo,1588,Houston Dynamo,1600,exact_norm
+Rakow,1587,Raków Częstochowa,3491,token
+Chapecoense,1586,Chapecoense-sc,132,token
+Kocaelispor,1586,Kocaelispor,7411,exact_norm
+Audax Italiano,1586,,,unmatched
+Atlante,1586,Atlante FC,2312,token
+Sabadell,1585,,,unmatched
+Nijmegen,1585,NEC Nijmegen,413,token
+Holstein,1585,Holstein Kiel,191,token
+Standard,1584,Standard Liege,733,token
+SM Tucuman,1583,,,unmatched
+Maipú,1583,,,unmatched
+Gimnasia y Tiro d,1583,,,unmatched
+Viborg,1583,,,unmatched
+Rubin Kazan,1583,Rubin,1083,manual
+Gornik,1583,Gornik Zabrze,340,token
+Rostov,1583,FC Rostov,779,token
+San Juan,1583,,,unmatched
+Pogon,1582,Pogon Szczecin,348,token
+Urawa Reds,1582,Urawa,287,core
+Darmstadt,1582,SV Darmstadt 98,181,token
+Bristol City,1582,Bristol City,56,exact_norm
+Craiova,1582,Universitatea Craiova,632,token
+Maldonado,1582,,,unmatched
+Antwer,1582,Antwerp,740,prefix
+Estudiantes de Ca,1581,,,unmatched
+Erzurum,1581,Erzurumspor FK,1009,prefix
+Atlanta,1580,Atlanta United FC,1608,token
+Leicester,1580,Leicester,46,exact_norm
+Hajduk,1580,HNK Hajduk Split,608,token
+Magdeburg,1580,1. FC Magdeburg,179,token
+Red Star,1580,RED Star FC 93,104,token
+Verona,1580,Hellas Verona,504,token
+Dynamo Kyiv,1580,Dynamo Kyiv,572,exact_norm
+Montpellier,1579,Montpellier,82,exact_norm
+Sion,1579,,,unmatched
+Alanyaspor,1579,Alanyaspor,996,exact_norm
+Levski,1578,Levski Sofia,646,token
+Brondby,1577,Brondby,407,exact_norm
+Ponferradina,1577,,,unmatched
+Nantes,1576,Nantes,83,exact_norm
+Stade Malien,1576,,,unmatched
+Blackburn,1576,Blackburn,67,exact_norm
+Sirius,1575,Sirius,370,exact_norm
+Westerlo,1575,KVC Westerlo,261,token
+Mirandes,1575,Mirandes,799,exact_norm
+Utrecht,1574,Utrecht,207,exact_norm
+Catanzaro,1574,,,unmatched
+Racing,1573,Racing Club,436,token
+Thun,1573,,,unmatched
+Santa Clara,1573,Santa Clara,227,exact_norm
+Atlas,1572,Atlas,2283,exact_norm
+Bodrum,1572,Bodrum FK,3583,token
+Guayaquil,1572,,,unmatched
+Arouca,1572,Arouca,240,exact_norm
+QPR,1572,QPR,72,exact_norm
+Mushuc Runa,1571,,,unmatched
+Avaí,1571,,,unmatched
+Bielefeld,1571,Arminia Bielefeld,188,token
+Rapid Wien,1571,Rapid,6231,core
+FAR,1571,Farnborough,7715,prefix
+Palestino,1571,Palestino,2318,exact_norm
+Tromsø,1571,,,unmatched
+Juventud Torremol,1570,Juventud,2353,core
+Daejeon Hana Citi,1570,,,unmatched
+Guimaraes,1570,Guimaraes,224,exact_norm
+Leones del Norte,1569,,,unmatched
+Emelec,1569,,,unmatched
+Derby,1569,Derby,69,exact_norm
+Rizespor,1569,Rizespor,1007,exact_norm
+Cardiff,1569,Cardiff,43,exact_norm
+RC Celta B,1569,,,unmatched
+Shabab Al Ahli Cl,1568,,,unmatched
+San Jose,1568,San Jose Earthquakes,1596,token
+NE Revolution,1568,New England Revolution,1609,prefix
+Rosenborg,1568,Rosenborg,331,exact_norm
+Metz,1568,Metz,112,exact_norm
+Gyoer,1567,,,unmatched
+Zulte Waregem,1567,Zulte Waregem,600,exact_norm
+Real Sociedad B,1567,Real Sociedad,548,substr
+Colón de Santa Fe,1567,,,unmatched
+Ñublense,1567,Nublense,2337,exact_norm
+Çorum FK,1567,Çorum FK,6343,exact_norm
+CA Ceuta,1567,,,unmatched
+Karlsruhe,1567,Karlsruher SC,785,prefix
+Kasimpasa,1566,,,unmatched
+Ferroviária S,1566,,,unmatched
+Colegiales de Mun,1566,,,unmatched
+Orlando Pirates,1566,,,unmatched
+Aldosivi,1565,Aldosivi,463,exact_norm
+León,1565,Leon,2289,exact_norm
+Gangwon FC,1565,Gangwon FC,2746,exact_norm
+Rodez,1564,Rodez,1301,exact_norm
+Tractor Sazi,1564,Tractor Sazi,2737,exact_norm
+Gil Vicente,1564,GIL Vicente,762,exact_norm
+Sabah FK,1563,,,unmatched
+Gamba Osaka,1563,Gamba Osaka,293,exact_norm
+Cadiz,1563,Cadiz,724,exact_norm
+Minnesota Utd,1563,,,unmatched
+Basel,1562,FC Basel 1893,551,token
+Vicenza,1562,,,unmatched
+Botafogo S,1562,Botafogo,120,substr
+2 de Mayo,1561,2 de Mayo,2140,exact_norm
+Johor Darul Ta’zi,1561,,,unmatched
+Hradec Kralove,1561,,,unmatched
+Sportivo Ameliano,1561,,,unmatched
+Genclerbirligi,1559,Gençlerbirliği S.K.,997,token
+Huesca,1559,Huesca,726,exact_norm
+Stoke,1559,Stoke City,75,token
+Al Ain,1559,,,unmatched
+Zaragoza,1559,Zaragoza,732,exact_norm
+San Luis,1558,Atletico San Luis,2314,token
+Fagiano Okayama,1558,Fagiano Okayama,310,exact_norm
+Limache,1558,Deportes Limache,16730,token
+Modena,1557,,,unmatched
+Everton,1557,Everton,45,exact_norm
+Portland Timbers,1557,Portland Timbers,1617,exact_norm
+Melgar,1557,FBC Melgar,2554,token
+Düsseldorf,1557,Fortuna Düsseldorf,158,token
+Molde,1557,Molde,329,exact_norm
+Dresden,1556,Dynamo Dresden,183,token
+Real Madrid B,1556,Real Madrid,541,substr
+Orense,1556,Orense SC,1992,token
+Elfsborg,1556,IF Elfsborg,372,token
+Malmö,1556,Malmo FF,375,token
+Osnabrück,1555,,,unmatched
+Annecy,1555,Annecy,3012,exact_norm
+Spezia,1555,,,unmatched
+Figueirense,1555,,,unmatched
+Stockport,1554,Stockport Town,21715,token
+Portsmouth,1554,Portsmouth,1355,exact_norm
+Atletico B,1554,,,unmatched
+LA Galaxy,1554,,,unmatched
+Benevento,1554,,,unmatched
+Slovan,1554,Slovan Bratislava,656,token
+Quilmes,1554,,,unmatched
+Valladolid,1554,Valladolid,720,exact_norm
+Chengdu Rongcheng,1553,,,unmatched
+Kyoto Purple Sang,1552,,,unmatched
+Nagoya Grampus,1552,Nagoya Grampus,288,exact_norm
+Deportivo Sapriss,1552,,,unmatched
+Heerenveen,1552,Heerenveen,210,exact_norm
+Katowice,1552,GKS Katowice,3484,token
+Slovan Liberec,1552,,,unmatched
+Extremadura,1551,,,unmatched
+Go Ahead Eagles,1551,GO Ahead Eagles,410,exact_norm
+Plymouth,1551,Plymouth,1357,exact_norm
+Terek Grozny,1551,,,unmatched
+Union Brescia,1550,,,unmatched
+Rijeka,1550,HNK Rijeka,561,token
+Águilas Doradas,1550,,,unmatched
+Sporting Cristal,1550,Sporting Cristal,2546,exact_norm
+Zamora,1550,,,unmatched
+Servette FC,1549,Servette FC,2184,exact_norm
+Cottbus,1549,,,unmatched
+Maccabi Haifa,1549,Maccabi Haifa,4195,exact_norm
+Razgrad,1549,,,unmatched
+Pontevedra,1549,,,unmatched
+Cuenca,1549,Deportivo Cuenca,1154,token
+Maringá PR,1549,,,unmatched
+GAIS,1548,Gais,2170,exact_norm
+Al Sadd,1548,Al Sadd,2895,exact_norm
+Austin,1548,Austin,16489,exact_norm
+Moreirense,1548,Moreirense,215,exact_norm
+Barcelona B,1547,Barcelona,529,substr
+Hearts,1547,,,unmatched
+Austria Wien,1547,,,unmatched
+Huachipato,1547,Huachipato,2328,exact_norm
+Polissya Zhytomyr,1547,,,unmatched
+Real Jaen,1546,,,unmatched
+Kryliya Sovetov,1546,,,unmatched
+Persepolis,1546,,,unmatched
+Guarani,1546,Club Guarani,1174,token
+Charlton,1546,Charlton,1335,exact_norm
+Mechelen,1546,KV Mechelen,266,token
+Ulsan,1546,Ulsan Hyundai FC,2767,token
+Dijon,1546,Dijon,89,exact_norm
+Alcorcon,1546,,,unmatched
+CE Europa,1545,,,unmatched
+Botafogo PB,1545,Botafogo,120,substr
+Iraklis,1545,,,unmatched
+Real Salt Lake,1545,Real Salt Lake,1606,exact_norm
+Gimcheon Sangmu,1544,Gimcheon Sangmu FC,2768,token
+Esteghlal,1544,Esteghlal FC,2733,token
+Inter de Limeira,1544,,,unmatched
+Deportivo Táchira,1544,Deportivo Tachira FC,2807,token
+Jablonec,1544,,,unmatched
+LD Alajuelense,1544,,,unmatched
+Wisla,1544,Wisla Plock,341,token
+Luton,1543,Luton,1359,exact_norm
+Cercle Brugge,1543,Cercle Brugge,741,exact_norm
+Murcia,1542,,,unmatched
+ES Tunis,1542,,,unmatched
+Mantova,1542,,,unmatched
+JS Saoura,1542,,,unmatched
+Raja,1542,,,unmatched
+Shanghai Port FC,1541,,,unmatched
+Colorado Rapids,1541,Colorado Rapids,1610,exact_norm
+Gaziante,1541,Gaziantep FK,3573,prefix
+Santa Cruz,1541,,,unmatched
+Real Potosi,1541,,,unmatched
+Pisa,1541,Pisa,801,exact_norm
+New York RB,1541,,,unmatched
+Río Cuarto,1540,Estudiantes de Rio Cuarto,2424,token
+Empoli,1540,,,unmatched
+Sant Andreu,1540,,,unmatched
+CFR Cluj,1540,CFR 1907 Cluj,2246,token
+Necaxa,1539,Necaxa,2288,exact_norm
+Korona,1539,Korona Kielce,346,token
+Ciudad de Bolívar,1539,,,unmatched
+Beijing Guoan,1539,Beijing Guoan,830,exact_norm
+Juventud,1539,Juventud,2353,exact_norm
+Agropecuario,1539,,,unmatched
+Incheon United,1538,Incheon United,2763,exact_norm
+Alverca,1538,Alverca,4724,exact_norm
+Konyaspor,1538,Konyaspor,607,exact_norm
+Defensores de Bel,1537,,,unmatched
+Carabobo FC,1537,Carabobo FC,2810,exact_norm
+Bolton,1537,Bolton,68,exact_norm
+CS Herediano,1537,,,unmatched
+Südtirol,1537,,,unmatched
+Fortaleza,1537,,,unmatched
+Verl,1537,,,unmatched
+Beitar,1537,Beitar Jerusalem,657,token
+UD Ibiza,1537,,,unmatched
+Brusque,1535,,,unmatched
+Deportes Concepci,1535,,,unmatched
+Llaneros,1534,,,unmatched
+Berkane,1534,,,unmatched
+Ascoli,1534,,,unmatched
+Real Garcilaso,1534,,,unmatched
+Auckland FC,1534,Auckland,24608,substr
+Almirante Brown,1534,,,unmatched
+Oxford,1533,Oxford City,4684,token
+Häcken,1533,BK Hacken,367,token
+Rostock,1533,,,unmatched
+Chaco For Ever,1533,,,unmatched
+Cienciano,1533,Cienciano,2562,exact_norm
+Juve Stabia,1532,,,unmatched
+Lugo,1532,,,unmatched
+Aachen,1531,,,unmatched
+Wanderers,1531,Cray Wanderers,7711,token
+Jeju SK FC,1531,,,unmatched
+Deportivo Recolet,1531,Deportivo Recoleta,10476,prefix
+Essen,1531,Rot-Weiß Essen,1621,token
+Apollon Lemesos,1531,,,unmatched
+Patronato,1530,,,unmatched
+Pasto,1530,,,unmatched
+Piast Gliwice,1530,Piast Gliwice,349,exact_norm
+Dunkerque,1529,Dunkerque,1304,exact_norm
+Shimizu S-Pulse,1529,Shimizu S-pulse,283,exact_norm
+Antequera,1529,,,unmatched
+Hartberg,1529,,,unmatched
+Hapoel Tel Aviv,1528,,,unmatched
+Luzern,1528,,,unmatched
+Logrones,1528,,,unmatched
+Eyupspor,1527,Eyüpspor,3588,exact_norm
+Watford,1527,Watford,38,exact_norm
+Fürth,1527,SpVgg Greuther Fürth,178,token
+AIK,1527,AIK Stockholm,377,token
+Defensor,1527,Defensor Sporting,2350,token
+Groningen,1526,Groningen,202,exact_norm
+CA Los Andes,1526,,,unmatched
+Cultural Leonesa,1526,Cultural Leonesa,725,exact_norm
+Preston,1525,Preston,59,exact_norm
+Aris Limassol,1525,,,unmatched
+Rouen,1525,Rouen,3221,exact_norm
+Mjällby,1525,Mjallby AIF,2240,token
+CSA AL,1525,,,unmatched
+Aris,1525,Aris,3408,exact_norm
+Numancia,1524,,,unmatched
+Buriram United,1524,Buriram United,2780,exact_norm
+Zamalek,1524,,,unmatched
+FC DAC 1904,1524,,,unmatched
+Cesena,1524,,,unmatched
+América Mineiro,1524,,,unmatched
+Maranhao,1523,,,unmatched
+Reading,1522,Reading,53,exact_norm
+Avellino,1522,,,unmatched
+Unión Magdalena,1522,,,unmatched
+Guingam,1521,Guingamp,90,prefix
+Cartagena,1520,,,unmatched
+Retrô - PE,1520,,,unmatched
+Makhachkala,1520,Dinamo Makhachkala,6813,token
+Ourense,1520,,,unmatched
+Inter Turku,1520,Inter Turku,1164,exact_norm
+La Calera,1520,Union La Calera,2326,token
+Plock,1519,Wisla Plock,341,token
+Londrina,1519,,,unmatched
+Bradford,1519,Bradford,1343,exact_norm
+Vikingur,1518,Vikingur Gota,580,token
+El Nacional,1518,Nacional,225,substr
+Lubin,1518,Zaglebie Lubin,345,token
+Huddersfield,1518,Huddersfield,37,exact_norm
+FC La Unión Atlét,1518,,,unmatched
+Amazonas,1518,,,unmatched
+Nueva Chicago,1518,,,unmatched
+Sverdlovsk,1517,,,unmatched
+Pohang Steelers,1517,Pohang Steelers,2764,exact_norm
+Universitatea Clu,1517,Universitatea Cluj,2599,prefix
+Atlético Rafaela,1517,,,unmatched
+Deportivo Garcila,1517,Deportivo Garcilaso,20960,prefix
+Orenburg,1517,FC Orenburg,1080,token
+SD Tarazona,1517,,,unmatched
+Sochaux,1517,Sochaux,115,exact_norm
+Chacarita Juniors,1516,,,unmatched
+Central Español,1516,,,unmatched
+Toronto FC,1516,Toronto FC,1601,exact_norm
+Silkeborg,1516,Silkeborg,2073,exact_norm
+Lillestrøm,1515,,,unmatched
+Celje,1515,Celje,4360,exact_norm
+Estoril,1515,Estoril,230,exact_norm
+All Boys,1515,,,unmatched
+Atlanta United,1514,Atlanta United FC,1608,token
+Barakaldo,1514,,,unmatched
+Shanghai Shenhua,1514,Shanghai Shenhua,833,exact_norm
+Padova,1513,,,unmatched
+Floresta,1513,,,unmatched
+Boston River,1513,Boston River,2361,exact_norm
+Entella,1512,,,unmatched
+Kayseri,1512,Kayserispor,1001,prefix
+San Telmo,1512,,,unmatched
+Unionistas,1511,,,unmatched
+V-Varen Nagasaki,1511,V-varen Nagasaki,285,exact_norm
+Braunschweig,1511,Eintracht Braunschweig,744,token
+Grosseto,1511,,,unmatched
+FC Fleury 91,1511,,,unmatched
+Cerro Largo,1511,,,unmatched
+Caxias,1511,,,unmatched
+Rapid Bucuresti,1511,,,unmatched
+General Caballero,1511,,,unmatched
+Treviso FBC 1993,1511,,,unmatched
+Athletic Club B,1511,Athletic Club,531,substr
+Randers,1510,,,unmatched
+Leuven,1510,OH Leuven,260,token
+Lechia,1510,Lechia Gdansk,343,token
+Sigma Olomouc,1510,Sigma Olomouc,2250,exact_norm
+Avispa Fukuoka,1510,Avispa Fukuoka,316,exact_norm
+Dinamo Bucuresti,1510,Dinamo Bucuresti,635,exact_norm
+Grenoble,1510,Grenoble,101,exact_norm
+Mitre de SdE,1510,,,unmatched
+Brescia,1509,,,unmatched
+Yokohama FC,1509,Yokohama FC,307,exact_norm
+Técnico Uni,1509,,,unmatched
+Tarragona,1509,,,unmatched
+Wycombe,1508,Wycombe,1358,exact_norm
+Ac Viseu,1508,,,unmatched
+Alianza Petrolera,1508,,,unmatched
+Tokyo Verdy,1507,Tokyo Verdy,306,exact_norm
+Juárez,1507,FC Juarez,2298,token
+Rodina Moskva,1507,,,unmatched
+Albion,1507,Witton Albion,7760,token
+Excelsior,1506,Excelsior,196,exact_norm
+Racing de Córdoba,1506,Cordoba,713,token_strip
+Metropolitanos FC,1506,Metropolitanos FC,2825,exact_norm
+Arsenal de Sarand,1506,,,unmatched
+FC Anyang,1506,FC Anyang,2748,exact_norm
+Antalyaspor,1505,Antalyaspor,1005,exact_norm
+Ravenna,1505,,,unmatched
+NK Varteks,1505,,,unmatched
+Delfín,1505,,,unmatched
+Almagro,1505,,,unmatched
+Paysandu,1504,,,unmatched
+Amorebieta,1504,,,unmatched
+Sivasspor,1504,Sivasspor,1002,exact_norm
+Arezzo,1504,,,unmatched
+Mazatlán,1504,Mazatlán,14002,exact_norm
+Hercules,1504,,,unmatched
+KS Cracovia,1504,,,unmatched
+Widzew,1504,Widzew Łódź,6962,token
+Melbourne City FC,1503,Melbourne City,945,substr
+CSKA Sofia,1503,,,unmatched
+Aarau,1503,,,unmatched
+Karagümrük,1503,Fatih Karagümrük,3589,token
+Bari,1502,,,unmatched
+Anápolis GO,1502,,,unmatched
+Fès,1502,,,unmatched
+Västerås,1502,Vasteras SK FK,2241,token
+San Miguel,1501,,,unmatched
+Teplice,1501,,,unmatched
+Danubio,1501,,,unmatched
+Karpaty,1500,Karpaty,3617,exact_norm
+Arka,1500,Arka Gdynia,344,token
+Sampdoria,1500,,,unmatched
+Fredrikstad,1500,Fredrikstad,2149,exact_norm
+Algeciras,1500,,,unmatched
+Münster,1500,Preußen Münster,1313,token
+Lommel,1500,Lommel United,259,token
+CP Cacereño,1499,,,unmatched
+Göteborg,1499,IFK Goteborg,366,token
+Volta Redonda,1499,,,unmatched
+FK Riga,1499,Riga,10124,token_strip
+DC United,1499,DC United,1615,exact_norm
+Nancy,1498,Nancy,102,exact_norm
+Clermont,1498,Clermont Foot,99,token
+Ferrol,1498,,,unmatched
+APOEL,1498,,,unmatched
+Vinotinto,1497,,,unmatched
+Catania,1497,,,unmatched
+Rio Ave,1497,Rio Ave,226,exact_norm
+La Equidad,1497,,,unmatched
+Pau,1497,PAU,1297,exact_norm
+Le Puy Foot 43,1497,,,unmatched
+Odense,1496,,,unmatched
+Suwon FC,1496,Suwon City FC,2756,token
+Mlada Boleslav,1496,,,unmatched
+Maritimo,1496,,,unmatched
+Estrela Amadora,1495,Estrela,15130,core
+Wolfsberg,1495,Wolfsberger AC,1025,prefix
+Sparta,1495,Sparta Praha,628,token
+Salernitana,1494,,,unmatched
+La Serena,1494,D. La Serena,2341,token
+Europa,1494,,,unmatched
+Thionville Lusita,1494,,,unmatched
+Duisburg,1494,,,unmatched
+Cobresal,1493,Cobresal,2331,exact_norm
+Cherkasy,1493,LNZ Cherkasy,17161,token
+Casa Pia,1493,Casa Pia,4716,exact_norm
+Motor Lublin,1492,Motor Lublin,14562,exact_norm
+Mansfield,1492,AFC Mansfield,8670,token
+TP Mazembe,1492,,,unmatched
+Steaua,1492,,,unmatched
+Akron Tolyatti,1492,,,unmatched
+Nizhny Novgorod,1492,Nizhny Novgorod,2011,exact_norm
+Ajaccio,1491,,,unmatched
+Puebla,1491,Puebla,2291,exact_norm
+Versailles,1491,,,unmatched
+Merida,1491,,,unmatched
+York City,1490,New York City FC,1604,token
+Ituano,1489,,,unmatched
+Montréal,1489,CF Montreal,1614,token
+FK Sochi,1489,FC Sochi,2012,token_strip
+Sestao,1489,,,unmatched
+CA Antoniano,1489,,,unmatched
+Sarpsborg,1489,Sarpsborg 08 FF,333,token
+Ypiranga - RS,1488,,,unmatched
+Zrinjski Mostar,1488,Zrinjski,588,core
+Sittard,1488,Fortuna Sittard,205,token
+FC Khimki,1488,,,unmatched
+Iquique,1488,,,unmatched
+Radomiak,1487,Radomiak Radom,4248,token
+Sandefjord,1487,Sandefjord,332,exact_norm
+Motherwell,1487,,,unmatched
+Al Draih,1487,,,unmatched
+SonderjyskE,1487,,,unmatched
+Ingolstadt,1486,,,unmatched
+OFI,1486,OFI,1124,exact_norm
+Alianza Atlético,1486,Alianza Atletico,2560,exact_norm
+Rubio Nu,1486,,,unmatched
+Cúcuta,1486,,,unmatched
+Kuopio,1486,,,unmatched
+Mito HollyHock,1486,Mito Hollyhock,305,exact_norm
+Paksi,1486,Paks,2390,substr
+alvarado,1486,,,unmatched
+Borac Banja Luka,1485,Borac Banja Luka,3364,exact_norm
+Atlético Baleares,1485,,,unmatched
+MC Alger,1485,,,unmatched
+Saint-Eloi Lupopo,1485,,,unmatched
+Shandong Taishan,1485,,,unmatched
+Saarbrücken,1484,,,unmatched
+Boluspor,1484,Boluspor,3569,exact_norm
+Feralpisalò,1484,,,unmatched
+Santos Laguna,1484,Santos Laguna,2285,exact_norm
+Daegu FC,1484,Daegu FC,2747,exact_norm
+Fakel Voronezh,1484,,,unmatched
+Laval,1484,Laval,433,exact_norm
+Pereira,1483,,,unmatched
+Blackpool,1483,Blackpool,1356,exact_norm
+Nacional Potosí,1483,Nacional Potosí,3706,exact_norm
+Ried,1483,,,unmatched
+Maribor,1483,Maribor,552,exact_norm
+Hibernian,1483,Hibernian,249,exact_norm
+Carrarese,1483,,,unmatched
+Barra SC,1482,,,unmatched
+Deportivo La Guai,1482,Deportivo La Guaira,2813,prefix
+Trento,1482,,,unmatched
+Louisville City,1482,,,unmatched
+Sheffield Weds,1482,Sheffield,7667,core
+Barnet FC,1481,Barnet,1369,substr
+Reggiana,1481,,,unmatched
+Nacional,1481,Nacional,225,exact_norm
+Partizan,1481,FK Partizan,573,token
+Dender,1481,Dender,6215,exact_norm
+CF Talavera,1481,,,unmatched
+Shonan Bellmare,1480,Shonan Bellmare,284,exact_norm
+Puskas Akademia,1480,,,unmatched
+NEOM,1480,NEOM,10513,exact_norm
+La Louviére,1480,RAAL La Louvière,5902,token
+sporting-cp-b,1479,Sporting CP,228,substr
+Melbourne Victory,1479,Melbourne Victory,944,exact_norm
+Sportivo Luqueño,1479,,,unmatched
+Central Norte,1479,,,unmatched
+Noah,1479,FC Noah,3684,token
+Boulogne,1478,Boulogne,1299,exact_norm
+FC Fredericia,1478,,,unmatched
+Al Hilal Omdurman,1478,,,unmatched
+Cambridge,1478,Cambridge City,7218,token
+CD Estepona,1478,,,unmatched
+Stevenage FC,1477,Stevenage,1368,substr
+Slask,1477,,,unmatched
+Trnava,1477,Spartak Trnava,1120,token
+Sepahan,1477,Sepahan FC,2744,token
+Lausanne,1477,Lausanne,1014,exact_norm
+PS Kalamata,1476,,,unmatched
+Linares,1475,,,unmatched
+Bastia,1475,Bastia,1305,exact_norm
+Club Aurora,1475,,,unmatched
+Bucheon FC 1995,1475,Bucheon FC 1995,2745,exact_norm
+SD Eibar B,1474,,,unmatched
+Cittadella,1474,,,unmatched
+ABC,1474,,,unmatched
+Cerro,1473,Cerro Porteno,1176,token
+Martigues,1473,,,unmatched
+Alcoyano,1473,,,unmatched
+Envigado,1473,,,unmatched
+Banik Ostrava,1472,Baník Ostrava,3713,exact_norm
+Academia Puerto C,1472,,,unmatched
+Universidad Centr,1472,,,unmatched
+Tondela,1472,Tondela,218,exact_norm
+Spartak Kostroma,1472,,,unmatched
+Club Africain,1472,,,unmatched
+Guadalajara,1471,Guadalajara Chivas,2278,token
+Amiens,1471,Amiens,87,exact_norm
+Olimpija Ljubljan,1471,Olimpija Ljubljana,677,prefix
+München 60,1471,,,unmatched
+Plaza Colonia,1471,,,unmatched
+Nieciecza,1471,Nieciecza,3487,exact_norm
+Suwon Bluewings,1470,Suwon Bluewings,2765,exact_norm
+Boyacá Chicó,1470,,,unmatched
+Valerenga,1470,Valerenga,326,exact_norm
+Real Union,1470,,,unmatched
+Al Ettifaq,1469,Al-Ettifaq,2934,exact_norm
+Koper,1469,Koper,4374,exact_norm
+Zuerich,1469,,,unmatched
+UCAM Murcia,1468,,,unmatched
+Unión Española,1468,,,unmatched
+Viktoria Köln,1467,,,unmatched
+Bukovyna,1466,,,unmatched
+Orleans,1466,,,unmatched
+Barnsley,1466,Barnsley,747,exact_norm
+Casertana,1465,,,unmatched
+Rotor Volgograd,1465,Rotor Volgograd,2010,exact_norm
+Potenza,1465,,,unmatched
+Sydney FC,1465,Sydney,943,substr
+Zwolle,1465,PEC Zwolle,193,token
+Zira,1465,Zira,648,exact_norm
+Aviles,1464,,,unmatched
+Charleston,1464,,,unmatched
+İstanbulspor AŞ,1464,İstanbulspor,3578,substr
+UD SS Reyes,1464,,,unmatched
+Western United,1464,,,unmatched
+CS Sfaxien,1464,,,unmatched
+Tombense,1464,,,unmatched
+Doncaster,1463,Doncaster,1354,exact_norm
+Vizela,1463,,,unmatched
+Kryvbas,1463,Kryvbas KR,6489,token
+Caen,1463,,,unmatched
+Manta,1463,,,unmatched
+Torreense,1463,Torreense,4799,exact_norm
+Wieczysta Kraków,1463,,,unmatched
+Wehen,1463,,,unmatched
+Al Wasl,1462,Al-Wasl FC,2872,token
+Novi Sad,1462,,,unmatched
+Bohemians,1462,,,unmatched
+Águilas FC,1462,,,unmatched
+Betis B,1462,,,unmatched
+Žilina,1462,Žilina,3554,exact_norm
+CE Andratx,1462,,,unmatched
+Osasuna B,1461,Osasuna,727,substr
+Al Taawoun,1461,,,unmatched
+Leyton Orient,1461,Leyton Orient,1373,exact_norm
+GAK,1460,,,unmatched
+Pescara,1460,,,unmatched
+Xerez,1460,,,unmatched
+Osijek,1459,,,unmatched
+Recreativo,1459,,,unmatched
+Newcastle United,1458,Newcastle,34,core
+Teruel,1458,,,unmatched
+Segoviana,1458,,,unmatched
+Notts County,1458,Notts County,1376,exact_norm
+Zorya,1458,Zorya Luhansk,599,token
+Uni de Concepción,1458,Universidad de Concepcion,2324,prefix
+Levadeiakos,1458,,,unmatched
+FK Maxline Vitebs,1457,,,unmatched
+Neftçi PFK,1457,,,unmatched
+Zbrojovka Brno,1457,,,unmatched
+Ternana,1457,,,unmatched
+Sporting KC,1457,,,unmatched
+Arenas de Getxo,1457,,,unmatched
+Kfum,1457,KFUM Oslo,2143,token
+Al Wahda,1456,Al Wahda FC,2875,token
+Al Rayyan,1456,,,unmatched
+Concarneau,1456,,,unmatched
+Sacramento,1456,,,unmatched
+Young Africans,1456,,,unmatched
+Yeclano,1455,,,unmatched
+Regensburg,1455,,,unmatched
+Leiria,1455,,,unmatched
+Scafatese Calcio,1455,,,unmatched
+Acassuso,1455,,,unmatched
+Torpedo Moskva,1455,,,unmatched
+MK Dons,1454,,,unmatched
+Metalist 1925,1454,Metalist 1925 W,26298,token
+CF Intercity,1454,,,unmatched
+Adelaide United,1453,Adelaide United,948,exact_norm
+FK RFS,1453,,,unmatched
+AD Confianca SE,1452,,,unmatched
+Crotone,1451,,,unmatched
+Güemes de SdE,1451,,,unmatched
+Catania,1451,,,unmatched
+Sd Tarazona,1451,,,unmatched
+Fuenlabrada,1451,,,unmatched
+Brommapojkarna,1451,IF Brommapojkarna,371,token
+Ararat-Armenia,1451,Ararat-Armenia,3683,exact_norm
+CSKA 1948 Sofia,1451,,,unmatched
+Al Duhail SC,1451,Al-Duhail SC,2904,exact_norm
+FK Kairat,1450,,,unmatched
+Albirex Niigata,1450,Albirex Niigata,311,exact_norm
+Los Chankas,1450,,,unmatched
+Jaguares,1450,,,unmatched
+Torrent CF,1448,,,unmatched
+Grasshoppers,1448,,,unmatched
+SD Logroñés,1448,,,unmatched
+Shkendija,1448,Shkendija,609,exact_norm
+Telstar,1448,Telstar,427,exact_norm
+Ham-Kam,1448,Ham-Kam,2159,exact_norm
+Turan Tovuz,1448,,,unmatched
+Marino de Luanco,1447,,,unmatched
+Wattens,1447,,,unmatched
+Lusitania FC Lour,1447,,,unmatched
+Gwangju FC,1447,Gwangju FC,2759,exact_norm
+Bromley,1447,Bromley,1832,exact_norm
+Dinamo Minsk,1447,Dinamo Minsk,394,exact_norm
+Dortmund II,1445,,,unmatched
+Altach,1445,,,unmatched
+Kortrijk,1444,,,unmatched
+Deportivo Fabril,1444,,,unmatched
+FK Astana,1443,FC Astana,562,token_strip
+Peterboro,1443,Peterborough,1350,prefix
+CS Cartaginés,1443,,,unmatched
+Progreso,1443,,,unmatched
+Atlético Tembetar,1443,,,unmatched
+Boavista,1443,,,unmatched
+Istra 1961,1442,,,unmatched
+Heracles,1442,Heracles,206,exact_norm
+River Plate,1442,River Plate,435,exact_norm
+BW Linz,1442,,,unmatched
+Kolos,1442,Kolos Kovalivka,3627,token
+Norrköping,1442,,,unmatched
+Petro Atlético,1441,,,unmatched
+Ponte Preta,1441,,,unmatched
+Wigan,1441,Wigan,61,exact_norm
+Vejle,1441,,,unmatched
+Chesterfield,1440,Chesterfield,1345,exact_norm
+Debrecen,1440,,,unmatched
+Calcio Lecco 1912,1440,,,unmatched
+CD Coria,1440,,,unmatched
+Atromitos,1440,Atromitos,12260,exact_norm
+UD Melilla,1440,,,unmatched
+SC Farense,1440,,,unmatched
+Real Avilés,1439,,,unmatched
+Salford,1439,Salford City,1844,token
+Pardubice,1439,,,unmatched
+Grau,1439,,,unmatched
+Blooming,1439,Blooming,3701,exact_norm
+Wydad,1439,,,unmatched
+CD Guabirá,1438,Guabirá,3704,substr
+Oţelul Galaţi,1438,Oţelul,6886,core
+Waldhof,1437,,,unmatched
+CR Bélouizdad,1437,,,unmatched
+Sport Huancayo,1437,,,unmatched
+Yverdon Sport,1437,,,unmatched
+Taranto,1437,,,unmatched
+Tampa Bay,1437,,,unmatched
+Marbella FC,1436,,,unmatched
+Atalanta II,1436,Atalanta,499,substr
+UTA Arad,1436,Uta Arad,2589,exact_norm
+Bravo,1436,,,unmatched
+Den Haag,1436,ADO Den Haag,198,token
+AVS Futebol,1436,,,unmatched
+Miramar Misiones,1435,,,unmatched
+Juventus II,1435,Juventus,496,substr
+Audace Cerignola,1434,,,unmatched
+Valencia B,1434,Valencia,532,substr
+Lok Zagreb,1434,,,unmatched
+AZ Picerno,1434,,,unmatched
+Penafiel,1433,,,unmatched
+Burton,1433,Burton Albion,748,token
+Arges Pitesti,1433,Arges Pitesti,2592,exact_norm
+Motagua,1432,,,unmatched
+Karvina,1432,,,unmatched
+Sepsi,1432,,,unmatched
+Lyngby,1431,,,unmatched
+Getafe CF B,1430,Getafe,546,core
+Sport Boys,1430,,,unmatched
+Vasas SC,1430,,,unmatched
+Quevilly,1430,,,unmatched
+Giana Erminio,1429,,,unmatched
+Stuttgart II,1429,,,unmatched
+New Mexico Utd,1429,,,unmatched
+Itabaiana,1429,,,unmatched
+Farul,1429,Farul Constanta,2596,token
+Caracas FC,1428,Caracas FC,2808,exact_norm
+Zhejiang Professi,1428,,,unmatched
+Yunnan Yukun,1428,Yunnan Yukun,21265,exact_norm
+Al Jazira Club,1428,,,unmatched
+Ceramica Cleopatr,1427,,,unmatched
+SL Benfica B,1427,,,unmatched
+Crotone,1427,,,unmatched
+K Beerschot VA,1426,Beerschot VA,263,substr
+Tianjin Jinmen Ti,1426,,,unmatched
+Torremolinos,1425,,,unmatched
+Ordabasy,1425,Ordabasy,692,exact_norm
+Grimsby,1425,Grimsby,1365,exact_norm
+JEF United Ichiha,1425,,,unmatched
+Dinamo Tiranë,1424,,,unmatched
+Hoffenheim II,1424,,,unmatched
+Salamanca CF UDS,1424,,,unmatched
+Qingdao West Coas,1423,,,unmatched
+Exeter City,1423,Exeter City,1364,exact_norm
+Kalmar,1422,Kalmar FF,374,token
+Ujpest,1422,,,unmatched
+Ulm,1422,,,unmatched
+AFC Wimbledon,1422,AFC Wimbledon,1333,exact_norm
+Casarano,1421,,,unmatched
+Portuguesa FC,1421,,,unmatched
+Oriente Petrolero,1421,,,unmatched
+KACM,1421,,,unmatched
+Orihuela,1421,,,unmatched
+Yenisey,1421,,,unmatched
+Sevilla B,1420,Sevilla,536,substr
+El Paso Locomotiv,1420,,,unmatched
+Pakhtakor Tashken,1420,Pakhtakor,4220,core
+Monopoli,1420,,,unmatched
+Talleres RdE,1420,,,unmatched
+San Antonio Bulo,1420,San Antonio Bulo Bulo,17760,token
+FUS,1419,,,unmatched
+Rhode Island FC,1419,,,unmatched
+Sanluqueño,1419,,,unmatched
+Walsall,1418,Walsall,1342,exact_norm
+Kristiansund,1418,Kristiansund BK,320,token
+Al Shabab,1418,Al Shabab,2940,exact_norm
+Port FC,1418,Port FC,2789,exact_norm
+Egnatia Rrogozhin,1418,Egnatia Rrogozhinë,3327,prefix
+Zárate,1417,,,unmatched
+Utebo FC,1417,,,unmatched
+Detroit City,1417,,,unmatched
+Kongsvinger,1417,,,unmatched
+Leixoes,1416,,,unmatched
+Felgueiras,1416,,,unmatched
+HJK Helsinki,1416,HJK Helsinki,649,exact_norm
+CD Arenteiro,1416,,,unmatched
+Alcione Milano,1416,,,unmatched
+Bangkok United,1415,Bangkok United,2770,exact_norm
+Tanger,1415,,,unmatched
+Dundee United,1415,,,unmatched
+FC Tulsa,1415,,,unmatched
+Panetolikos,1415,Panetolikos,949,exact_norm
+Ospitaletto,1415,,,unmatched
+Lustenau,1414,,,unmatched
+Shamrock,1414,Shamrock Rovers,652,token
+Ind Petrolero,1414,Independiente Petrolero,15702,prefix
+Klagenfurt,1414,,,unmatched
+Valenciennes,1414,,,unmatched
+Öster,1414,,,unmatched
+Monopoli,1413,,,unmatched
+Aalborg,1413,,,unmatched
+Pyunik,1413,Pyunik Yerevan,709,token
+Renate AC,1413,,,unmatched
+Shinnik Jaroslawl,1413,,,unmatched
+FC Arzignano Valc,1412,,,unmatched
+Drita,1412,Drita,14281,exact_norm
+Puszcza Niepołomi,1412,,,unmatched
+AD Tarma,1411,,,unmatched
+Al Hazm,1410,Al-Hazm,2945,exact_norm
+Campobasso,1410,,,unmatched
+GV San José,1410,,,unmatched
+Colorado Springs,1410,,,unmatched
+Valur,1409,Valur Reykjavik,274,token
+Touarga,1409,,,unmatched
+Stromsgodset,1409,,,unmatched
+Kaizer Chiefs,1409,,,unmatched
+AS Maniema Union,1409,,,unmatched
+Zalaegerszegi,1409,,,unmatched
+Central Coast Mar,1409,Central Coast Mariners,941,prefix
+Horsens,1409,,,unmatched
+Calcio Desenzano,1408,,,unmatched
+Cambuur,1408,Cambuur,420,exact_norm
+Anzoátegui FC,1408,,,unmatched
+Netanya,1408,,,unmatched
+Dalian Yingbo,1407,,,unmatched
+Henan Songshan Lo,1407,,,unmatched
+Volendam,1407,FC Volendam,416,token
+CDT Real Oruro,1407,,,unmatched
+Hannover II,1407,,,unmatched
+Klaksvik,1407,KI Klaksvik,701,token
+Botosani,1407,FC Botosani,2581,token
+Hatayspor,1406,Hatayspor,3575,exact_norm
+Lumezzane,1406,,,unmatched
+Hapoel Haifa,1406,,,unmatched
+Sandhausen,1406,,,unmatched
+St Patricks,1406,,,unmatched
+Willem II,1405,Willem II,195,exact_norm
+Real Ávila CF,1405,,,unmatched
+Virtus Verona,1405,Virtus,5308,core
+Anorthosis,1405,,,unmatched
+Pittsburgh,1405,,,unmatched
+Port Vale,1405,Port Vale,1351,exact_norm
+Potenza,1405,,,unmatched
+Fleetwood Town,1405,Fleetwood Town,1336,exact_norm
+Chaves,1404,,,unmatched
+Stade Briochin,1404,,,unmatched
+Aue,1404,,,unmatched
+US Monastir,1404,,,unmatched
+Inter II,1403,Inter,505,core
+Crewe,1403,Crewe,1363,exact_norm
+Union Omaha,1403,,,unmatched
+Asteras Tripolis,1403,Asteras Tripolis,955,exact_norm
+Juan Pablo II Col,1403,,,unmatched
+Arda,1403,Arda Kardzhali,1430,token
+Trapani,1402,,,unmatched
+Degerfors,1402,Degerfors IF,2172,token
+Swindon,1402,Swindon Town,1353,token
+AD San Carlos,1402,,,unmatched
+Aubagne,1402,,,unmatched
+Petrolul Ploiesti,1401,Petrolul Ploiesti,2598,exact_norm
+Slaven Belupo,1400,,,unmatched
+Ilves Tampere,1400,,,unmatched
+Al Kholood,1400,Al Kholood,10509,exact_norm
+Torres,1400,,,unmatched
+Cosenza,1400,,,unmatched
+Nyiregyhaza,1400,,,unmatched
+AlbinoLeffe,1400,,,unmatched
+Vaduz,1399,FC Vaduz,660,token
+Slovacko,1399,,,unmatched
+Vardar,1398,Vardar Skopje,574,token
+CDA Navalcarnero,1398,,,unmatched
+MTK,1398,,,unmatched
+Hartford Athletic,1398,,,unmatched
+US Pianese,1398,,,unmatched
+Terrassa,1398,,,unmatched
+Stade Tunisien,1397,,,unmatched
+Aalesund,1397,Aalesund,757,exact_norm
+HNK Gorica,1397,,,unmatched
+Macarthur FC,1397,Macarthur,15550,substr
+JS Kabylie,1397,,,unmatched
+Atalanta II,1396,Atalanta,499,substr
+Perugia,1396,,,unmatched
+Ratchaburi FC,1396,Ratchaburi,2776,substr
+FC Chelyabinsk,1395,,,unmatched
+FC Porto B,1395,FC Porto,212,substr
+Breda,1395,NAC Breda,203,token
+Milford,1395,Ilford,8834,substr
+Western Sydney Wa,1395,Western Sydney Wanderers,939,prefix
+Neman Grodno,1394,,,unmatched
+UD Almería B,1394,,,unmatched
+Cavese,1394,,,unmatched
+Majadahonda,1393,,,unmatched
+Nimes,1392,,,unmatched
+Albinoleffe,1392,,,unmatched
+Winterthur,1392,,,unmatched
+Wellington Phoeni,1392,Wellington Phoenix,942,prefix
+Wadi Degla FC,1391,,,unmatched
+N Carolina FC,1391,,,unmatched
+Casertana,1391,,,unmatched
+Sporting CP B,1391,Sporting CP,228,substr
+FC Cajamarca,1391,,,unmatched
+Trento,1390,,,unmatched
+Almere,1390,Almere City FC,419,token
+Waalwijk,1390,Waalwijk,417,exact_norm
+Al Fateh,1390,Al-Fateh,2931,exact_norm
+Hermannstadt,1390,AFC Hermannstadt,2579,token
+Kauno Zalgiris,1390,Kauno Žalgiris,3872,exact_norm
+AmaZulu FC,1390,,,unmatched
+Monagas,1390,Monagas SC,2811,token
+Colchester,1389,Colchester,1361,exact_norm
+AEL Limassol,1389,,,unmatched
+Chongqing Tonglia,1389,Chongqing Tongliang Long,21262,prefix
+Veles Moskva,1389,,,unmatched
+Estudiantes de Mé,1389,,,unmatched
+Tula,1389,,,unmatched
+Sekhukhune United,1389,,,unmatched
+Comerciantes Unid,1388,,,unmatched
+Rotherham,1388,Rotherham,73,exact_norm
+Dundee,1388,Dundee Utd,1386,token
+FK Semey,1387,,,unmatched
+AE Kifisias,1387,,,unmatched
+Arzignano,1387,,,unmatched
+Lexington SC,1387,,,unmatched
+Noworossisk,1387,,,unmatched
+Municipal Liberia,1387,,,unmatched
+Novara,1387,,,unmatched
+Real Tomayapo,1387,,,unmatched
+Puntarenas FC,1386,,,unmatched
+Stal Mielec,1386,,,unmatched
+Videoton,1386,,,unmatched
+Sheriff Tiraspol,1386,Sheriff Tiraspol,568,exact_norm
+Al Masry Club,1386,,,unmatched
+FC Nasaf,1385,Nasaf,4215,token_strip
+Sporting FC,1385,,,unmatched
+Chateauroux,1385,,,unmatched
+Start,1385,Start,334,exact_norm
+Al-Faisaly,1384,,,unmatched
+Auckland City,1384,Auckland,24608,core
+Oldham,1384,Oldham,1349,exact_norm
+Unterhaching,1383,,,unmatched
+Kecskemeti,1383,,,unmatched
+AD Guanacasteca,1383,,,unmatched
+Stjarnan,1383,,,unmatched
+FK Ufa,1383,,,unmatched
+KAMAZ,1383,,,unmatched
+Falkirk,1382,,,unmatched
+Binacional,1382,Nacional,225,substr
+Örgryte,1382,Orgryte IS,2166,token
+Bristol Rovers,1382,Bristol Rovers,1334,exact_norm
+Paris 13 Atletico,1382,,,unmatched
+FK Železiarne Pod,1381,,,unmatched
+Turan Tovuz,1381,,,unmatched
+Alianza Universid,1381,,,unmatched
+Al Shorta,1381,Al Shorta,5242,exact_norm
+Olympiakos Nicosi,1381,,,unmatched
+Portimonense,1381,,,unmatched
+Az Picerno Asd,1381,,,unmatched
+Juventus U23,1381,Juventus,496,substr
+Aberdeen,1381,Aberdeen,252,exact_norm
+FK Sarajevo,1381,FK Sarajevo,679,exact_norm
+Pacos Ferreira,1381,,,unmatched
+Étoile du Sahel,1380,,,unmatched
+Agadir,1380,,,unmatched
+Halmstad,1379,Halmstad,766,exact_norm
+Hapoel Jerusalem,1379,,,unmatched
+Zlín,1378,,,unmatched
+Jorge Wilstermann,1378,,,unmatched
+Renate,1378,,,unmatched
+Breidablik,1378,Breidablik,276,exact_norm
+Trapani,1378,,,unmatched
+St Mirren,1378,,,unmatched
+GS Kallithea,1377,,,unmatched
+Sorrento,1377,,,unmatched
+Villefranche,1377,,,unmatched
+Al Fayha,1377,Al-Fayha,2944,exact_norm
+Ironi Tiberias,1377,,,unmatched
+Meknés,1376,,,unmatched
+Oleksandriya,1376,,,unmatched
+KF Ballkani,1375,Ballkani,12733,substr
+Stellenbosch FC,1375,,,unmatched
+Triestina,1375,,,unmatched
+CD Quintanar Del,1374,,,unmatched
+SSD Barletta 1922,1374,,,unmatched
+AS Ostia Mare Lid,1374,,,unmatched
+H Petach Tikva,1374,,,unmatched
+Zemamra,1373,,,unmatched
+Juan Pablo II Col,1373,,,unmatched
+FC Iberia 1999,1373,,,unmatched
+Novara,1373,,,unmatched
+Al Khaleej,1373,Al Khaleej Saihat,2928,token
+Giugliano,1372,,,unmatched
+El Jadida,1372,,,unmatched
+Kilmarnock,1372,,,unmatched
+NFC Volos,1372,Volos NFC,2110,token
+Železničar Pančev,1372,,,unmatched
+Phoenix Rising,1371,,,unmatched
+Aktobe,1371,Aktobe,4563,exact_norm
+AF Elbasani,1371,,,unmatched
+Corvinul Hunedoar,1370,,,unmatched
+Neftchi Farg'ona,1370,,,unmatched
+Tobol,1370,,,unmatched
+Universitario de,1370,Universitario,2540,substr
+Cheltenham,1369,Cheltenham,1372,exact_norm
+ZED FC,1369,,,unmatched
+Kisvarda,1369,,,unmatched
+Olympique Dcheira,1369,,,unmatched
+Voluntari,1369,FC Voluntari,2578,token
+Levadia Tallinn,1369,FC Levadia Tallinn,2273,token
+San Antonio FC,1369,,,unmatched
+KF Prishtina,1369,Prishtina,680,substr
+Safi,1368,,,unmatched
+Feirense,1368,,,unmatched
+Espanyol Barcelon,1368,Espanyol,540,core
+Dinamo Tbilisi,1368,,,unmatched
+Vorskla,1368,,,unmatched
+Gubbio,1368,,,unmatched
+St Johnstone,1368,,,unmatched
+Dukla,1368,,,unmatched
+FC Politehnica Ia,1367,,,unmatched
+The New Saints,1367,The New Saints,354,exact_norm
+Veres,1367,Veres Rivne,6501,token
+Yacoub,1366,,,unmatched
+Livorno,1366,,,unmatched
+Bohemians Dublin,1366,,,unmatched
+Spal,1366,Spalding United,7671,prefix
+Epitsentr,1365,Epitsentr Dunayivtsi,14434,token
+Academica,1364,,,unmatched
+National Bank SC,1364,,,unmatched
+Torpedo Zhodino,1363,Torpedo Zhodino,385,exact_norm
+Pineto,1362,,,unmatched
+Seinajoki,1362,,,unmatched
+AE Lárissa,1361,,,unmatched
+FC Košice,1361,FK Košice,10534,token_strip
+Guidonia Montecel,1361,,,unmatched
+Kragujevac,1360,,,unmatched
+Zamora,1360,,,unmatched
+Hamrun,1360,Hamrun Spartans,4626,token
+Cherno More,1360,Cherno More Varna,851,token
+Damac FC,1360,Damac,2956,core
+Real Valladolid B,1360,,,unmatched
+Bryne,1359,,,unmatched
+Lecco,1359,,,unmatched
+Botev Plovdiv,1359,,,unmatched
+Foggia,1358,,,unmatched
+Kiryat Shmona,1358,,,unmatched
+Sharjah FC,1358,Sharjah FC,2874,exact_norm
+Lucchese,1358,,,unmatched
+Vllaznia,1357,Vllaznia Shkodër,3339,token
+Bourg-Peronnas,1357,,,unmatched
+Honved,1356,,,unmatched
+CD Tudelano,1356,,,unmatched
+Giana Erminio,1356,,,unmatched
+Petrocub,1356,Petrocub,2271,exact_norm
+Al Riyadh,1356,Al Riyadh,10511,exact_norm
+FK Neftekhimik,1356,,,unmatched
+Dinamo Brest,1356,Dinamo Brest,386,exact_norm
+RFC Liège,1356,,,unmatched
+Patro Eisden MM,1356,Patro Eisden,6222,substr
+FC Turris,1355,,,unmatched
+FC Volga Ulyanovs,1355,,,unmatched
+Havelse,1355,,,unmatched
+Shelbourne,1355,Shelbourne,3854,exact_norm
+SSD Savoia 1908 F,1355,,,unmatched
+Alanya,1354,Alanyaspor,996,prefix
+Vis Pesaro,1353,,,unmatched
+Wuhan Three Towns,1353,Wuhan Three Towns,5695,exact_norm
+Cavese,1353,,,unmatched
+Haugesund,1352,,,unmatched
+Perth Glory,1352,Perth Glory,940,exact_norm
+Al Shamal SC,1352,,,unmatched
+Värnamo,1351,,,unmatched
+Brisbane Roar,1350,Brisbane Roar,947,exact_norm
+Vitesse,1350,Vitesse,200,exact_norm
+CD Alavés B,1350,,,unmatched
+Lincoln,1350,Lincoln,1379,exact_norm
+Modern Future FC,1349,,,unmatched
+Derry City,1349,,,unmatched
+Siracusa Calcio,1349,,,unmatched
+Future FC,1349,,,unmatched
+Rimini,1348,,,unmatched
+Liaoning Shenyang,1348,,,unmatched
+Omonia Aradippou,1348,,,unmatched
+Abha,1348,,,unmatched
+SD Gernika,1348,,,unmatched
+Diosgyori,1347,,,unmatched
+Al Gharafa,1347,Al-Gharafa,2903,exact_norm
+Forli,1347,,,unmatched
+SKA-Khabarovsk,1347,,,unmatched
+Atert Bissen,1346,,,unmatched
+Golden Arrows,1346,,,unmatched
+Gillingham,1346,Gillingham,1347,exact_norm
+Rukh Lviv,1345,,,unmatched
+Altamura,1345,,,unmatched
+Rochdale AFC,1345,Rochdale,1339,substr
+Backa Topola,1345,,,unmatched
+Orange County,1345,,,unmatched
+Indy Eleven,1344,,,unmatched
+UCV Moquegua,1344,,,unmatched
+Alcione Milano,1343,,,unmatched
+Northampton,1343,Northampton,1337,exact_norm
+Santos de Guápile,1343,,,unmatched
+CD Mafra,1342,,,unmatched
+De Graafscha,1342,De Graafschap,199,prefix
+FK Čukarički,1342,,,unmatched
+OFK,1342,,,unmatched
+Accrington Stanle,1341,Accrington ST,1360,substr
+Dila Gori,1341,Dila,3499,core
+Petrojet,1341,,,unmatched
+Al Ra’ed,1341,,,unmatched
+Torpedo Kutaisi,1340,Torpedo Kutaisi,685,exact_norm
+Ayacucho FC,1340,,,unmatched
+Runavik,1340,NSI Runavik,682,token
+Zalgiris Vilnius,1340,FK Zalgiris Vilnius,586,token
+Ashdod,1339,,,unmatched
+Pergolettese,1339,,,unmatched
+ENPPI,1338,,,unmatched
+Sibenik,1338,,,unmatched
+MFK Zemplín Micha,1338,,,unmatched
+Roda,1338,Roda,414,exact_norm
+Al Arabi,1338,,,unmatched
+ABB,1338,Abbey Hey,8674,prefix
+FK Novi Pazar,1337,Novi Pazar,2643,substr
+Sileks,1337,Sileks,4331,exact_norm
+Escaldes,1336,,,unmatched
+SuperSport United,1336,,,unmatched
+Rayo Zuliano,1336,,,unmatched
+Marumo Gallants,1335,,,unmatched
+HB Torshavn,1335,HB Torshavn,4133,exact_norm
+Latina,1334,,,unmatched
+Tyumen,1333,,,unmatched
+Sambenedettese,1333,,,unmatched
+UD Oliveirense,1333,,,unmatched
+Oakland Roots,1333,,,unmatched
+Latina,1332,,,unmatched
+Partizani Tirana,1332,Partizani,708,core
+US Pergolettese 1,1331,,,unmatched
+M Petach Tikva,1330,,,unmatched
+Banants,1330,,,unmatched
+Shenzhen Peng Cit,1330,,,unmatched
+Zimbru,1330,Zimbru,4633,exact_norm
+Panserraikos,1330,Panserraikos,2099,exact_norm
+Bnei Sakhinin,1330,,,unmatched
+Vukovar 91,1330,,,unmatched
+Lumezzane,1329,,,unmatched
+Adana Demirspor,1329,Adana Demirspor,3563,exact_norm
+Crawley,1329,Crawley Town,1362,token
+UTC,1329,,,unmatched
+Al Merrikh SC,1329,,,unmatched
+Alashkert,1328,,,unmatched
+Achnas,1328,,,unmatched
+Ebro,1328,,,unmatched
+Tétouan,1328,,,unmatched
+Polokwane City FC,1327,,,unmatched
+Al Wakrah,1327,,,unmatched
+Team Altamura,1327,,,unmatched
+Ayacucho FC,1327,,,unmatched
+Eny Digenis Ipson,1327,,,unmatched
+Sportivo San Lore,1327,,,unmatched
+Unirea Slobozia,1327,Unirea Slobozia,6916,exact_norm
+Siwelele,1326,,,unmatched
+Al Orobah,1326,,,unmatched
+Partick,1326,,,unmatched
+Giugliano,1325,,,unmatched
+Livyi Bereh,1325,Livyi Bereh,17162,exact_norm
+Municipal Pérez Z,1325,,,unmatched
+KF Malisheva,1325,Malisheva,15576,substr
+IMT Beograd,1325,,,unmatched
+Carpi,1325,,,unmatched
+Coleraine,1325,,,unmatched
+Differdang,1324,FC Differdange 03,684,prefix
+Cape Town City FC,1324,,,unmatched
+Lok Plovdiv,1324,,,unmatched
+Inhulets,1322,,,unmatched
+Larne,1322,Larne,5354,exact_norm
+FK Csikszereda,1321,Csikszereda,6230,substr
+Messina,1321,,,unmatched
+Pro Patria,1321,,,unmatched
+Pro Vercelli,1321,,,unmatched
+Shrewsbury,1321,Shrewsbury,1352,exact_norm
+Espérance Zarzis,1321,,,unmatched
+Chernomorets,1320,,,unmatched
+Amarante,1320,,,unmatched
+Slavia Sofia,1320,,,unmatched
+Tranmere,1319,Tranmere,1381,exact_norm
+Sorrento,1319,,,unmatched
+FK Auda,1319,Auda,4135,token_strip
+Keshla,1319,,,unmatched
+Legnago Salus,1318,,,unmatched
+Dolomiti,1318,,,unmatched
+Las Vegas Lights,1318,Las Vegas Lights,3998,exact_norm
+Araz-Naxçıvan PFK,1317,,,unmatched
+Carlisle,1316,Carlisle,1371,exact_norm
+Newport County,1316,Newport County,1367,exact_norm
+Pro Vercelli,1316,,,unmatched
+Radnik Surdulica,1315,,,unmatched
+Langreo,1315,,,unmatched
+Aluminij,1314,,,unmatched
+FK Leningradets,1314,,,unmatched
+Sestri Levante,1314,,,unmatched
+Hapoel Eran Hader,1313,,,unmatched
+Podgorica,1313,Buducnost Podgorica,579,token
+US Mondorf,1313,,,unmatched
+Royal AM,1312,,,unmatched
+Venlo,1312,VVV Venlo,204,token
+Obolon,1310,Obolon'-Brovar,3630,prefix
+Mladost Lucani,1310,,,unmatched
+Ittihad El Iskand,1309,,,unmatched
+Akritas Chlorakas,1309,,,unmatched
+Radomlje,1309,,,unmatched
+Harrogate,1308,Harrogate Town,1842,token
+Al Mokawloon,1308,,,unmatched
+Alianza Universid,1308,,,unmatched
+US Ben Guerdane,1308,,,unmatched
+Bra,1306,Brann,319,prefix
+Birmingham Legion,1306,Birmingham,54,core
+Emmen,1306,Emmen,208,exact_norm
+Brinje Grosuplje,1304,,,unmatched
+Al Okhdood,1304,Al Okhdood,2977,exact_norm
+Jong AZ,1304,Jong AZ,418,exact_norm
+Ruzomberok,1303,,,unmatched
+UNA Strassen,1303,UNA Strassen,2036,exact_norm
+Zeljeznicar,1303,Zeljeznicar Sarajevo,654,token
+Nafta,1303,,,unmatched
+FK MAS Táborsko,1303,,,unmatched
+PetroJet FC,1303,,,unmatched
+Soualem,1303,,,unmatched
+Smouha Sporting C,1302,,,unmatched
+Nea Salamis,1302,,,unmatched
+TS Galaxy,1302,,,unmatched
+El Gouna,1302,,,unmatched
+Maccabi Bnei Rain,1301,,,unmatched
+Changchun Yatai,1301,,,unmatched
+Barrow,1301,Barrow,1819,exact_norm
+Miami FC,1301,,,unmatched
+Triestina,1300,,,unmatched
+AS Trenčín,1298,,,unmatched
+Lamia,1298,,,unmatched
+Al Wehda,1297,,,unmatched
+Tala'ea El Gaish,1297,,,unmatched
+MFK Skalica,1296,,,unmatched
+Linfield,1296,Linfield,583,exact_norm
+Atletico Astorga,1295,,,unmatched
+Djoliba AC,1295,,,unmatched
+Al Ahli Doha,1294,Al Ahli Doha,2896,exact_norm
+Panevezys,1294,,,unmatched
+Imisli FK,1294,,,unmatched
+AC Milan II,1294,AC Milan,489,substr
+Coruxo FC,1293,,,unmatched
+Lok Sofia,1292,,,unmatched
+Loudoun United,1292,,,unmatched
+Pontedera,1292,,,unmatched
+Ghazl Al Mehalla,1291,,,unmatched
+Botev Vratsa,1291,,,unmatched
+Mura,1290,,,unmatched
+Floriana,1290,Floriana,4625,exact_norm
+ES Métlaoui,1290,,,unmatched
+Chippa United,1290,,,unmatched
+Morecambe,1289,Morecambe,1375,exact_norm
+Livingston,1289,,,unmatched
+Qingdao Yizhong H,1287,,,unmatched
+Karmiotissa Polem,1286,,,unmatched
+Richards Bay FC,1286,,,unmatched
+Qatar SC,1286,Qatar,1569,token_strip
+Liepajas,1286,,,unmatched
+Domzale,1286,,,unmatched
+Dordrecht,1286,Dordrecht,409,exact_norm
+Radnički Niš,1285,,,unmatched
+Sokol Saratov,1285,,,unmatched
+Durban City,1285,,,unmatched
+Power Dynamos,1284,,,unmatched
+Santa Coloma,1283,FC Santa Coloma,591,token
+Velez Mostar,1282,,,unmatched
+Paide Linnameesko,1281,,,unmatched
+Inter Baku,1280,Inter,505,core
+JS Omrane,1280,,,unmatched
+Charlotte Ind,1280,Charlotte,18310,substr
+BATE,1279,,,unmatched
+Meizhou Hakka,1279,,,unmatched
+Sumqayit,1279,,,unmatched
+KFC Komárno,1278,,,unmatched
+CA Bizertin,1278,,,unmatched
+Sutjeska,1278,Sutjeska,673,exact_norm
+FC Kudrivka,1277,Kudrivka,21953,substr
+Spartak Varna,1277,,,unmatched
+Foggia,1276,,,unmatched
+Vado,1276,,,unmatched
+Kahraba,1276,,,unmatched
+FK Krumovgrad,1273,,,unmatched
+Ross County,1271,,,unmatched
+Jong PSV,1271,Jong PSV U21,411,token
+Den Bosch,1271,Den Bosch,421,exact_norm
+FK Chayka,1270,,,unmatched
+FC Hegelmann,1270,,,unmatched
+Gloria Buzau,1270,,,unmatched
+Academia Anzoateg,1269,,,unmatched
+FC Eindhoven,1267,FC Eindhoven,422,exact_norm
+Yaracuyanos FC,1265,,,unmatched
+Víkingur,1265,Vikingur Gota,580,token
+Monterey Bay FC,1264,,,unmatched
+Al Shahaniya,1263,,,unmatched
+Arbroath,1262,,,unmatched
+Schweinfurt,1262,,,unmatched
+Beroe Stara Zagor,1261,,,unmatched
+Santa Ana,1261,,,unmatched
+Caldiero Terme,1260,,,unmatched
+Banga Gargždai,1260,,,unmatched
+Magesi FC,1259,,,unmatched
+FK Javor,1259,,,unmatched
+1. FC Tatran Preš,1259,,,unmatched
+Macva Sabac,1258,,,unmatched
+Kapaz PFK,1257,,,unmatched
+Marsaxlokk,1257,,,unmatched
+Dudelange,1256,F91 Dudelange,578,token
+Flora Tallinn,1255,Flora Tallinn,687,exact_norm
+Pharco FC,1254,,,unmatched
+Banska Bystrica,1254,,,unmatched
+Haras El Hodood,1253,,,unmatched
+Ayr United,1253,,,unmatched
+Primorje,1253,,,unmatched
+Maastricht,1252,,,unmatched
+Avenir de La Mars,1251,,,unmatched
+KF Dukagjini,1251,,,unmatched
+GD Sagrada Espera,1251,,,unmatched
+Umm-Salal,1250,,,unmatched
+US Folgore Carate,1249,,,unmatched
+Ivanovo,1248,,,unmatched
+Akureyri,1248,KA Akureyri,272,token
+Dunfermline,1248,,,unmatched
+TOP Oss,1247,,,unmatched
+Metaloglobus Bucu,1246,Metaloglobus,2604,substr
+Sabail,1245,,,unmatched
+Nomme Kalju,1245,Kalju Nomme,662,token
+Glentoran,1245,,,unmatched
+Yaracuyanos FC,1245,,,unmatched
+Birkirkara,1245,Birkirkara,2277,exact_norm
+Milsami Orhei,1245,Milsami Orhei,691,exact_norm
+Helmond Sport,1242,Helmond Sport,424,exact_norm
+Septemvri Sofia,1239,,,unmatched
+Ghazl Al Mehalla,1238,,,unmatched
+Olympique Béja,1238,,,unmatched
+BFC Daugavpils,1238,BFC Daugavpils,4149,exact_norm
+Trujillanos FC,1236,,,unmatched
+FK Mornar,1233,,,unmatched
+Kazincbarcika BSC,1232,,,unmatched
+Dynamo České Budě,1231,,,unmatched
+AS Soliman,1229,,,unmatched
+Virtus Verona,1228,Virtus,5308,core
+ASKO Kara,1227,,,unmatched
+AS Pirae,1226,,,unmatched
+FK Gabala,1224,,,unmatched
+Al-Sailiya SC,1221,,,unmatched
+Hibernians Paola,1221,Hibernians,3884,core
+JS Kairouanaise,1221,,,unmatched
+Jong Utrecht,1215,Jong Utrecht,428,exact_norm
+Jong Ajax,1215,Jong Ajax,425,exact_norm
+Decic,1213,Dečić,3745,exact_norm
+Artis Brno,1213,,,unmatched
+Ismaily,1211,,,unmatched
+APR FC,1206,,,unmatched
+Tekstilac Odžaci,1204,,,unmatched
+St Josephs,1204,,,unmatched
+Brooklyn,1204,,,unmatched
+Atlétic Escaldes,1202,,,unmatched
+Spartak Subotica,1195,,,unmatched
+EGS Gafsa,1191,,,unmatched
+Pro Patria,1191,,,unmatched
+Mohammédia,1188,,,unmatched
+Clodiense,1187,,,unmatched
+Omonia 29is Maiou,1187,,,unmatched
+Rudes Zagreb,1187,,,unmatched
+Stade Abidjan,1186,,,unmatched
+SK Poltava,1185,SK Poltava,17165,exact_norm
+FK Dobrudzha,1185,,,unmatched
+El Hodood,1184,,,unmatched
+UD Mutilvera,1183,,,unmatched
+Al Khor SC,1181,,,unmatched
+Krusevac,1181,,,unmatched
+Rabotnicki,1180,FK Rabotnicki,663,token
+R Letzebuerg,1178,,,unmatched
+Valletta,1177,,,unmatched
+Enosis Neao,1177,,,unmatched
+Hebar Pazardzhik,1172,,,unmatched
+Orbit College,1167,,,unmatched
+Al Najma,1165,Al Najma,2992,exact_norm
+AS Gabès,1162,,,unmatched
+US Tataouine,1161,,,unmatched
+Dunav Ruse,1160,,,unmatched
+Jedinstvo Ub,1160,,,unmatched
+Marumo Gallants,1155,,,unmatched
+Montana 1921,1152,,,unmatched
+Rivers United FC,1151,,,unmatched
+Cliftonville,1145,Cliftonville FC,2266,token
+Connahs Quay,1145,,,unmatched
+Petrovac,1137,,,unmatched
+SS Virtus,1136,Virtus,5308,substr
+Shafa,1134,,,unmatched
+Penybont FC,1130,Penybont,2191,substr
+Spaeri FC,1129,Spaeri,14864,substr
+Dungannon,1125,Dungannon Swifts,5351,token
+Karvan Evlakh,1112,,,unmatched
+PRK Hekari United,1110,,,unmatched
+La Fiorita,1102,La Fiorita,2249,exact_norm
+Sporting JAX,1100,,,unmatched
+Kruger United,1088,,,unmatched
+AS Tiga Sport,1085,,,unmatched
+Zemun,1076,,,unmatched
+Caernarfon Town,1074,,,unmatched
+Rewa FC,1070,,,unmatched
+Ifira Black Bird,1059,,,unmatched
+Haverfordwest,1040,Haverfordwest County AFC,2194,token
+FCB Magpies,1036,,,unmatched
+IF Vestri,974,,,unmatched
+Tre Fiori,966,Tre Fiori,2260,exact_norm
+Central Coast FC,918,,,unmatched
+Tupapa Maraerenga,330,,,unmatched
