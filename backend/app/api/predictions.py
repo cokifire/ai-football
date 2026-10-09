@@ -456,6 +456,8 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                    p.llm_deep_report,
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
+                   p.bayes_version, p.bayes_p0, p.bayes_p1,
+                   p.bayes_updates, p.bayes_evidence, p.bayes_risk,
                    p.home_logo, p.away_logo,
                    f.home_id, f.away_id,
                    COALESCE(ht.name_zh, p.home_name) AS home_name,
@@ -477,7 +479,8 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
         data = []
         for r in rows:
             d = dict(r._mapping)
-            for field in ('top3_scores',):
+            for field in ('top3_scores', 'bayes_p0', 'bayes_p1', 'bayes_updates',
+                          'bayes_evidence', 'bayes_risk'):
                 if isinstance(d.get(field), str):
                     try:
                         d[field] = _json.loads(d[field])
@@ -535,6 +538,14 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                     "ou_pct": d.get("llm_ou_pct"),
                     "deep_report": d.get("llm_deep_report"),
                 },
+                "bayes": {
+                    "version": d.get("bayes_version"),
+                    "p0": d.get("bayes_p0"),
+                    "p1": d.get("bayes_p1"),
+                    "updates": d.get("bayes_updates") or [],
+                    "evidence": d.get("bayes_evidence") or [],
+                    "risk": d.get("bayes_risk") or {},
+                } if d.get("bayes_version") else None,
                 "result": {
                     "score": f"{actual_h}-{actual_a}" if (has_result and actual_a is not None) else None,
                     "win_correct": win_correct,

@@ -32,11 +32,7 @@ def auto_predict(db=None):
                       SELECT 1 FROM predictions p
                       WHERE p.fixture_id = f.id
                         AND (
-                            p.llm_win IS NULL OR p.llm_score IS NULL
-                            OR p.llm_handicap_num IS NULL OR p.llm_handicap_team IS NULL
-                            OR p.llm_handicap_pct IS NULL
-                            OR p.llm_ou_line IS NULL OR p.llm_ou_type IS NULL
-                            OR p.llm_ou_pct IS NULL
+                            p.bayes_version IS NULL OR p.llm_win IS NULL OR p.llm_score IS NULL
                         )
                   )
                   OR EXISTS (

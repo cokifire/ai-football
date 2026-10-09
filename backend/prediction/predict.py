@@ -29,6 +29,9 @@ from app.core.config import settings
 from prediction.features import extract_features_for_fixture
 from prediction.training.model import load_models, _fill_na
 from prediction.training.data import assign_group
+from prediction.bayes import (
+    BAYES_VERSION, apply_updates, blend_prior, local_elo_prior, market_divergence,
+)
 
 import pandas as pd
 
@@ -221,7 +224,8 @@ def _call_llm_provider(
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=120.0,
+                # SiliconFlow 推理模型默认启用思考模式，完整比赛预测可能需要更长的生成时间。
+                timeout=300.0,
                 label=provider_name,
             )
             if resp is None:
@@ -305,9 +309,7 @@ def _parse_llm_json(content: str) -> dict | None:
 
 def _has_required_llm_fields(data: dict) -> bool:
     required = (
-        "win", "win_pct", "score",
-        "handicap_num", "handicap_team", "handicap_pct",
-        "ou_line", "ou_type", "ou_pct",
+        "deep_report",
     )
     # 注意：handicap_num 可能为 0（平手盘），不能用 `or ""` 的布尔判断，
     # 否则合法值 0 会被误判为“缺失”，导致整场预测被丢弃。
@@ -927,6 +929,71 @@ def _fetch_lineups_text(fixture_id: int, home_id: int, away_id: int) -> str:
         return "首发阵容获取失败。按阵容未确认处理，特别是世界杯/国家队赛事必须降低置信度。"
 
 
+def _bayes_evidence(db, fixture: dict, lineups_text: str) -> tuple[list[dict], list[dict], list[str]]:
+    """Create a source ledger and only mechanically-supported Bayesian updates.
+
+    The ledger is saved even for unavailable fields.  This is important: an
+    absent Field Tilt/PPDA feed is a known uncertainty, not permission for the
+    LLM to invent a tactical conclusion.
+    """
+    now = datetime.now().isoformat()
+    candidates = [
+        ("official_fixture", f"API-Football fixtures?id={fixture['id']}"),
+        ("official_lineups", f"API-Football fixtures/lineups?fixture={fixture['id']}"),
+        ("official_injuries", f"API-Football injuries?fixture={fixture['id']}"),
+        ("fbref", f"https://fbref.com/en/search/search.fcgi?search={fixture['home_name']}+{fixture['away_name']}"),
+        ("understat", f"https://understat.com/league/{fixture['league_name']}"),
+        ("club_news", f"https://www.google.com/search?q={fixture['home_name']}+{fixture['away_name']}+team+news"),
+    ]
+    ledger = [{"id": f"source-{i + 1}", "kind": kind, "query_or_url": url,
+               "fetched_at": now, "status": "CANDIDATE", "tier": 1 if kind.startswith("official") else 2}
+              for i, (kind, url) in enumerate(candidates)]
+    ledger.append({"id": "source-local-fixtures", "kind": "local_verified_history",
+                   "query_or_url": "fixtures/fixture_statistics", "fetched_at": now,
+                   "status": "AVAILABLE", "tier": 1})
+
+    updates: list[dict] = []
+    risks: list[str] = []
+    # Rest is completely reproducible from locally stored, completed matches.
+    for side, team_id in (("home", fixture["home_id"]), ("away", fixture["away_id"])):
+        row = db.execute(text("""
+            SELECT date FROM fixtures WHERE (home_id=:team OR away_id=:team)
+              AND date < :kickoff AND status_short IN ('FT','AET','PEN')
+            ORDER BY date DESC LIMIT 1
+        """), {"team": team_id, "kickoff": fixture["date"]}).fetchone()
+        if not row or not row[0] or not fixture.get("date"):
+            updates.append({"type": "schedule_density", "side": side, "status": "UNAVAILABLE",
+                            "reason": "缺少上一场已完赛时间", "source_ids": ["source-local-fixtures"]})
+            continue
+        rest_days = max(0.0, (fixture["date"] - row[0]).total_seconds() / 86400)
+        status = "AVAILABLE"
+        delta = -0.035 if rest_days < 3 else (-0.015 if rest_days < 4 else 0.0)
+        updates.append({"type": "schedule_density", "side": side, "status": status,
+                        "delta": delta, "cap": 0.035, "rest_days": round(rest_days, 2),
+                        "reason": "短休赛程" if delta else "休息时间正常",
+                        "source_ids": ["source-local-fixtures"]})
+        if delta:
+            risks.append(f"{('主队' if side == 'home' else '客队')}短休，体能不确定性上升")
+
+    # Confirmation changes confidence, but it is not assumed to be a positive
+    # or negative team-strength shock without player-role evidence.
+    confirmed = "确认首发:" in (lineups_text or "")
+    updates.append({"type": "lineup_confirmation", "status": "AVAILABLE" if confirmed else "UNAVAILABLE",
+                    "side": "draw", "delta": 0.0, "cap": 0.0,
+                    "reason": "已取得确认首发" if confirmed else "未取得确认首发，不能假设最强阵容",
+                    "source_ids": ["source-2"]})
+    if not confirmed:
+        risks.append("首发未确认；核心轴线伤停和轮换影响只能降级处理")
+
+    # Possession without Field Tilt is explicitly not enough to call the trap.
+    updates.append({"type": "possession_trap", "status": "UNAVAILABLE", "side": None,
+                    "reason": "缺少同口径 Field Tilt；不以单独控球率推断无效控球",
+                    "source_ids": ["source-4", "source-5"]})
+    updates.append({"type": "style_matchup", "status": "UNAVAILABLE", "side": None,
+                    "reason": "无经核验的身高/回追/出球弱点对位数据", "source_ids": ["source-4", "source-5"]})
+    return ledger, updates, risks
+
+
 def _competition_context(fixture: dict) -> str:
     league_name = str(fixture.get("league_name") or "")
     round_name = str(fixture.get("round") or "")
@@ -962,7 +1029,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       home_stats: str, away_stats: str,
                       home_standings: str, away_standings: str,
                       lineups_text: str, weather_text: str = "",
-                      intelligence_markdown: str = "") -> str:
+                      intelligence_markdown: str = "",
+                      bayes_context: dict | None = None) -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -970,6 +1038,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     model_top = max(model_probs, key=model_probs.get)
     model_top_pct = model_probs[model_top]
     competition_context = _competition_context(fixture)
+    bayes_context = bayes_context or {}
+    evidence_text = json.dumps(bayes_context.get("evidence", []), ensure_ascii=False)
 
     # 赔率段落预先拼好：f-string 里不要再嵌多行三元表达式（可读性差且易写成
     # `if x:` 的语句语法导致 SyntaxError）。无赔率（含纯空白）时显式告知模型，
@@ -1007,7 +1077,13 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【赔率数据】
     {odds_section}
 
-    *【机器模型数据】仅作校准，不是结论
+    *【确定性贝叶斯结果】这是数值结论，不得改写概率或杜撰盘口
+    P0: {json.dumps(bayes_context.get('p0', {}), ensure_ascii=False)}
+    P1: {json.dumps(bayes_context.get('p1', {}), ensure_ascii=False)}
+    风险: {json.dumps(bayes_context.get('risks', []), ensure_ascii=False)}
+    证据账本: {evidence_text}
+
+    *【机器模型数据】仅作先验校准，不是最终结论
     胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
     让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
@@ -1038,16 +1114,13 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 对比当前实际盘口，寻找市场过热（Public Bias）导致的盘口让步过深或过浅。
     - 识别大小球盘口在极端天气、锋线伤停或保守战术下的价值偏差   
 
+    # 输出约束
+    - 只能引用证据账本中 AVAILABLE 的事实；不可用项必须写“缺数据→降级推断”。
+    - 给出至少两个比赛剧本、无效控球警示（无 Field Tilt 时说明不可判定）及风险。
+    - 不输出新的数值概率、伤停、首发或盘口；这些字段由程序填充。
+
     # 请严格输出JSON格式:
-    {{"win":"主胜|平局|客胜",
-    "win_pct":"本场预测信心百分比,如85%",
-    "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
-    "handicap_num":"让球数,负数=主队让,正数=客队让,如-1",
-    "handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率百分比,如65%",
-    "ou_line":"大小球线如2.5(取赔率中最均衡盘口线)",
-    "ou_type":"大或小",
-    "ou_pct":"大小球概率百分比如60%",
-    "deep_report":"深度分析(300字内)"}}
+    {{"deep_report":"300字内的证据引用分析、两个剧本、无效控球警示与风险"}}
     """
 
 
@@ -1146,6 +1219,37 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         weather_text = _fetch_weather_text(fixture.get('weather_city'), fixture.get('timestamp'))
         intelligence_markdown = _fetch_intelligence_markdown(fixture)
 
+        # 4.5 Auditable Bayesian layer.  XGBoost is retained as an informed
+        # prior, while only bounded, recorded evidence is allowed to alter it.
+        xgb_prior = {
+            "home": xgb_result["win_home"], "draw": xgb_result["win_draw"],
+            "away": xgb_result["win_away"],
+        }
+        elo_prior, elo_meta = local_elo_prior(db, fixture)
+        p0 = blend_prior(elo_prior, xgb_prior)
+        evidence, updates, risks = _bayes_evidence(db, fixture, lineups_text)
+        p1, applied_updates = apply_updates(p0, updates)
+        market_check = market_divergence(odds.get("odds_data", []) if odds else [], p1)
+        if market_check.get("risk"):
+            risks.append(market_check["risk"])
+        if market_check.get("status") != "AVAILABLE":
+            risks.append("缺少完整市场赔率；盘口相关结论已降级")
+        bayes_context = {
+            "version": BAYES_VERSION,
+            "p0": p0,
+            "p1": p1,
+            "evidence": evidence,
+            "updates": applied_updates,
+            "risks": risks,
+            "elo": elo_meta,
+            "xgb_prior": xgb_prior,
+            "market_check": market_check,
+        }
+        # Existing public fields remain compatible but now expose final P1.
+        xgb_result["win_home"] = p1["home"]
+        xgb_result["win_draw"] = p1["draw"]
+        xgb_result["win_away"] = p1["away"]
+
         # 5. LLM
         llm_result = None
         try:
@@ -1153,20 +1257,41 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
                                        home_stats, away_stats,
                                        home_standings, away_standings,
                                        lineups_text, weather_text,
-                                       intelligence_markdown)
+                                       intelligence_markdown, bayes_context)
             llm_result = _call_llm(prompt)
         except Exception as e:
             logger.debug(f"LLM失败: {e}")
         if llm_result is None:
-            logger.warning(f"预测失败 fixture={fixture_id}: LLM 未返回完整预测，跳过入库")
-            raise PredictionLLMError("LLM 未返回完整/合规的预测结果（解析失败或字段缺失）")
+            # Narrative generation is intentionally non-critical: the numeric
+            # P1 has already been computed from an auditable evidence set.
+            logger.warning(f"LLM 未返回合规解释 fixture={fixture_id}; 使用确定性降级报告")
+            risks.append("LLM 解释不可用；仅提供确定性贝叶斯推断")
+            bayes_context["risks"] = risks
+            llm_result = {
+                "deep_report": (
+                    "缺数据→降级推断。剧本A：概率最高赛果按P1发展；"
+                    "剧本B：短休或未确认首发造成比赛向平局/弱势方摆动。"
+                    "无效控球警示：缺少Field Tilt，无法判定。"
+                )
+            }
+
+        # The LLM owns explanation only.  Keep legacy result columns populated
+        # from deterministic P1 so downstream calibration/value services do not
+        # mistake prose confidence for a probability.
+        selected_side = max(p1, key=p1.get)
+        selected_label = {"home": "主胜", "draw": "平局", "away": "客胜"}[selected_side]
+        llm_result.update({
+            "win": selected_label,
+            "win_pct": f"{p1[selected_side] * 100:.1f}%",
+            "score": ",".join(item["score"] for item in top3),
+        })
 
         # LLM 只能选择盘口方向，盘口线必须锁定到本次赔率快照的共识值，
         # 避免 predictions.llm_handicap_num 与 odds 表出现不存在的盘口线。
         _lock_llm_handicap_to_market(llm_result, odds.get("odds_data", []) if odds else [])
 
         # 6. 写库
-        _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group)
+        _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group, bayes_context)
 
         # 近10场原始战绩仅本次返回给前端核对，不落库
         result = {
@@ -1174,6 +1299,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             'llm': {**llm_result, 'home_stats': home_stats, 'away_stats': away_stats},
             'weather': weather_text,
             'intelligence_markdown': intelligence_markdown,
+            'bayes': bayes_context,
             'model_group': model_group,
         }
         logger.info(
@@ -1188,7 +1314,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             db.close()
 
 
-def _save_prediction(db, fixture, xgb, llm, odds, model_group):
+def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
     llm = llm or {}
     db.execute(text("""
         INSERT INTO predictions (
@@ -1200,6 +1326,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             llm_deep_report,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
             llm_ou_line, llm_ou_type, llm_ou_pct,
+            bayes_version, bayes_p0, bayes_p1, bayes_updates, bayes_evidence, bayes_risk,
             created_at, updated_at
         ) VALUES (
             :fid, :hname, :aname, :hlogo, :alogo,
@@ -1210,6 +1337,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             :ldr,
             :hcn, :hct, :hcp,
             :oun, :out, :oup,
+            :bver, :bp0, :bp1, :bupdates, :bevidence, :brisk,
             :now, :now
         )
         ON DUPLICATE KEY UPDATE
@@ -1219,6 +1347,8 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
             llm_deep_report=:ldr,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
+            bayes_version=:bver, bayes_p0=:bp0, bayes_p1=:bp1,
+            bayes_updates=:bupdates, bayes_evidence=:bevidence, bayes_risk=:brisk,
             model_group=:mgroup, updated_at=:now
     """), {
         'fid': fixture['id'],
@@ -1235,6 +1365,12 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group):
         'ldr': llm.get('deep_report'),
         'hcn': llm.get('handicap_num'), 'hct': llm.get('handicap_team'), 'hcp': llm.get('handicap_pct'),
         'oun': llm.get('ou_line'), 'out': llm.get('ou_type'), 'oup': llm.get('ou_pct'),
+        'bver': (bayes or {}).get('version'),
+        'bp0': json.dumps((bayes or {}).get('p0'), ensure_ascii=False),
+        'bp1': json.dumps((bayes or {}).get('p1'), ensure_ascii=False),
+        'bupdates': json.dumps((bayes or {}).get('updates'), ensure_ascii=False),
+        'bevidence': json.dumps((bayes or {}).get('evidence'), ensure_ascii=False),
+        'brisk': json.dumps({"risks": (bayes or {}).get('risks', []), "market": (bayes or {}).get('market_check')}, ensure_ascii=False),
         'now': datetime.now(),
     })
     db.commit()

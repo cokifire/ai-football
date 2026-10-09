@@ -279,6 +279,7 @@ export default function FixturesPage() {
               lambda_away: xgb.lambda?.away,
               handicap: xgb.handicap,
               llm: { ...llm, brief_analysis: llm.brief },
+              bayes: saved.bayes || null,
               model_group: xgb.model_group,
             },
           })
@@ -970,6 +971,16 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
   if (!result) return null
   const xgb = result
   const llm = result.llm || {}
+  const bayes = result.bayes || null
+  const bayesRisk = bayes?.risk || {}
+  const bayesRisks = Array.isArray(bayesRisk.risks)
+    ? bayesRisk.risks
+    : Array.isArray(bayes?.risks) ? bayes.risks : []
+  const bayesSourceStatus = (bayes?.evidence || []).reduce((status: Record<string, number>, source: any) => {
+    const key = source?.status || 'UNKNOWN'
+    status[key] = (status[key] || 0) + 1
+    return status
+  }, {})
 
   return (
     <div className="space-y-6">
@@ -988,9 +999,89 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
         )}
       </div>
 
+      {bayes && (
+        <section className="rounded-xl border border-primary-100 bg-primary-50/40 p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-semibold">贝叶斯推理</h4>
+              <p className="text-xs text-gray-500">版本 {toText(bayes.version)} · P0 先验经证据更新为 P1</p>
+            </div>
+            <span className="text-xs text-gray-500">来源状态：{Object.entries(bayesSourceStatus).map(([key, count]) => `${key} ${count}`).join(' · ')}</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[
+              { title: 'P0 先验', values: bayes.p0 },
+              { title: 'P1 更新后', values: bayes.p1 },
+            ].map(({ title, values }) => (
+              <div key={title} className="rounded-lg bg-white border border-gray-100 p-3">
+                <h5 className="text-sm font-medium mb-2">{title}</h5>
+                <div className="space-y-1 text-sm">
+                  {[
+                    ['主胜', values?.home], ['平局', values?.draw], ['客胜', values?.away],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="flex justify-between">
+                      <span className="text-gray-500">{label}</span>
+                      <span className="font-medium">{fmtPct(value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {Array.isArray(bayes.updates) && bayes.updates.length > 0 && (
+            <div>
+              <h5 className="text-sm font-medium mb-2">证据更新</h5>
+              <div className="space-y-1.5">
+                {bayes.updates.map((item: any, index: number) => (
+                  <div key={`${item.type || 'update'}-${index}`} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg bg-white px-3 py-2 text-sm border border-gray-100">
+                    <span className="font-medium">{toText(item.type)}</span>
+                    <span className="text-gray-600">{toText(item.reason || (item.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : ''))}</span>
+                    <span className="text-xs text-gray-500">
+                      {item.applied_delta != null ? `log-odds ${Number(item.applied_delta).toFixed(3)}` : toText(item.status)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {bayesRisks.length > 0 && (
+            <div>
+              <h5 className="text-sm font-medium mb-1">风险与降级提示</h5>
+              <ul className="list-disc pl-5 text-sm text-amber-800 space-y-1">
+                {bayesRisks.map((risk: string, index: number) => <li key={index}>{toText(risk)}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {(bayesRisk.market || result.bayes?.market_check) && (
+            <p className="text-xs text-gray-600">
+              市场校验：{toText((bayesRisk.market || result.bayes?.market_check)?.risk || '赔率未改变 P1，仅用于分歧提示')}
+            </p>
+          )}
+
+          {Array.isArray(bayes.evidence) && (
+            <details className="text-xs text-gray-600">
+              <summary className="cursor-pointer select-none">查看来源记录（{bayes.evidence.length}）</summary>
+              <div className="mt-2 space-y-1">
+                {bayes.evidence.map((source: any, index: number) => (
+                  <div key={source.id || index} className="break-all rounded bg-white px-2 py-1.5">
+                    <span className="font-medium">{toText(source.status)} · {toText(source.kind)}</span>
+                    <span className="ml-2">{toText(source.query_or_url)}</span>
+                    <span className="ml-2 text-gray-400">{toText(source.fetched_at)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </section>
+      )}
+
       {/* 胜平负概率（模型） */}
       <div>
-        <h4 className="font-semibold mb-2">胜平负概率（模型）</h4>
+        <h4 className="font-semibold mb-2">{bayes ? '胜平负概率（P1 贝叶斯更新后）' : '胜平负概率（模型）'}</h4>
         <div className="space-y-2">
           {[
             { label: '主胜', v: xgb.win_home, cls: 'bg-primary-500' },
