@@ -1012,30 +1012,11 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h4 className="font-semibold">贝叶斯推理</h4>
-              <p className="text-xs text-gray-500">版本 {toText(bayes.version)} · P0 先验经证据更新为 P1</p>
+              <p className="text-xs text-gray-500">
+                {bayes.version ? `版本 ${toText(bayes.version)} · ` : ''}概率以模型输出为准，此处仅展示证据与风险
+              </p>
             </div>
             <span className="text-xs text-gray-500">来源状态：{Object.entries(bayesSourceStatus).map(([key, count]) => `${key} ${count}`).join(' · ')}</span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {[
-              { title: 'P0 先验', values: bayes.p0 },
-              { title: 'P1 更新后', values: bayes.p1 },
-            ].map(({ title, values }) => (
-              <div key={title} className="rounded-lg bg-white border border-gray-100 p-3">
-                <h5 className="text-sm font-medium mb-2">{title}</h5>
-                <div className="space-y-1 text-sm">
-                  {[
-                    ['主胜', values?.home], ['平局', values?.draw], ['客胜', values?.away],
-                  ].map(([label, value]) => (
-                    <div key={String(label)} className="flex justify-between">
-                      <span className="text-gray-500">{label}</span>
-                      <span className="font-medium">{fmtPct(value)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
           </div>
 
           {Array.isArray(bayes.updates) && bayes.updates.length > 0 && (
@@ -1047,7 +1028,13 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
                     <span className="font-medium">
                       {toText(item.type)}{sideLabel(item.side) ? ` · ${sideLabel(item.side)}` : ''}
                     </span>
-                    <span className="text-gray-600">{toText(item.reason || (item.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : ''))}</span>
+                    <span className="text-gray-600">
+                      {toText(item.reason || (item.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : ''))}
+                      {/* cap 为 0 的证据（如 lineup_confirmation）按定义不会移动概率 */}
+                      {Number(item.cap) === 0 && (
+                        <span className="ml-2 text-xs text-gray-400">仅影响置信度，不移动概率</span>
+                      )}
+                    </span>
                     <span className="text-xs text-gray-500">
                       {Number(item.applied_delta || 0) !== 0
                         ? `对数概率权重 ${Number(item.applied_delta).toFixed(3)}`

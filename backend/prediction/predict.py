@@ -1349,7 +1349,18 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
 
 
 def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
+    """写入预测结果。
+
+    贝叶斯概率（P0/P1/version）不落库：实测 P1 恒等于 P0，而 win_home/win_draw/
+    win_away 存的本就是 P1，再存一份只是重复副本。但来源账本、证据更新、风险提示
+    属于可审计信息，予以保留，便于事后回溯某次预测当时究竟依据了什么。
+    """
     llm = llm or {}
+
+    def _j(value):
+        """序列化为 JSON；无值时写 NULL，避免把字面量 "null" 存进列里。"""
+        return json.dumps(value, ensure_ascii=False) if value is not None else None
+
     db.execute(text("""
         INSERT INTO predictions (
             fixture_id, home_name, away_name, home_logo, away_logo,
@@ -1360,7 +1371,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             llm_deep_report,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
             llm_ou_line, llm_ou_type, llm_ou_pct,
-            bayes_version, bayes_p0, bayes_p1, bayes_updates, bayes_evidence, bayes_risk,
+            bayes_updates, bayes_evidence, bayes_risk,
             created_at, updated_at
         ) VALUES (
             :fid, :hname, :aname, :hlogo, :alogo,
@@ -1371,7 +1382,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             :ldr,
             :hcn, :hct, :hcp,
             :oun, :out, :oup,
-            :bver, :bp0, :bp1, :bupdates, :bevidence, :brisk,
+            :bupdates, :bevidence, :brisk,
             :now, :now
         )
         ON DUPLICATE KEY UPDATE
@@ -1381,7 +1392,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             llm_deep_report=:ldr,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
-            bayes_version=:bver, bayes_p0=:bp0, bayes_p1=:bp1,
             bayes_updates=:bupdates, bayes_evidence=:bevidence, bayes_risk=:brisk,
             model_group=:mgroup, updated_at=:now
     """), {
@@ -1399,12 +1409,10 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
         'ldr': llm.get('deep_report'),
         'hcn': llm.get('handicap_num'), 'hct': llm.get('handicap_team'), 'hcp': llm.get('handicap_pct'),
         'oun': llm.get('ou_line'), 'out': llm.get('ou_type'), 'oup': llm.get('ou_pct'),
-        'bver': (bayes or {}).get('version'),
-        'bp0': json.dumps((bayes or {}).get('p0'), ensure_ascii=False),
-        'bp1': json.dumps((bayes or {}).get('p1'), ensure_ascii=False),
-        'bupdates': json.dumps((bayes or {}).get('updates'), ensure_ascii=False),
-        'bevidence': json.dumps((bayes or {}).get('evidence'), ensure_ascii=False),
-        'brisk': json.dumps({"risks": (bayes or {}).get('risks', []), "market": (bayes or {}).get('market_check')}, ensure_ascii=False),
+        'bupdates': _j((bayes or {}).get('updates')),
+        'bevidence': _j((bayes or {}).get('evidence')),
+        'brisk': _j({"risks": (bayes or {}).get('risks', []),
+                     "market": (bayes or {}).get('market_check')}) if bayes else None,
         'now': datetime.now(),
     })
     db.commit()

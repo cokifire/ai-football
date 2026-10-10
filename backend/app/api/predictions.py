@@ -456,7 +456,6 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                    p.llm_deep_report,
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
-                   p.bayes_version, p.bayes_p0, p.bayes_p1,
                    p.bayes_updates, p.bayes_evidence, p.bayes_risk,
                    p.home_logo, p.away_logo,
                    f.home_id, f.away_id,
@@ -479,7 +478,7 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
         data = []
         for r in rows:
             d = dict(r._mapping)
-            for field in ('top3_scores', 'bayes_p0', 'bayes_p1', 'bayes_updates',
+            for field in ('top3_scores', 'bayes_updates',
                           'bayes_evidence', 'bayes_risk'):
                 if isinstance(d.get(field), str):
                     try:
@@ -538,14 +537,14 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                     "ou_pct": d.get("llm_ou_pct"),
                     "deep_report": d.get("llm_deep_report"),
                 },
+                # 贝叶斯概率（P0/P1）已停止落库，与 win_* 重复；此处只保留
+                # 来源账本、证据更新与风险提示这类可审计数据。
                 "bayes": {
-                    "version": d.get("bayes_version"),
-                    "p0": d.get("bayes_p0"),
-                    "p1": d.get("bayes_p1"),
                     "updates": d.get("bayes_updates") or [],
                     "evidence": d.get("bayes_evidence") or [],
                     "risk": d.get("bayes_risk") or {},
-                } if d.get("bayes_version") else None,
+                } if (d.get("bayes_updates") or d.get("bayes_evidence")
+                      or d.get("bayes_risk")) else None,
                 "result": {
                     "score": f"{actual_h}-{actual_a}" if (has_result and actual_a is not None) else None,
                     "win_correct": win_correct,

@@ -32,7 +32,8 @@ def auto_predict(db=None):
                       SELECT 1 FROM predictions p
                       WHERE p.fixture_id = f.id
                         AND (
-                            p.bayes_version IS NULL OR p.llm_win IS NULL OR p.llm_score IS NULL
+                            -- 贝叶斯中间量已不再落库，重算标记只看 LLM 结果是否完整。
+                            p.llm_win IS NULL OR p.llm_score IS NULL
                         )
                   )
                   OR EXISTS (
