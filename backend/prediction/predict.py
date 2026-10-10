@@ -1062,7 +1062,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     比赛场地:{fixture.get('venue_city','')}
     比赛地天气及海拔:{weather_text}
 
-    # 【外部比赛情报（Markdown）】
+    # 【外部比赛情报】
     {intelligence_markdown}
 
     # 核心数据输入（请基于以下信息进行推理）
@@ -1078,7 +1078,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【赔率数据】
     {odds_section}
 
-    *【确定性贝叶斯结果】这是数值结论，不得改写概率或杜撰盘口
+    *【贝叶斯结果】这是数值结论，不得改写概率或杜撰盘口
     P0: {json.dumps(bayes_context.get('p0', {}), ensure_ascii=False)}
     P1: {json.dumps(bayes_context.get('p1', {}), ensure_ascii=False)}
     风险: {json.dumps(bayes_context.get('risks', []), ensure_ascii=False)}
@@ -1096,13 +1096,13 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     ### 战意、背景与外部环境
     - 积分与战意：区分争冠、保级、争欧战、无欲无求或战略放弃。
     - 赛程疲劳度：计算近 15 天比赛密集度、多线作战轮换压力、长途旅行飞行距离。
-    - 外部环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响（如非特性气候特征，可略过该分析）。
+    - 气候环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响（如非特性气候特征，略过该分析）。
 
     ### 虚实辨析与底层数据
     - 重点看球队在相似战术风格对手面前创造的 Open-Play xG。
 
     ### 战术与对位克制
-    - 阵型与打法对冲：如“高位逼抢 vs 后场长传脱困”、“边路传中 vs 禁区防空成功率”、“控球慢节奏 vs 快速反击”。
+    - 阵型与打法对冲：如“高位逼抢 vs 出球薄弱（失误率上升）”、“边路传中 vs 禁区防空成功率”、“控球慢节奏 vs 快速反击”。
     - 关键伤停与阵容缺口：若无确定首发，严禁假设最强阵容；必须评估核心轴线（主力中卫/单后腰/核心射手）缺阵引发的战术坍塌风险。
 
     ### 赔率与市场去噪
@@ -1110,22 +1110,21 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 降权场景：世界杯/国家队、杯赛、友谊赛、青年队、女足或样本量 <5 场时，大幅降低赔率与历史对战的参考权重，主要依赖阵容与基本面。
 
     ### 价值评估与盘口定位
-    - 依据上述分析，估算你心中的“真实合理盘口”。
     - 让球(handicap)：handicap_num，大小球(ou)：ou_line 取赔率数据中双方赔率最接近的盘口线。
-    - 对比当前实际盘口，寻找市场过热（Public Bias）导致的盘口让步过深或过浅。
+    - 分析当前盘口，寻找市场过热（Public Bias）导致的盘口让步过深或过浅。
     - 识别大小球盘口在极端天气、锋线伤停或保守战术下的价值偏差   
 
     # 输出约束
-    - 只能引用证据账本中 AVAILABLE 的事实；不可用项必须写“缺数据→降级推断”。
-    - 给出至少两个比赛剧本、无效控球警示（无 Field Tilt 时说明不可判定）及风险。
+    - 只能引用证据账本中 AVAILABLE 的事实；不可用项必须写“缺数据”。
     - 让球与大小球字段必须基于已提供的赔率盘口和全部资料独立测算。
 
     # 请严格输出JSON格式:
-    {{"handicap_num":"让球数，负数=主队让，正数=客队让，如-1",
-    "handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率，如65%",
+    {{"handicap_num":"让球数，负数=主队让，正数=客队让，如-1=主让1球",
+    "handicap_team":"主队或客队",
+    "handicap_pct":"让球方赢盘概率，如65%",
     "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
     "ou_type":"大或小","ou_pct":"大小球概率，如60%",
-    "deep_report":"500字内的证据引用分析、两个剧本、无效控球警示与风险"}}
+    "deep_report":"500字内的证据引用分析"}}
     """
 
 
