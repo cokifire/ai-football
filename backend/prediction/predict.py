@@ -717,8 +717,17 @@ def _fetch_weather_text(city_name: str, kickoff_ts: int | None = None) -> str:
         return "天气及海拔数据处理失败，不能据此推断外部环境。"
 
 
-def _fetch_intelligence_markdown(fixture: dict) -> str:
-    """获取本场外部比赛情报 Markdown，失败时不阻断预测。"""
+# scrape_match_analysis 会把异常吞成一段占位 Markdown，靠这个标记串识别失败。
+_INTELLIGENCE_FAILURE_MARK = "获取失败，忽略该数据源"
+
+
+def _fetch_intelligence_markdown(fixture: dict) -> tuple[str, str]:
+    """获取本场外部比赛情报 Markdown，失败时不阻断预测。
+
+    返回 ``(markdown, status)``，status 为 ``AVAILABLE`` / ``UNAVAILABLE``。
+    此前来源账本里 club_news 的 status 恒为 CANDIDATE，与实际取数结果完全脱节；
+    这里把真实结果带回去，供 :func:`_bayes_evidence` 回写账本状态。
+    """
     logger.info(
         "情报获取开始: fixture={}, home={}, away={}",
         fixture.get("id"), fixture.get("home_name"), fixture.get("away_name"),
@@ -738,11 +747,14 @@ def _fetch_intelligence_markdown(fixture: dict) -> str:
             intelligence_llm_model=settings.intelligence_llm_model,
             limit=3,
         )
-        logger.info("情报获取结束: fixture={}, output_chars={}", fixture.get("id"), len(result or ""))
-        return result
+        text = result or ""
+        logger.info("情报获取结束: fixture={}, output_chars={}", fixture.get("id"), len(text))
+        if not text.strip() or _INTELLIGENCE_FAILURE_MARK in text:
+            return text, "UNAVAILABLE"
+        return text, "AVAILABLE"
     except Exception as exc:
         logger.exception("情报获取异常: fixture={}, error={}", fixture.get("id"), exc)
-        return "# 外部比赛情报\n\n获取失败，忽略该数据源。"
+        return "# 外部比赛情报\n\n获取失败，忽略该数据源。", "UNAVAILABLE"
 
 
 def _fetch_standings_text(db, team_id, league_id, season) -> str:
@@ -930,18 +942,26 @@ def _fetch_lineups_text(fixture_id: int, home_id: int, away_id: int) -> str:
         return "首发阵容获取失败。按阵容未确认处理，特别是世界杯/国家队赛事必须降低置信度。"
 
 
-def _bayes_evidence(db, fixture: dict, lineups_text: str) -> tuple[list[dict], list[dict], list[str]]:
+def _bayes_evidence(db, fixture: dict, lineups_text: str,
+                    intel_status: str = "UNAVAILABLE") -> tuple[list[dict], list[dict], list[str]]:
     """Create a source ledger and only mechanically-supported Bayesian updates.
 
     The ledger is saved even for unavailable fields.  This is important: an
     absent Field Tilt/PPDA feed is a known uncertainty, not permission for the
     LLM to invent a tactical conclusion.
+
+    ``CANDIDATE`` 只保留「本场尚未真正取到该场次数据」的来源。已确认取到的来源
+    在构造后按实际结果回写成 AVAILABLE / UNAVAILABLE，避免账本恒为 CANDIDATE 而
+    沦为纯意图清单。
+
+    注意 ``official_lineups`` 刻意保持 CANDIDATE：fixtures/lineups 当前返回的并
+    非本场数据，不能算作已核验来源。
     """
     now = datetime.now().isoformat()
+    # official_fixture 已移除：本场比赛信息实际来自本地 fixtures 表，与
+    # source-local-fixtures 是同一个数据源，保留一条只会让账本重复计数。
     candidates = [
-        ("official_fixture", f"API-Football fixtures?id={fixture['id']}"),
         ("official_lineups", f"API-Football fixtures/lineups?fixture={fixture['id']}"),
-        ("official_injuries", f"API-Football injuries?fixture={fixture['id']}"),
         ("fbref", f"https://fbref.com/en/search/search.fcgi?search={fixture['home_name']}+{fixture['away_name']}"),
         ("understat", f"https://understat.com/league/{fixture['league_name']}"),
         ("club_news", f"https://www.google.com/search?q={fixture['home_name']}+{fixture['away_name']}+team+news"),
@@ -952,6 +972,14 @@ def _bayes_evidence(db, fixture: dict, lineups_text: str) -> tuple[list[dict], l
     ledger.append({"id": "source-local-fixtures", "kind": "local_verified_history",
                    "query_or_url": "fixtures/fixture_statistics", "fetched_at": now,
                    "status": "AVAILABLE", "tier": 1})
+
+    # 回写真实取数结果。club_news 由 Firecrawl 情报抓取落地，其实际检索词与该条
+    # 示意 URL 不同，但来源归属一致。official_injuries 已移除：本地无 injuries
+    # 数据、fixtures/players 也已停止同步，该来源永远无法解析。
+    resolved = {"club_news": intel_status}
+    for entry in ledger:
+        if entry["kind"] in resolved:
+            entry["status"] = resolved[entry["kind"]]
 
     updates: list[dict] = []
     risks: list[str] = []
@@ -982,16 +1010,25 @@ def _bayes_evidence(db, fixture: dict, lineups_text: str) -> tuple[list[dict], l
     updates.append({"type": "lineup_confirmation", "status": "AVAILABLE" if confirmed else "UNAVAILABLE",
                     "side": "draw", "delta": 0.0, "cap": 0.0,
                     "reason": "已取得确认首发" if confirmed else "未取得确认首发，不能假设最强阵容",
-                    "source_ids": ["source-2"]})
+                    "source_ids": ["source-1"]})
     if not confirmed:
         risks.append("首发未确认；核心轴线伤停和轮换影响只能降级处理")
 
     # Possession without Field Tilt is explicitly not enough to call the trap.
-    updates.append({"type": "possession_trap", "status": "UNAVAILABLE", "side": None,
-                    "reason": "缺少同口径 Field Tilt；不以单独控球率推断无效控球",
-                    "source_ids": ["source-4", "source-5"]})
-    updates.append({"type": "style_matchup", "status": "UNAVAILABLE", "side": None,
-                    "reason": "无经核验的身高/回追/出球弱点对位数据", "source_ids": ["source-4", "source-5"]})
+    # 本地拿不到同口径的进攻三区传球/触球切分（fixtures/players 已停止同步），
+    # 因此不做代理指标近似，保持不可用，仅把缺失原因说清楚供 LLM 引用。
+    updates.append({
+        "type": "possession_trap", "status": "UNAVAILABLE", "side": None,
+        "reason": ("缺少同口径 Field Tilt：本地无进攻三区传球/触球切分数据，"
+                   "fixture_player_stats 已停止同步；因此不以单独控球率推断无效控球"),
+        "source_ids": ["source-2", "source-3"],
+    })
+    updates.append({
+        "type": "style_matchup", "status": "UNAVAILABLE", "side": None,
+        "reason": ("无经核验的身高/回追/出球弱点对位数据：球员属性仅有 players 表历史快照，"
+                   "无法构建本场对位指标"),
+        "source_ids": ["source-2", "source-3"],
+    })
     return ledger, updates, risks
 
 
@@ -1223,7 +1260,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
         weather_text = _fetch_weather_text(fixture.get('weather_city'), fixture.get('timestamp'))
-        intelligence_markdown = _fetch_intelligence_markdown(fixture)
+        intelligence_markdown, intel_status = _fetch_intelligence_markdown(fixture)
 
         # 4.5 Auditable Bayesian layer.  XGBoost is retained as an informed
         # prior, while only bounded, recorded evidence is allowed to alter it.
@@ -1233,7 +1270,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         }
         elo_prior, elo_meta = team_elo_prior(db, fixture)
         p0 = blend_prior(elo_prior, xgb_prior) if elo_prior else xgb_prior
-        evidence, updates, risks = _bayes_evidence(db, fixture, lineups_text)
+        evidence, updates, risks = _bayes_evidence(db, fixture, lineups_text, intel_status)
         if elo_prior is None:
             risks.append("team_elos 缺少球队 Elo；P0 已降级为 XGBoost 先验")
         p1, applied_updates = apply_updates(p0, updates)

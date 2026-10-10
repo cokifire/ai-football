@@ -944,6 +944,14 @@ const toText = (v: any): string => {
     return String(v)
   }
 }
+// 证据适用方：schedule_density 按主/客各生成一条，reason 可能完全相同，
+// 必须显示 side 才能区分两条记录。
+const sideLabel = (side: any): string => {
+  if (side === 'home') return '主队'
+  if (side === 'away') return '客队'
+  if (side === 'draw') return '平局'
+  return ''
+}
 // 概率格式化：0~1 之间视为概率转百分比，否则按已为百分比处理
 const fmtPct = (v: any): string => {
   if (v === null || v === undefined || v === '') return '-'
@@ -1035,11 +1043,15 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
               <h5 className="text-sm font-medium mb-2">证据更新</h5>
               <div className="space-y-1.5">
                 {bayes.updates.map((item: any, index: number) => (
-                  <div key={`${item.type || 'update'}-${index}`} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg bg-white px-3 py-2 text-sm border border-gray-100">
-                    <span className="font-medium">{toText(item.type)}</span>
+                  <div key={`${item.type || 'update'}-${item.side || ''}-${index}`} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg bg-white px-3 py-2 text-sm border border-gray-100">
+                    <span className="font-medium">
+                      {toText(item.type)}{sideLabel(item.side) ? ` · ${sideLabel(item.side)}` : ''}
+                    </span>
                     <span className="text-gray-600">{toText(item.reason || (item.status === 'UNAVAILABLE' ? 'UNAVAILABLE' : ''))}</span>
                     <span className="text-xs text-gray-500">
-                      {item.applied_delta != null ? `log-odds ${Number(item.applied_delta).toFixed(3)}` : toText(item.status)}
+                      {Number(item.applied_delta || 0) !== 0
+                        ? `对数概率权重 ${Number(item.applied_delta).toFixed(3)}`
+                        : toText(item.status)}
                     </span>
                   </div>
                 ))}
