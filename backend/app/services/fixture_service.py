@@ -767,6 +767,14 @@ def sync_live_fixtures(db: Session) -> None:
         db.commit()
         logger.debug(f"实时赛程更新: {updated} 场")
 
+    # 已完赛数据一经同步就更新当前 Elo；内部账本保证重复轮询不会重复计分。
+    if just_finished:
+        try:
+            from app.services.elo_service import update_finished_elos
+            update_finished_elos(db)
+        except Exception as e:
+            logger.warning(f"实时赛程 Elo 更新失败: {e}")
+
     # 刚结束的比赛异步拉取子数据
     if just_finished:
         logger.info(f"检测到 {len(just_finished)} 场刚结束, 拉取子数据: {just_finished}")

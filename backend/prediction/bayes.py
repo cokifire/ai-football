@@ -8,15 +8,13 @@ pure makes a prediction reproducible from its saved evidence ledger.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from datetime import datetime
 from typing import Any
 
 import numpy as np
 from scipy.stats import poisson
 from sqlalchemy import text
 
-BAYES_VERSION = "bayes-v1"
+BAYES_VERSION = "bayes-v2"
 ELO_BASE = 1500.0
 ELO_K = 20.0
 HOME_ELO_ADVANTAGE = 55.0
@@ -47,32 +45,121 @@ def elo_probabilities(home_elo: float, away_elo: float) -> dict[str, float]:
                            "away": remaining * (1.0 - decisive_home)})
 
 
-def local_elo_prior(db, fixture: dict[str, Any]) -> tuple[dict[str, float], dict[str, Any]]:
-    """Replays only completed matches before kickoff to produce an Elo prior."""
+def team_elo_prior(db, fixture: dict[str, Any]) -> tuple[dict[str, float] | None, dict[str, Any]]:
+    """Read the current persisted ratings for the two teams in a fixture."""
     rows = db.execute(text("""
-        SELECT home_id, away_id, goals_home, goals_away, date
-        FROM fixtures
-        WHERE league_id=:league_id AND date < :kickoff
-          AND status_short IN ('FT', 'AET', 'PEN')
-          AND goals_home IS NOT NULL AND goals_away IS NOT NULL
-        ORDER BY date ASC, id ASC
-    """), {"league_id": fixture["league_id"], "kickoff": fixture["date"]}).fetchall()
-    ratings: defaultdict[int, float] = defaultdict(lambda: ELO_BASE)
+        SELECT id, name, elo, created_at, updated_at
+        FROM team_elos
+        WHERE id IN (:home_id, :away_id)
+    """), {"home_id": fixture["home_id"], "away_id": fixture["away_id"]}).fetchall()
+    values = {row.id: row for row in rows}
+    home, away = values.get(fixture["home_id"]), values.get(fixture["away_id"])
+    if home is None or away is None:
+        missing = []
+        if home is None:
+            missing.append(str(fixture.get("home_name") or fixture["home_id"]))
+        if away is None:
+            missing.append(str(fixture.get("away_name") or fixture["away_id"]))
+        return None, {"status": "UNAVAILABLE", "reason": "team_elos 缺少球队: " + ", ".join(missing)}
+    return elo_probabilities(float(home.elo), float(away.elo)), {
+        "status": "AVAILABLE", "source": "team_elos",
+        "home_elo": float(home.elo), "away_elo": float(away.elo),
+        "home_name": home.name, "away_name": away.name,
+        "k": ELO_K, "home_advantage": HOME_ELO_ADVANTAGE,
+        "home_updated_at": home.updated_at.isoformat() if home.updated_at else None,
+        "away_updated_at": away.updated_at.isoformat() if away.updated_at else None,
+    }
+
+
+def calculate_elo_change(home_elo: float, away_elo: float, home_goals: int, away_goals: int) -> tuple[float, float]:
+    """Return zero-sum Elo movements for a completed fixture."""
+    expected_home = 1.0 / (1.0 + 10 ** (-(home_elo + HOME_ELO_ADVANTAGE - away_elo) / 400.0))
+    actual_home = 1.0 if home_goals > away_goals else (0.5 if home_goals == away_goals else 0.0)
+    margin = min(2.0, 1.0 + max(0, abs(int(home_goals) - int(away_goals)) - 1) * 0.15)
+    home_delta = ELO_K * margin * (actual_home - expected_home)
+    return home_delta, -home_delta
+
+
+def apply_finished_fixture_elo(db, fixture_id: int) -> bool:
+    """Apply one final score once, then record the immutable update ledger.
+
+    Ratings begin at the values already seeded in ``team_elos``.  Fixtures dated
+    before a team's seed timestamp are deliberately skipped, preventing old
+    history from being applied a second time.
+    """
+    fixture = db.execute(text("""
+        SELECT id, date, status_short, home_id, away_id, home_name, away_name,
+               fulltime_home, fulltime_away
+        FROM fixtures WHERE id=:fixture_id
+    """), {"fixture_id": fixture_id}).fetchone()
+    if not fixture or fixture.status_short not in {"FT", "AET", "PEN", "AWD", "WO"}:
+        return False
+    if fixture.fulltime_home is None or fixture.fulltime_away is None or fixture.home_id is None or fixture.away_id is None:
+        return False
+    if db.execute(text("SELECT fixture_id FROM team_elo_updates WHERE fixture_id=:fixture_id FOR UPDATE"),
+                  {"fixture_id": fixture_id}).fetchone():
+        return False
+
+    ratings = db.execute(text("""
+        SELECT id, name, elo, created_at FROM team_elos
+        WHERE id IN (:home_id, :away_id)
+        ORDER BY id FOR UPDATE
+    """), {"home_id": fixture.home_id, "away_id": fixture.away_id}).fetchall()
+    by_id = {row.id: row for row in ratings}
+    home, away = by_id.get(fixture.home_id), by_id.get(fixture.away_id)
+    if home is None or away is None:
+        return False
+    seeded_times = [value for value in (home.created_at, away.created_at) if value is not None]
+    seeded_at = max(seeded_times) if seeded_times else None
+    if fixture.date is None or (seeded_at is not None and fixture.date < seeded_at):
+        return False
+
+    home_before, away_before = float(home.elo), float(away.elo)
+    home_delta, away_delta = calculate_elo_change(home_before, away_before, fixture.fulltime_home, fixture.fulltime_away)
+    home_after, away_after = round(home_before + home_delta, 2), round(away_before + away_delta, 2)
+    db.execute(text("UPDATE team_elos SET elo=:elo WHERE id=:team_id"), {"elo": home_after, "team_id": home.id})
+    db.execute(text("UPDATE team_elos SET elo=:elo WHERE id=:team_id"), {"elo": away_after, "team_id": away.id})
+    db.execute(text("""
+        INSERT INTO team_elo_updates (
+            fixture_id, fixture_date, home_team_id, away_team_id,
+            home_elo_before, away_elo_before, home_elo_after, away_elo_after,
+            home_delta, away_delta, created_at
+        ) VALUES (
+            :fixture_id, :fixture_date, :home_id, :away_id,
+            :home_before, :away_before, :home_after, :away_after,
+            :home_delta, :away_delta, NOW()
+        )
+    """), {
+        "fixture_id": fixture.id, "fixture_date": fixture.date,
+        "home_id": home.id, "away_id": away.id,
+        "home_before": home_before, "away_before": away_before,
+        "home_after": home_after, "away_after": away_after,
+        "home_delta": round(home_delta, 4), "away_delta": round(away_delta, 4),
+    })
+    return True
+
+
+def sync_finished_elos(db) -> int:
+    """Apply all newly completed fixtures in kickoff order.
+
+    The ledger primary key makes this safe to invoke from the daily scheduler,
+    live fixture updates and result backfill.
+    """
+    rows = db.execute(text("""
+        SELECT f.id
+        FROM fixtures f
+        LEFT JOIN team_elo_updates u ON u.fixture_id = f.id
+        WHERE u.fixture_id IS NULL
+          AND f.status_short IN ('FT', 'AET', 'PEN', 'AWD', 'WO')
+          AND f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL
+          AND f.date >= (SELECT MIN(created_at) FROM team_elos WHERE created_at IS NOT NULL)
+        ORDER BY f.date ASC, f.id ASC
+    """)).fetchall()
+    updated = 0
     for row in rows:
-        h, a, gh, ga = row[0], row[1], row[2], row[3]
-        if h is None or a is None:
-            continue
-        expected_home = 1.0 / (1.0 + 10 ** (-(ratings[h] + HOME_ELO_ADVANTAGE - ratings[a]) / 400.0))
-        actual_home = 1.0 if gh > ga else (0.5 if gh == ga else 0.0)
-        margin = min(2.0, 1.0 + max(0, abs(int(gh) - int(ga)) - 1) * 0.15)
-        delta = ELO_K * margin * (actual_home - expected_home)
-        ratings[h] += delta
-        ratings[a] -= delta
-    home = ratings[fixture["home_id"]]
-    away = ratings[fixture["away_id"]]
-    return elo_probabilities(home, away), {"home_elo": round(home, 2), "away_elo": round(away, 2),
-                                            "history_matches": len(rows), "k": ELO_K,
-                                            "home_advantage": HOME_ELO_ADVANTAGE}
+        if apply_finished_fixture_elo(db, int(row.id)):
+            updated += 1
+    return updated
 
 
 def blend_prior(elo: dict[str, float], xgb: dict[str, float], xgb_weight: float = 0.65) -> dict[str, float]:

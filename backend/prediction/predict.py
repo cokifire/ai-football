@@ -30,7 +30,7 @@ from prediction.features import extract_features_for_fixture
 from prediction.training.model import load_models, _fill_na
 from prediction.training.data import assign_group
 from prediction.bayes import (
-    BAYES_VERSION, apply_updates, blend_prior, local_elo_prior, market_divergence,
+    BAYES_VERSION, apply_updates, blend_prior, market_divergence, team_elo_prior,
 )
 
 import pandas as pd
@@ -309,7 +309,8 @@ def _parse_llm_json(content: str) -> dict | None:
 
 def _has_required_llm_fields(data: dict) -> bool:
     required = (
-        "deep_report",
+        "handicap_num", "handicap_team", "handicap_pct",
+        "ou_line", "ou_type", "ou_pct", "deep_report",
     )
     # 注意：handicap_num 可能为 0（平手盘），不能用 `or ""` 的布尔判断，
     # 否则合法值 0 会被误判为“缺失”，导致整场预测被丢弃。
@@ -1117,10 +1118,14 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     # 输出约束
     - 只能引用证据账本中 AVAILABLE 的事实；不可用项必须写“缺数据→降级推断”。
     - 给出至少两个比赛剧本、无效控球警示（无 Field Tilt 时说明不可判定）及风险。
-    - 不输出新的数值概率、伤停、首发或盘口；这些字段由程序填充。
+    - 让球与大小球字段必须基于已提供的赔率盘口和全部资料独立测算。
 
     # 请严格输出JSON格式:
-    {{"deep_report":"300字内的证据引用分析、两个剧本、无效控球警示与风险"}}
+    {{"handicap_num":"让球数，负数=主队让，正数=客队让，如-1",
+    "handicap_team":"主队或客队","handicap_pct":"让球方赢盘概率，如65%",
+    "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
+    "ou_type":"大或小","ou_pct":"大小球概率，如60%",
+    "deep_report":"500字内的证据引用分析、两个剧本、无效控球警示与风险"}}
     """
 
 
@@ -1161,6 +1166,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         if not (odds and odds.get("odds_data")):
             # api-football 无赔率（联赛未覆盖 / 配额耗尽等），回退爬取 Flashscore
             odds = _fetch_flashscore_odds(fixture)
+        if not (odds and odds.get("odds_data")):
+            raise PredictionDataError("未获取到可用赔率，无法生成让球和大小球预测")
         odds_text = _odds_to_text(odds["odds_data"]) if odds and odds.get("odds_data") else ""
         if odds and odds.get("odds_data"):
             try:
@@ -1225,9 +1232,11 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             "home": xgb_result["win_home"], "draw": xgb_result["win_draw"],
             "away": xgb_result["win_away"],
         }
-        elo_prior, elo_meta = local_elo_prior(db, fixture)
-        p0 = blend_prior(elo_prior, xgb_prior)
+        elo_prior, elo_meta = team_elo_prior(db, fixture)
+        p0 = blend_prior(elo_prior, xgb_prior) if elo_prior else xgb_prior
         evidence, updates, risks = _bayes_evidence(db, fixture, lineups_text)
+        if elo_prior is None:
+            risks.append("team_elos 缺少球队 Elo；P0 已降级为 XGBoost 先验")
         p1, applied_updates = apply_updates(p0, updates)
         market_check = market_divergence(odds.get("odds_data", []) if odds else [], p1)
         if market_check.get("risk"):
@@ -1262,18 +1271,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         except Exception as e:
             logger.debug(f"LLM失败: {e}")
         if llm_result is None:
-            # Narrative generation is intentionally non-critical: the numeric
-            # P1 has already been computed from an auditable evidence set.
-            logger.warning(f"LLM 未返回合规解释 fixture={fixture_id}; 使用确定性降级报告")
-            risks.append("LLM 解释不可用；仅提供确定性贝叶斯推断")
-            bayes_context["risks"] = risks
-            llm_result = {
-                "deep_report": (
-                    "缺数据→降级推断。剧本A：概率最高赛果按P1发展；"
-                    "剧本B：短休或未确认首发造成比赛向平局/弱势方摆动。"
-                    "无效控球警示：缺少Field Tilt，无法判定。"
-                )
-            }
+            logger.warning(f"预测失败 fixture={fixture_id}: LLM 未返回完整盘口预测，跳过入库")
+            raise PredictionLLMError("LLM 未返回完整/合规的让球或大小球预测结果（可重试）")
 
         # The LLM owns explanation only.  Keep legacy result columns populated
         # from deterministic P1 so downstream calibration/value services do not
@@ -1286,8 +1285,7 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             "score": ",".join(item["score"] for item in top3),
         })
 
-        # LLM 只能选择盘口方向，盘口线必须锁定到本次赔率快照的共识值，
-        # 避免 predictions.llm_handicap_num 与 odds 表出现不存在的盘口线。
+        # 盘口线必须锁定到本次赔率快照的共识值，避免落库不存在的盘口线。
         _lock_llm_handicap_to_market(llm_result, odds.get("odds_data", []) if odds else [])
 
         # 6. 写库

@@ -1,6 +1,9 @@
 import math
 
-from prediction.bayes import apply_updates, blend_prior, elo_probabilities, market_divergence, normalize_3way, poisson_markets
+from prediction.bayes import (
+    apply_updates, blend_prior, calculate_elo_change, elo_probabilities,
+    market_divergence, normalize_3way, poisson_markets,
+)
 
 
 def test_probabilities_are_normalized():
@@ -15,6 +18,13 @@ def test_elo_home_advantage_and_blend():
     final = blend_prior(elo, {"home": 0.2, "draw": 0.2, "away": 0.6})
     assert final["away"] > final["home"]
     assert math.isclose(sum(final.values()), 1.0)
+
+
+def test_finished_fixture_elo_change_is_zero_sum_and_rewards_home_win():
+    home_delta, away_delta = calculate_elo_change(1500, 1500, 2, 0)
+    assert home_delta > 0
+    assert away_delta < 0
+    assert math.isclose(home_delta + away_delta, 0.0)
 
 
 def test_unavailable_evidence_never_changes_prior():
