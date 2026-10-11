@@ -163,6 +163,14 @@ def _poisson_top3(lambda_home: float, lambda_away: float,
     return scores[:3]
 
 
+# 胜负口径别名：llm_win 落库后要与赛果直接比对，写法不统一会导致命中率永远判不中。
+_WIN_LABEL_ALIASES = {
+    "home": "主胜", "home win": "主胜", "主队": "主胜", "主队胜": "主胜", "主胜": "主胜",
+    "draw": "平局", "draws": "平局", "平": "平局", "平局": "平局", "和局": "平局",
+    "away": "客胜", "away win": "客胜", "客队": "客胜", "客队胜": "客胜", "客胜": "客胜",
+}
+
+
 def _normalize_llm_fields(parsed: dict) -> dict:
     """将模型可能返回的列表/数值字段规整为字符串，避免写入 TEXT 列时报错。
 
@@ -184,6 +192,9 @@ def _normalize_llm_fields(parsed: dict) -> dict:
                 out[k] = str(v)
             except Exception:
                 out[k] = ""
+    alias = _WIN_LABEL_ALIASES.get(str(out.get("win", "")).strip().lower())
+    if alias:
+        out["win"] = alias
     return out
 
 
@@ -238,8 +249,12 @@ def _call_llm_provider(
             if not content.strip() and message.get('reasoning_content'):
                 content = message['reasoning_content']
             parsed = _parse_llm_json(content)
-            if parsed and _has_required_llm_fields(parsed):
-                return _normalize_llm_fields(parsed)
+            if parsed:
+                # 先规整再校验：胜负别名（home/draw/away）要在这里归一成库内口径，
+                # 否则校验过的原始写法会让 llm_win 与赛果永远对不上。
+                parsed = _normalize_llm_fields(parsed)
+                if _has_required_llm_fields(parsed):
+                    return parsed
             logger.warning(
                 "{} 返回缺少必要预测字段（第 {} 次），keys={}，content_preview={!r}",
                 provider_name, attempt,
@@ -311,6 +326,9 @@ def _has_required_llm_fields(data: dict) -> bool:
     required = (
         "handicap_num", "handicap_team", "handicap_pct",
         "ou_line", "ou_type", "ou_pct", "deep_report",
+        # 胜负与比分现在是 LLM 自己的结论（不再由贝叶斯结果回填），缺了就会让
+        # llm_win/llm_score 落空：命中率判不了，auto_predict 的重算条件也会一直成立。
+        "win", "win_pct", "score",
     )
     # 注意：handicap_num 可能为 0（平手盘），不能用 `or ""` 的布尔判断，
     # 否则合法值 0 会被误判为“缺失”，导致整场预测被丢弃。
@@ -608,53 +626,6 @@ def _odds_to_text(odds_data: list) -> str:
                 lines.append(f"    {d}: " + " | ".join(parts))
 
     return "\n" + "\n".join(lines)
-
-
-def _consensus_handicap_line(odds_data: list) -> float | None:
-    """从当前赔率快照选出亚盘共识线。
-
-    odds 表保存的是各博彩公司各自的盘口，不能直接拿第一条作为唯一盘口。
-    以博彩公司条目中出现次数最多的盘口作为共识；出现次数相同时，选择盘口
-    两侧隐含概率最接近的条目。这样可避免 LLM 根据赔率文本自由输出不存在的线。
-    """
-    candidates = []
-    for bookmaker in odds_data or []:
-        for entry in bookmaker.get("entries") or []:
-            line = entry.get("ah_line")
-            if line is None or entry.get("ah_home_odd") is None or entry.get("ah_away_odd") is None:
-                continue
-            try:
-                candidates.append((round(float(line), 2), abs(
-                    float(entry["ah_home_odd"]) - float(entry["ah_away_odd"])
-                )))
-            except (TypeError, ValueError):
-                continue
-    if not candidates:
-        return None
-
-    counts = {}
-    balance = {}
-    for line, diff in candidates:
-        counts[line] = counts.get(line, 0) + 1
-        balance[line] = min(balance.get(line, float("inf")), diff)
-    return min(counts, key=lambda line: (-counts[line], balance[line], abs(line)))
-
-
-def _lock_llm_handicap_to_market(llm_result: dict, odds_data: list) -> None:
-    """确保落库的 LLM 盘口线与本次赔率快照的共识线一致。"""
-    line = _consensus_handicap_line(odds_data)
-    if line is None:
-        return
-    try:
-        llm_line = float(llm_result.get("handicap_num"))
-    except (TypeError, ValueError):
-        llm_line = None
-    if llm_line != line:
-        logger.info(
-            "LLM 亚盘线与赔率共识不同，已校正: {} -> {}",
-            llm_result.get("handicap_num"), line,
-        )
-        llm_result["handicap_num"] = line
 
 
 def _fetch_weather_text(city_name: str, kickoff_ts: int | None = None) -> str:
@@ -1079,6 +1050,22 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     bayes_context = bayes_context or {}
     evidence_text = json.dumps(bayes_context.get("evidence", []), ensure_ascii=False)
 
+    # Elo 段落预先拼好（f-string 里不嵌多行三元）：team_elos 缺队时显式写明暂无，
+    # 避免模型在拿不到的项上自行臆造实力差。
+    elo_meta = bayes_context.get("elo") or {}
+    if elo_meta.get("status") == "AVAILABLE" and elo_meta.get("home_elo") is not None \
+            and elo_meta.get("away_elo") is not None:
+        elo_gap = float(elo_meta["home_elo"]) - float(elo_meta["away_elo"])
+        elo_section = (
+            f"{elo_meta.get('home_name') or fixture.get('home_name', '')} "
+            f"{float(elo_meta['home_elo']):.1f} / "
+            f"{elo_meta.get('away_name') or fixture.get('away_name', '')} "
+            f"{float(elo_meta['away_elo']):.1f}｜分差 {elo_gap:+.1f}（正=主队更高）"
+            f"｜主场加成 {elo_meta.get('home_advantage')}"
+        )
+    else:
+        elo_section = f"暂无（{elo_meta.get('reason') or 'team_elos 无该队评分'}）"
+
     # 赔率段落预先拼好：f-string 里不要再嵌多行三元表达式（可读性差且易写成
     # `if x:` 的语句语法导致 SyntaxError）。无赔率（含纯空白）时显式告知模型，
     # 避免它在没有市场定价依据的情况下臆造让球/大小球盘口，此时要求用 "-" 占位。
@@ -1121,6 +1108,9 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     风险: {json.dumps(bayes_context.get('risks', []), ensure_ascii=False)}
     证据账本: {evidence_text}
 
+    *【Elo 评分】球队长期实力的客观标尺，用于检验市场定价与模型结论是否偏离基本面
+    {elo_section}
+
     *【机器模型数据】仅作先验校准，不是最终结论
     胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
     让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
@@ -1133,7 +1123,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     ### 战意、背景与外部环境
     - 积分与战意：区分争冠、保级、争欧战、无欲无求或战略放弃。
     - 赛程疲劳度：计算近 15 天比赛密集度、多线作战轮换压力、长途旅行飞行距离。
-    - 气候环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响（如非特性气候特征，略过该分析）。
+    - 气候环境：结合比赛地当天的天气和海拔，评估对两队技术打法或体能消耗的影响（如非特殊气候特征，略过该分析）。
 
     ### 虚实辨析与底层数据
     - 重点看球队在相似战术风格对手面前创造的 Open-Play xG。
@@ -1156,12 +1146,15 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 让球与大小球字段必须基于已提供的赔率盘口和全部资料独立测算。
 
     # 请严格输出JSON格式:
-    {{"handicap_num":"让球数，负数=主队让，正数=客队让，如-1=主让1球",
-    "handicap_team":"主队或客队",
-    "handicap_pct":"让球方赢盘概率，如65%",
+    {{"win":"主胜|平局|客胜",
+    "win_pct":"本场预测信心百分比,如85%",
+    "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
+    "handicap_num":"让球盘口线，负数=主队让，正数=客队让，如-1=主让1球（必须取已提供赔率中的盘口）",
+    "handicap_team":"建议下注的一方：主队或客队, 填你判断有赢盘价值的一方",
+    "handicap_pct":"handicap_team 这一方的赢盘概率，如65%",
     "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
     "ou_type":"大或小","ou_pct":"大小球概率，如60%",
-    "deep_report":"500字内的证据引用分析"}}
+    "deep_report":"500字内的深度分析"}}
     """
 
 
@@ -1310,19 +1303,10 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             logger.warning(f"预测失败 fixture={fixture_id}: LLM 未返回完整盘口预测，跳过入库")
             raise PredictionLLMError("LLM 未返回完整/合规的让球或大小球预测结果（可重试）")
 
-        # The LLM owns explanation only.  Keep legacy result columns populated
-        # from deterministic P1 so downstream calibration/value services do not
-        # mistake prose confidence for a probability.
-        selected_side = max(p1, key=p1.get)
-        selected_label = {"home": "主胜", "draw": "平局", "away": "客胜"}[selected_side]
-        llm_result.update({
-            "win": selected_label,
-            "win_pct": f"{p1[selected_side] * 100:.1f}%",
-            "score": ",".join(item["score"] for item in top3),
-        })
-
-        # 盘口线必须锁定到本次赔率快照的共识值，避免落库不存在的盘口线。
-        _lock_llm_handicap_to_market(llm_result, odds.get("odds_data", []) if odds else [])
+        # 贝叶斯到此为止：它只负责修正 XGBoost（已写回 xgb_result），不再反向
+        # 覆盖 LLM 的推导。win_* 落的是贝叶斯修正后的模型概率，llm_win/llm_score/
+        # llm_win_pct 落的是 LLM 自己的判断，两者并排可直接对照差异。
+        logger.info("贝叶斯修正胜平负: P0(elo+xgb)=%s -> P1(证据后验)=%s", p0, p1)
 
         # 6. 写库
         _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group, bayes_context)
