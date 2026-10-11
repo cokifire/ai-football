@@ -29,6 +29,9 @@ Djurgarden(主) vs Mjallby，赔率完全错配。
      按"日期 ±1 天 + 双方队名"定位那一行 -> 取出该行的 `?mid=`。
   3. 用 `?mid=` 重新打开 odds 页并再次核对日期，仍不一致则抛错（宁可无赔率，
      也不能喂给 LLM 错场次的赔率）。
+  4. 赔率表渲染完成前 Flashscore 偶发把浏览器甩到站点默认页（如
+     https://www.flashscore.com/snooker/）。此时落地 URL 不再是 /match/ 路径，
+     换新标签页重试，超过 GOTO_RETRY 次放弃（见 MATCH_URL_PREFIX）。
 
 输出结构与 API-Football 的 `odds_data` 同构，可直接喂给
 `prediction.predict._odds_to_text` / `_save_odds`：
@@ -56,6 +59,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import date as date_cls, datetime
 from pathlib import Path
 
@@ -80,6 +84,16 @@ MARKET_PATH = {
 
 # 合成的"庄家"名：本模块输出的是各家均值（市场共识），而非某一家
 CONSENSUS_BOOKMAKER = "Flashscore"
+
+# 赔率页的正常路径前缀。Flashscore 偶发在赔率表渲染完成前把浏览器甩到站点
+# 默认页（如 https://www.flashscore.com/snooker/），落地 URL 离开比赛页即视为失败。
+MATCH_URL_PREFIX = "https://www.flashscore.com/match/"
+
+# 赔率表渲染的最长等待（毫秒）
+ODDS_WAIT_MS = 25000
+
+# 被甩到非比赛页时，换新标签页重试的次数（超过则放弃，宁可无赔率）
+GOTO_RETRY = 3
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -211,6 +225,9 @@ def _to_float(raw: str):
 
 # ────────────────────────────── 浏览器交互 ──────────────────────────────
 
+# 赔率表里已渲染出至少一行（用作等待条件）
+_HAS_ROWS_JS = "() => !!document.querySelector('div.ui-table__row')"
+
 # 抽取赔率表每一行：庄家名 / 盘口线 / 各位赔率（含是否被撤单）
 _ROWS_JS = """
 () => Array.from(document.querySelectorAll('div.ui-table__row')).map(r => {
@@ -282,15 +299,34 @@ def _odds_url(home_slug, home_hash, away_slug, away_hash, market, mid=None) -> s
     return f"{url}?mid={mid}" if mid else url
 
 
-def _goto_odds(page, url: str) -> None:
-    """打开赔率页并等待表格异步渲染完成。"""
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    _accept_consent(page)
-    try:
-        page.wait_for_selector("div.ui-table__row", timeout=25000)
-    except Exception:
+def _wait_odds_table(page, url: str) -> None:
+    """等赔率表渲染完成；页面被 Flashscore 甩离比赛页时立即返回，不再空等。"""
+    deadline = time.monotonic() + ODDS_WAIT_MS / 1000
+    while time.monotonic() < deadline:
+        if not page.url.startswith(MATCH_URL_PREFIX):
+            logger.debug(f"Flashscore 已离开比赛页（被重定向）: {url} -> {page.url}")
+            return
+        try:
+            if page.evaluate(_HAS_ROWS_JS):
+                break
+        except Exception:
+            pass  # 页面正在导航/替换文档，下一轮再看
+        page.wait_for_timeout(500)
+    else:
         logger.debug(f"Flashscore 赔率表未出现（可能该场无赔率）: {url}")
     page.wait_for_timeout(2000)  # 等赔率动画/占位值替换完成
+
+
+def _goto_odds(page, url: str) -> bool:
+    """打开赔率页并等待表格异步渲染完成。
+
+    返回 True 表示页面仍停留在比赛页（赔率可能为空）；False 表示 Flashscore 把浏览器
+    重定向到了比赛页以外的位置（站点默认页 / 某运动栏目），此时应换新标签页重试。
+    """
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    _accept_consent(page)
+    _wait_odds_table(page, url)
+    return page.url.startswith(MATCH_URL_PREFIX)
 
 
 def _read_page_info(page) -> dict:
@@ -357,7 +393,9 @@ def _resolve_mid(page, info: dict, target: date_cls, home_name: str, away_name: 
     """pair URL 命中的场次不对时，经联赛赛程页拿到目标场次的 match id。"""
     leagues = info.get("leagues") or []
     if not leagues:
-        raise ValueError("未能从页面面包屑解析出联赛链接，无法定位目标场次")
+        raise ValueError(
+            f"未能从页面面包屑解析出联赛链接，无法定位目标场次（当前页 {info.get('url')}）"
+        )
     league_href = leagues[0]["href"].rstrip("/")
     fixtures_url = f"https://www.flashscore.com{league_href}/fixtures/"
     logger.info(f"Flashscore pair URL 命中错误场次，改由联赛赛程定位: {fixtures_url}")
@@ -536,12 +574,38 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        page = browser.new_page(user_agent=UA, locale="en-US")
+        context = browser.new_context(user_agent=UA, locale="en-US")
+        page = context.new_page()
+
+        def _fresh_page():
+            """关掉被 Flashscore 甩走的标签页，在同一 context 里重开一个。"""
+            nonlocal page
+            try:
+                page.close()
+            except Exception:
+                pass
+            page = context.new_page()
+
+        def goto_odds(url: str) -> None:
+            """打开赔率页；被 Flashscore 重定向到非比赛页时换新标签页重试。"""
+            for attempt in range(1, GOTO_RETRY + 1):
+                if _goto_odds(page, url):
+                    return
+                logger.warning(
+                    f"Flashscore 被重定向到非比赛页 {page.url}，"
+                    f"第 {attempt}/{GOTO_RETRY} 次重试: {url}"
+                )
+                if attempt < GOTO_RETRY:
+                    _fresh_page()
+            raise RuntimeError(
+                f"Flashscore 连续 {GOTO_RETRY} 次从 {url} 重定向到非比赛页 {page.url}"
+            )
+
         try:
             mid = None
             url = _odds_url(home_slug, home_hash, away_slug, away_hash, "1x2")
             logger.info(f"Flashscore 赔率抓取: {url}")
-            _goto_odds(page, url)
+            goto_odds(url)
             info = _read_page_info(page)
 
             if _matches_target(info, target, home_name, away_name):
@@ -551,7 +615,7 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
                 result["resolved_via"] = "league-fixtures"
                 result["mid"] = mid
                 url = _odds_url(home_slug, home_hash, away_slug, away_hash, "1x2", mid)
-                _goto_odds(page, url)
+                goto_odds(url)
                 info = _read_page_info(page)
                 if not _matches_target(info, target, home_name, away_name):
                     raise ValueError(
@@ -565,8 +629,8 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
 
             for market in markets:
                 if market != "1x2":
-                    _goto_odds(page, _odds_url(home_slug, home_hash, away_slug,
-                                               away_hash, market, mid))
+                    goto_odds(_odds_url(home_slug, home_hash, away_slug,
+                                        away_hash, market, mid))
                 result["raw"][market] = _parse_market(_read_rows(page), market)
 
             entry = _build_entry(
