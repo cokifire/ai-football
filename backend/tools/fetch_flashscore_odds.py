@@ -100,6 +100,24 @@ UA = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
+# 抹掉 Chromium 的自动化特征，降低被识别为爬虫的概率。
+# 实测（同一场比赛底部，同 URL）：默认配置 10 次里有 3 次被甩到站点默认页，
+# 开真实窗口(headless=False)反而 6 次里有 4 次被甩，而**仍然是无头**、只用下面
+# 这套（Blink 自动化标志 + navigator 补丁 + 常规 viewport/context 参数）时
+# 8 次全部留在比赛页。也就是说触发条件是自动化特征本身，而不是有没有渲染窗口，
+# 别再改回 headless=False 去「更像真人浏览器」。
+CHROME_ARGS = ["--disable-blink-features=AutomationControlled"]
+
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+window.chrome = {runtime: {}, app: {isInstalled: false}};
+"""
+
+_VIEWPORT = {"width": 1440, "height": 900}
+
 # 比赛日期核对容差（天）。库里是北京时间，Flashscore 页面按比赛当地时区显示，
 # 跨时区可能相差 1 天。
 DATE_TOLERANCE_DAYS = 1
@@ -297,6 +315,16 @@ def _odds_url(home_slug, home_hash, away_slug, away_hash, market, mid=None) -> s
         market=MARKET_PATH[market],
     )
     return f"{url}?mid={mid}" if mid else url
+
+
+def _new_context(browser):
+    """建一个抹掉自动化特征的浏览器上下文（见 STEALTH_JS 处的实测说明）。"""
+    context = browser.new_context(
+        user_agent=UA, locale="en-US", viewport=_VIEWPORT,
+        has_touch=False, is_mobile=False,
+    )
+    context.add_init_script(STEALTH_JS)
+    return context
 
 
 def _wait_odds_table(page, url: str) -> None:
@@ -573,8 +601,8 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
     }
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(user_agent=UA, locale="en-US")
+        browser = p.chromium.launch(headless=headless, args=CHROME_ARGS)
+        context = _new_context(browser)
         page = context.new_page()
 
         def _fresh_page():
