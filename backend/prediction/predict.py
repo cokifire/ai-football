@@ -1309,7 +1309,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         logger.info("贝叶斯修正胜平负: P0(elo+xgb)=%s -> P1(证据后验)=%s", p0, p1)
 
         # 6. 写库
-        _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group, bayes_context)
+        _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group,
+                         bayes_context, intelligence_markdown=intelligence_markdown)
 
         # 近10场原始战绩仅本次返回给前端核对，不落库
         result = {
@@ -1332,12 +1333,16 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             db.close()
 
 
-def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
+def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
+                     intelligence_markdown: str = ""):
     """写入预测结果。
 
     贝叶斯概率（P0/P1/version）不落库：实测 P1 恒等于 P0，而 win_home/win_draw/
     win_away 存的本就是 P1，再存一份只是重复副本。但来源账本、证据更新、风险提示
     属于可审计信息，予以保留，便于事后回溯某次预测当时究竟依据了什么。
+
+    外部情报同样落库：它只在预测当时抓取，请求中途断开后前端靠数据库重建弹窗时
+    仍需展示；重复预测若没抓到情报，保留上一次内容而不是清空。
     """
     llm = llm or {}
 
@@ -1356,6 +1361,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
             llm_ou_line, llm_ou_type, llm_ou_pct,
             bayes_updates, bayes_evidence, bayes_risk,
+            intelligence_markdown,
             created_at, updated_at
         ) VALUES (
             :fid, :hname, :aname, :hlogo, :alogo,
@@ -1367,6 +1373,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             :hcn, :hct, :hcp,
             :oun, :out, :oup,
             :bupdates, :bevidence, :brisk,
+            :imd,
             :now, :now
         )
         ON DUPLICATE KEY UPDATE
@@ -1377,6 +1384,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
             bayes_updates=:bupdates, bayes_evidence=:bevidence, bayes_risk=:brisk,
+            intelligence_markdown=COALESCE(NULLIF(:imd, ''), intelligence_markdown),
             model_group=:mgroup, updated_at=:now
     """), {
         'fid': fixture['id'],
@@ -1397,6 +1405,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None):
         'bevidence': _j((bayes or {}).get('evidence')),
         'brisk': _j({"risks": (bayes or {}).get('risks', []),
                      "market": (bayes or {}).get('market_check')}) if bayes else None,
+        'imd': intelligence_markdown or '',
         'now': datetime.now(),
     })
     db.commit()

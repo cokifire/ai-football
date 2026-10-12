@@ -1,0 +1,13 @@
+feat: 外部比赛情报落库并恢复展示；预测按钮改为「查看预测」
+
+外部情报此前只随 POST /predict 的实时响应返回，从未落库。预测耗时长，
+请求一旦在代理层超时/中断，前端走 recoverPrediction 按库重建弹窗，该分支
+没有 intelligence_markdown，于是弹窗里看不到情报（且不报错，难以察觉）。
+
+- 新增 predictions.intelligence_markdown（迁移 b9e1f4a6c7d8）
+- predict.py::_save_prediction 写入情报；重复预测未抓到时保留上一次内容
+- GET /predictions 补列并在 DTO 顶层返回
+- app/db/schema_compat.py：启动时检查列，缺失则自动补建（生产常不跑迁移）
+- 前端：recoverPrediction 补情报；预测中心详情弹窗新增「外部比赛情报」区块
+- 比赛中心：已预测比赛按钮改为「查看预测」（读库打开结果弹窗），
+  「重新预测」移入预测结果弹窗底部；抽出 savedToResult 供两处复用

@@ -48,6 +48,8 @@ interface PredictionDetail {
     handicap_correct: boolean | null
     score_in_top3: boolean | null
   } | null
+  // 外部比赛情报（预测时抓取并落库）
+  intelligence_markdown?: string | null
 }
 
 interface FilterValues {
@@ -625,6 +627,18 @@ export default function PredictionsPage() {
                       <p className="text-sm whitespace-pre-wrap">{selectedPred.llm.deep_report}</p>
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* 外部比赛情报 */}
+            {selectedPred.intelligence_markdown && (
+              <div>
+                <h4 className="font-semibold mb-2">外部比赛情报</h4>
+                <div className="p-3 rounded-lg bg-gray-50 border border-gray-100">
+                  <p className="text-sm whitespace-pre-wrap leading-relaxed text-gray-700">
+                    {toText(selectedPred.intelligence_markdown)}
+                  </p>
                 </div>
               </div>
             )}

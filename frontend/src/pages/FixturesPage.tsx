@@ -206,6 +206,7 @@ export default function FixturesPage() {
   const [predictingIds, setPredictingIds] = useState<Set<number>>(new Set())
   const [predictMsg, setPredictMsg] = useState<string | null>(null)
   const [predictResult, setPredictResult] = useState<{ fixture: Fixture; result: any } | null>(null)
+  const [viewingPredictId, setViewingPredictId] = useState<number | null>(null)
   const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
   const [oddsFixture, setOddsFixture] = useState<Fixture | null>(null)
   const [oddsData, setOddsData] = useState<OddsData | null>(null)
@@ -251,6 +252,28 @@ export default function FixturesPage() {
     fetchFixtures()
   }
 
+  // GET /predictions 的单条记录 → 预测结果弹窗所需的 result 结构
+  // （请求中断后由数据库重建弹窗、以及「查看预测」都复用它）
+  const savedToResult = (saved: any) => {
+    const xgb = saved.xgb || {}
+    const probabilities = xgb.prob || {}
+    const llm = saved.llm || {}
+    return {
+      win_home: probabilities.home,
+      win_draw: probabilities.draw,
+      win_away: probabilities.away,
+      over25_prob: xgb.over25?.over,
+      top3: xgb.top3,
+      lambda_home: xgb.lambda?.home,
+      lambda_away: xgb.lambda?.away,
+      handicap: xgb.handicap,
+      intelligence_markdown: saved.intelligence_markdown,
+      llm: { ...llm, brief_analysis: llm.brief },
+      bayes: saved.bayes || null,
+      model_group: xgb.model_group,
+    }
+  }
+
   // 预测会调用外部情报和 LLM，可能在浏览器/网关断开后仍继续在后端执行。
   // 请求失败时按 fixture 查询数据库，避免把“已入库但响应丢失”显示成预测失败。
   const recoverPrediction = async (fixture: Fixture): Promise<boolean> => {
@@ -264,25 +287,7 @@ export default function FixturesPage() {
         })
         const saved = (res.data?.data || []).find((item: any) => item?.basic?.fixture_id === fixtureId)
         if (saved) {
-          const xgb = saved.xgb || {}
-          const probabilities = xgb.prob || {}
-          const llm = saved.llm || {}
-          setPredictResult({
-            fixture,
-            result: {
-              win_home: probabilities.home,
-              win_draw: probabilities.draw,
-              win_away: probabilities.away,
-              over25_prob: xgb.over25?.over,
-              top3: xgb.top3,
-              lambda_home: xgb.lambda?.home,
-              lambda_away: xgb.lambda?.away,
-              handicap: xgb.handicap,
-              llm: { ...llm, brief_analysis: llm.brief },
-              bayes: saved.bayes || null,
-              model_group: xgb.model_group,
-            },
-          })
+          setPredictResult({ fixture, result: savedToResult(saved) })
           setFixtures((prev) => prev.map((item) => (
             item.id === fixtureId ? { ...item, predicted: true } : item
           )))
@@ -294,6 +299,27 @@ export default function FixturesPage() {
       await new Promise((resolve) => window.setTimeout(resolve, 3000))
     }
     return false
+  }
+
+  // 已预测过的比赛：直接读库打开预测结果弹窗（重新预测改为弹窗内触发）
+  const openSavedPrediction = (fixture: Fixture) => {
+    setPredictMsg(null)
+    setViewingPredictId(fixture.id)
+    apiClient
+      .get('/predictions', {
+        params: { fixture_id: fixture.id, page: 1, page_size: 1 },
+        timeout: 15000,
+      })
+      .then((res) => {
+        const saved = (res.data?.data || []).find((item: any) => item?.basic?.fixture_id === fixture.id)
+        if (!saved) {
+          setPredictMsg('暂无该场次的预测记录，请先执行预测')
+          return
+        }
+        setPredictResult({ fixture, result: savedToResult(saved) })
+      })
+      .catch(() => setPredictMsg('预测记录加载失败，请稍后重试'))
+      .finally(() => setViewingPredictId(null))
   }
 
   const viewDetail = (fixture: Fixture) => {
@@ -553,13 +579,23 @@ export default function FixturesPage() {
                         >
                           {fetchingOddsIds.has(f.id) ? '获取中...' : '赔率'}
                         </button>
-                        <button
-                          className="btn btn-primary btn-xs"
-                          disabled={FINISHED_STATUSES.has(f.status_short) || predictingIds.has(f.id)}
-                          onClick={() => handlePredict(f)}
-                        >
-                          {predictingIds.has(f.id) ? '预测中...' : f.predicted ? '重新预测' : '预测'}
-                        </button>
+                        {f.predicted ? (
+                          <button
+                            className="btn btn-primary btn-xs"
+                            disabled={viewingPredictId === f.id}
+                            onClick={() => openSavedPrediction(f)}
+                          >
+                            {viewingPredictId === f.id ? '查看中...' : '查看预测'}
+                          </button>
+                        ) : (
+                          <button
+                            className="btn btn-primary btn-xs"
+                            disabled={FINISHED_STATUSES.has(f.status_short) || predictingIds.has(f.id)}
+                            onClick={() => handlePredict(f)}
+                          >
+                            {predictingIds.has(f.id) ? '预测中...' : '预测'}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -584,9 +620,11 @@ export default function FixturesPage() {
                 onViewDetail={viewDetail}
                 onFetchOdds={handleFetchOdds}
                 onPredict={handlePredict}
+                onViewPrediction={openSavedPrediction}
                 onOpenTeam={openTeamDetail}
                 fetchingOdds={fetchingOddsIds.has(f.id)}
                 predicting={predictingIds.has(f.id)}
+                viewing={viewingPredictId === f.id}
                 finished={FINISHED_STATUSES.has(f.status_short)}
               />
             ))}
@@ -922,7 +960,22 @@ export default function FixturesPage() {
         size="xl"
       >
         {predictResult && (
-          <PredictionResult result={predictResult.result} fixture={predictResult.fixture} />
+          <div className="space-y-4">
+            <PredictionResult result={predictResult.result} fixture={predictResult.fixture} />
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-gray-100">
+              <button className="btn btn-secondary btn-sm" onClick={() => setPredictResult(null)}>
+                关闭
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={predictingIds.has(predictResult.fixture.id)
+                  || FINISHED_STATUSES.has(predictResult.fixture.status_short)}
+                onClick={() => handlePredict(predictResult.fixture)}
+              >
+                {predictingIds.has(predictResult.fixture.id) ? '预测中...' : '重新预测'}
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
 
@@ -1212,18 +1265,22 @@ function FixtureCard({
   onViewDetail,
   onFetchOdds,
   onPredict,
+  onViewPrediction,
   onOpenTeam,
   fetchingOdds,
   predicting,
+  viewing,
   finished,
 }: {
   fixture: Fixture
   onViewDetail: (f: Fixture) => void
   onFetchOdds: (f: Fixture) => void
   onPredict: (f: Fixture) => void
+  onViewPrediction: (f: Fixture) => void
   onOpenTeam: (teamId: number) => void
   fetchingOdds: boolean
   predicting: boolean
+  viewing: boolean
   finished: boolean
 }) {
   const f = fixture
@@ -1274,13 +1331,23 @@ function FixtureCard({
         >
           {fetchingOdds ? '获取中...' : '赔率'}
         </button>
-        <button
-          className="btn btn-primary btn-xs flex-1"
-          disabled={finished || predicting}
-          onClick={() => onPredict(f)}
-        >
-          {predicting ? '预测中...' : f.predicted ? '重新预测' : '预测'}
-        </button>
+        {f.predicted ? (
+          <button
+            className="btn btn-primary btn-xs flex-1"
+            disabled={viewing}
+            onClick={() => onViewPrediction(f)}
+          >
+            {viewing ? '查看中...' : '查看预测'}
+          </button>
+        ) : (
+          <button
+            className="btn btn-primary btn-xs flex-1"
+            disabled={finished || predicting}
+            onClick={() => onPredict(f)}
+          >
+            {predicting ? '预测中...' : '预测'}
+          </button>
+        )}
       </div>
     </div>
   )

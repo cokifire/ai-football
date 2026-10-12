@@ -14,6 +14,7 @@ from app.api.scheduler import router as scheduler_router
 from app.api.predictions import router as predictions_router
 from app.api.logs import router as logs_router
 from app.services.scheduler import init_scheduler, shutdown_scheduler
+from app.db.schema_compat import ensure_prediction_intelligence_column
 
 # 初始化日志
 setup_logger()
@@ -25,6 +26,9 @@ async def lifespan(app: FastAPI):
     # 注意: 禁用了 alembic 自动迁移，因为 autogenerate 会删除没有 SQLAlchemy 模型的表
     # （predictions、scheduler_tasks 使用 raw SQL 管理）
     # 新增表请手动建表或手动编写迁移
+
+    # predictions 表由 raw SQL 维护，补上代码依赖但可能尚未迁移的列
+    ensure_prediction_intelligence_column()
 
     logger.info("正在注册定时任务...")
     init_scheduler()

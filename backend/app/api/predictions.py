@@ -457,6 +457,7 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
                    p.llm_ou_line, p.llm_ou_type, p.llm_ou_pct,
                    p.bayes_updates, p.bayes_evidence, p.bayes_risk,
+                   p.intelligence_markdown,
                    p.home_logo, p.away_logo,
                    f.home_id, f.away_id,
                    COALESCE(ht.name_zh, p.home_name) AS home_name,
@@ -545,6 +546,8 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                     "risk": d.get("bayes_risk") or {},
                 } if (d.get("bayes_updates") or d.get("bayes_evidence")
                       or d.get("bayes_risk")) else None,
+                # 外部比赛情报：预测时抓取并落库，供请求中断后重建的弹窗与详情弹窗展示
+                "intelligence_markdown": d.get("intelligence_markdown") or None,
                 "result": {
                     "score": f"{actual_h}-{actual_a}" if (has_result and actual_a is not None) else None,
                     "win_correct": win_correct,
