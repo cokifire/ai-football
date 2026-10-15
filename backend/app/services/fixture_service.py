@@ -1,7 +1,7 @@
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, or_, exists
 from loguru import logger
 import httpx
 import time
@@ -162,7 +162,9 @@ def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
         response = _api_get_http("fixtures", params)
         remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
         logger.debug(f"API[{response.status_code}] fixtures params={params}  remaining={remaining}")
-        if response.status_code == 429 or remaining == "0":
+        # remaining=0 仍可能是本次请求成功消耗掉最后一个额度；只有
+        # 429 或响应体明确返回额度/限流错误时才应放弃本次数据。
+        if response.status_code == 429:
             raise ApiFootballQuotaExceeded()
         response.raise_for_status()
         data = response.json()
@@ -283,9 +285,10 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
             db.commit()
             print(f"    {date_str}: {date_synced} 场 ✓")
 
-        # 间隔 2.5 秒（30次/分钟限制）
+        # 统一 API 客户端还会按滚动窗口限流；这里保留较短间隔，避免
+        # 日期同步自身连续发起请求时形成突发。
         if i < len(sorted_dates) - 1:
-            time.sleep(2.5)
+            time.sleep(0.5)
 
     logger.info(f"逐日查询完成: 共 {total_synced} 场")
     return total_synced
@@ -347,10 +350,10 @@ def sync_fixtures(db: Session) -> None:
 BATCH_SIZE = 1
 MAX_WORKERS = 1
 RETRY_MAX = 3
-# API-Football 免费/低配套餐常见 per-minute 限制为 30 次。
-# 子数据一场最多 4 个端点，原先 0.5s 间隔会形成约 120 次/分钟的突发。
-SUB_REQUEST_INTERVAL = 3.0
-SUB_BATCH_INTERVAL = 5.0
+# API 客户端统一按配置的滚动窗口限流；这里不再用并发数猜测套餐上限。
+# API 客户端负责全局 10 次/分钟限流；该间隔只用于降低单个比赛的突发。
+SUB_REQUEST_INTERVAL = 0.5
+SUB_BATCH_INTERVAL = 0.5
 
 # 暂停抓取这两类子数据，避免继续消耗 API-Football 配额。
 # 已写入数据库的历史数据仍可通过比赛详情接口读取。
@@ -460,8 +463,12 @@ def sync_completed_sub_data(db: Session) -> None:
     fixtures = (
         db.query(Fixture)
         .filter(
-            Fixture.sub_data_synced == False,
             Fixture.status_short.in_(finished_statuses),
+            or_(
+                Fixture.sub_data_synced == False,
+                ~exists().where(FixtureLineup.fixture_id == Fixture.id),
+                ~exists().where(FixtureStatistic.fixture_id == Fixture.id),
+            ),
         )
         .limit(200)
         .all()

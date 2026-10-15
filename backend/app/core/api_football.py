@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import time
+import asyncio
+from collections import deque
 from email.utils import parsedate_to_datetime
+from threading import Lock
 import httpx
 from loguru import logger
 
@@ -25,6 +28,33 @@ TRANSPORT_ERROR_BASE_DELAY = 1.5    # 退避基数(秒)
 SLOW_LOG_THRESHOLD = 5.0            # 慢请求日志阈值(秒)
 RATE_LIMIT_RETRIES = 3              # 非日额度的 429 重试次数
 MAX_RATE_LIMIT_WAIT = 60.0          # 单次限流等待上限，避免任务无限阻塞
+API_RATE_LIMIT = max(settings.api_football_rate_limit, 1)
+API_RATE_WINDOW = max(settings.api_football_rate_window, 1.0)
+
+
+class _ApiRateLimiter:
+    """进程内共享限流器，避免多个同步/异步任务共同冲垮同一个 API key。"""
+
+    def __init__(self):
+        self._timestamps = deque()
+        self._lock = Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= API_RATE_WINDOW:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < API_RATE_LIMIT:
+                    self._timestamps.append(now)
+                    return
+                wait = API_RATE_WINDOW - (now - self._timestamps[0]) + 0.1
+            logger.info(f"[API-Football] 请求达到 {API_RATE_LIMIT}/{int(API_RATE_WINDOW)} 限制，等待 {wait:.1f}s")
+            time.sleep(max(wait, 0.1))
+
+
+_api_rate_limiter = _ApiRateLimiter()
+_sync_http_client = httpx.Client()
 
 
 class ApiFootballError(Exception):
@@ -119,7 +149,9 @@ def api_football_get_sync(
     for attempt in range(max(TRANSPORT_ERROR_RETRIES, RATE_LIMIT_RETRIES)):
         t0 = time.monotonic()
         try:
-            r = httpx.get(
+            # 每次真正发出的请求（包括重试）都占用一个额度。
+            _api_rate_limiter.acquire()
+            r = _sync_http_client.get(
                 url,
                 headers={"x-apisports-key": key},
                 params=params,
@@ -195,19 +227,43 @@ async def api_football_get_async(
     ApiFootballQuotaExceeded。
     """
     params = params or {}
-    t0 = time.monotonic()
-    r = await client.get(endpoint, params=params)
-    elapsed = time.monotonic() - t0
-    if elapsed >= SLOW_LOG_THRESHOLD:
-        logger.warning(f"[API-Football][async] 慢请求 {endpoint} {elapsed:.1f}s -> {r.status_code}")
+    for attempt in range(RATE_LIMIT_RETRIES):
+        await asyncio.to_thread(_api_rate_limiter.acquire)
+        t0 = time.monotonic()
+        try:
+            r = await client.get(endpoint, params=params)
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt >= RATE_LIMIT_RETRIES - 1:
+                raise
+            await asyncio.sleep(TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt))
+            continue
 
-    body = r.text or ""
-    if _is_daily_quota_exhausted(r.status_code, body):
-        raise ApiFootballQuotaExceeded(f"额度耗尽: {endpoint}")
+        elapsed = time.monotonic() - t0
+        if elapsed >= SLOW_LOG_THRESHOLD:
+            logger.warning(f"[API-Football][async] 慢请求 {endpoint} {elapsed:.1f}s -> {r.status_code}")
 
-    logger.debug(f"[API-Football][async] {endpoint} -> {r.status_code} ({elapsed:.2f}s)")
-    r.raise_for_status()
-    return r.json()
+        body = r.text or ""
+        if _is_daily_quota_exhausted(r.status_code, body):
+            raise ApiFootballQuotaExceeded(f"额度耗尽: {endpoint}")
+        if r.status_code == 429:
+            if attempt >= RATE_LIMIT_RETRIES - 1:
+                raise ApiFootballRateLimited(f"短时限流: {endpoint}")
+            await asyncio.sleep(_rate_limit_wait_seconds(r, attempt))
+            continue
+
+        logger.debug(f"[API-Football][async] {endpoint} -> {r.status_code} ({elapsed:.2f}s)")
+        r.raise_for_status()
+        data = r.json()
+        errors = data.get("errors") or {}
+        error_text = str(errors).lower()
+        if any(term in error_text for term in ("rate limit", "ratelimit", "too many requests")):
+            if attempt >= RATE_LIMIT_RETRIES - 1:
+                raise ApiFootballRateLimited(f"响应体限流: {endpoint}")
+            await asyncio.sleep(TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt))
+            continue
+        return data
+
+    raise ApiFootballError(f"API-Football 异步请求失败: {endpoint}")
 
 
 def get_async_client() -> httpx.AsyncClient:

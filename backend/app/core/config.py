@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # API-Football
     api_football_key: str = ""
     api_football_base_url: str = ""
+    # API-Football key 的滚动窗口限额；免费套餐通常为 10 次/分钟。
+    api_football_rate_limit: int = 10
+    api_football_rate_window: float = 60.0
 
     # 天气数据（OpenWeatherMap）
     openweathermap_api_key: str = ""
