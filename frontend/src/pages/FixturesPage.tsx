@@ -730,11 +730,11 @@ export default function FixturesPage() {
               const stats = fixtureDetail.statistics || []
               const hasXg = stats.some((s) => s.stat_type === 'expected_goals' && s.stat_value)
               const hasGp = stats.some((s) => s.stat_type === 'goals_prevented' && s.stat_value)
-              if (hasXg && hasGp) return null
+              // Flashscore 并非每场都提供 Goals prevented；没有该数据时不提示抓取 xG。
+              if (!hasGp || hasXg) return null
               const disabled = fetchingXgId !== null
               const missing = []
-              if (!hasXg) missing.push('Expected goals (xG)')
-              if (!hasGp) missing.push('Goals prevented')
+              missing.push('Expected goals (xG)')
               return (
                 <div className="flex items-center gap-3 rounded-lg border border-dashed border-primary-300 bg-primary-50 px-3 py-2">
                   <span className="text-sm text-gray-600">
