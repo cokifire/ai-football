@@ -62,11 +62,13 @@ Djurgarden(主) vs Mjallby，赔率完全错配。
 """
 import argparse
 import json
+import os
 import re
 import sys
 import time
 from datetime import date as date_cls, datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from loguru import logger
 from playwright.sync_api import sync_playwright
@@ -96,6 +98,20 @@ MATCH_URL_PREFIX = "https://www.flashscore.com/match/"
 
 # 赔率表渲染的最长等待（毫秒）
 ODDS_WAIT_MS = 25000
+
+# Flashscore 页面加载赔率时调用的后端接口。接口可能正常返回 HTTP 200，
+# 但 getPrematchOddsBettingTypeMenu 为 null；这表示当前事件/地区没有可用的
+# 赛前盘口，不能再把它误判成 DOM 选择器或异步加载失败。
+ODDS_API_PATH = "/odds/pq_graphql"
+
+# 当前运行环境的出口 IP 被 Flashscore 识别为 ID/IDKR，而应用运行时区是
+# 新加坡。赔率菜单接口会按 geo 参数筛选供应商；允许通过环境变量覆盖，默认
+# 使用应用部署地 SG。这里只改菜单请求（pobtm），后续具体赔率请求不能追加
+# geo 参数，否则 Flashscore 会返回 400。
+ODDS_GEO_CODE = os.getenv("FLASHSCORE_ODDS_GEO_CODE", "SG").strip().upper()
+ODDS_GEO_SUBDIVISION = os.getenv(
+    "FLASHSCORE_ODDS_GEO_SUBDIVISION", ODDS_GEO_CODE
+).strip().upper()
 
 # 页面被甩走 / 赔率区没加载出来时，换新标签页重试的次数（超过则放弃，宁可无赔率）
 GOTO_RETRY = 4
@@ -255,8 +271,9 @@ def _to_float(raw: str):
 
 # ────────────────────────────── 浏览器交互 ──────────────────────────────
 
-# 赔率表里已渲染出至少一行（用作等待条件）
-_HAS_ROWS_JS = "() => !!document.querySelector('div.ui-table__row')"
+# 赔率表里已渲染出至少一行（用作等待条件）。Flashscore 已从旧的
+# ui-table__row 切换为 wclOddsRow，两个选择器都保留以兼容不同页面版本。
+_HAS_ROWS_JS = "() => !!document.querySelector('div.ui-table__row, div.wclOddsRow')"
 
 # 赔率区容器是否已渲染。用于区分「该场确实没有赔率」（容器在但没数据行）
 # 与「赔率区压根没加载出来」（连容器都没有，说明被反爬拦了/异步请求失败，必须重试）。
@@ -268,15 +285,23 @@ _HAS_ODDS_TAB_JS = (
 
 # 抽取赔率表每一行：庄家名 / 盘口线 / 各位赔率（含是否被撤单）
 _ROWS_JS = """
-() => Array.from(document.querySelectorAll('div.ui-table__row')).map(r => {
-    const img = r.querySelector('img[alt]');
-    const lineEl = r.querySelector('div[class*="wcl-oddsCell"]');
+() => Array.from(document.querySelectorAll('div.ui-table__row, div.wclOddsRow')).map(r => {
+    const img = r.querySelector('img[alt]')
+        || (r.parentElement && r.parentElement.querySelector('img[alt]'));
+    const lineEl = r.querySelector(
+        'div[class*="wcl-oddsCell"], [data-testid*="oddsCellLine"], '
+        + '[class*="oddsCell__line"], [class*="oddsCellLine"]'
+    );
+    const oddsEls = r.querySelectorAll(
+        'a.oddsCell__odd, [data-testid="wcl-oddsCell"]'
+    );
     return {
         bookmaker: img ? (img.getAttribute('alt') || '').trim() : '',
         line: lineEl ? (lineEl.innerText || '').trim() : '',
-        odds: Array.from(r.querySelectorAll('a.oddsCell__odd')).map(a => ({
+        odds: Array.from(oddsEls).map(a => ({
             text: (a.innerText || '').trim(),
-            removed: !!a.querySelector('.oddsCell__lineThrough'),
+            removed: a.getAttribute('data-removed') === 'true'
+                || !!a.querySelector('.oddsCell__lineThrough'),
         })),
     };
 })
@@ -627,12 +652,81 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
         "resolved_via": None, "mid": None, "url": None,
         "page_date": None, "page_home": None, "page_away": None,
         "raw": {}, "odds_data": None, "error": None,
+        "odds_api": None,
     }
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless, args=CHROME_ARGS)
         context = _new_context(browser)
-        page = context.new_page()
+
+        # 每次打开赔率页时记录 Flashscore 赔率后端的实际响应。页面 DOM 没有
+        # 赔率行时，仅看 DOM 无法区分“无盘口”和“被风控/异步请求失败”。
+        current_odds_api = {}
+
+        def _route_odds_menu(route):
+            """为赔率菜单请求指定部署地区，避免出口 IP 的错误地理识别。
+
+            Flashscore 的菜单请求是 ``_hash=pobtm``；随后按 bookmaker 请求
+            具体赔率时，URL 不带 geo 参数，必须原样放行，否则会得到 400。
+            """
+            request_url = route.request.url
+            if (
+                ODDS_API_PATH in request_url
+                and "_hash=pobtm" in request_url
+                and ODDS_GEO_CODE
+            ):
+                parts = urlsplit(request_url)
+                query = dict(parse_qsl(parts.query, keep_blank_values=True))
+                query["geoIpCode"] = ODDS_GEO_CODE
+                query["geoIpSubdivisionCode"] = ODDS_GEO_SUBDIVISION
+                request_url = urlunsplit((
+                    parts.scheme, parts.netloc, parts.path,
+                    urlencode(query), parts.fragment,
+                ))
+            route.continue_(url=request_url)
+
+        def _track_odds_response(response):
+            if ODDS_API_PATH not in response.url:
+                return
+            record = {
+                "status": response.status,
+                "url": response.url,
+                "event_id": None,
+                "menu_response": False,
+                "empty_menu": False,
+            }
+            m = re.search(r"[?&]eventId=([^&]+)", response.url)
+            if m:
+                record["event_id"] = m.group(1)
+            try:
+                payload = response.json()
+                data = (payload or {}).get("data") or {}
+                if "getPrematchOddsBettingTypeMenu" in data:
+                    record["menu_response"] = True
+                    record["empty_menu"] = (
+                        data.get("getPrematchOddsBettingTypeMenu") is None
+                    )
+            except Exception:
+                # 响应不是 JSON 时仍保留 HTTP 状态和 URL，便于诊断。
+                try:
+                    body = response.text().replace(" ", "")
+                    if "getPrematchOddsBettingTypeMenu" in body:
+                        record["menu_response"] = True
+                        record["empty_menu"] = (
+                            '"getPrematchOddsBettingTypeMenu":null' in body
+                        )
+                except Exception:
+                    pass
+            current_odds_api.clear()
+            current_odds_api.update(record)
+
+        def _new_tracked_page():
+            new_page = context.new_page()
+            new_page.on("response", _track_odds_response)
+            return new_page
+
+        page = _new_tracked_page()
+        context.route("**/odds/pq_graphql**", _route_odds_menu)
 
         def _fresh_page():
             """关掉被 Flashscore 甩走的标签页，在同一 context 里重开一个。"""
@@ -641,7 +735,14 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
                 page.close()
             except Exception:
                 pass
-            page = context.new_page()
+            page = _new_tracked_page()
+
+        def _reset_odds_api():
+            current_odds_api.clear()
+
+        def _save_odds_api_diagnostic():
+            if current_odds_api:
+                result["odds_api"] = dict(current_odds_api)
 
         def goto_odds(url: str) -> bool:
             """打开赔率页并确保赔率区真的加载出来了。
@@ -657,9 +758,23 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
             """
             no_odds_seen = 0
             for attempt in range(1, GOTO_RETRY + 1):
+                _reset_odds_api()
                 state = _goto_odds(page, url)
                 if state == "rows":
                     return True
+                _save_odds_api_diagnostic()
+                if (
+                    state == "no-rows"
+                    and current_odds_api.get("menu_response")
+                    and current_odds_api.get("empty_menu")
+                ):
+                    logger.info(
+                        "Flashscore 赔率接口未返回赛前盘口（可能是地区/供应商限制）: "
+                        f"status={current_odds_api.get('status')} "
+                        f"event_id={current_odds_api.get('event_id')} "
+                        f"url={current_odds_api.get('url')}"
+                    )
+                    return False
                 if state == "no-rows" and _has_odds_tab(page):
                     no_odds_seen += 1
                     if no_odds_seen >= NO_ODDS_CONFIRM:
@@ -705,6 +820,21 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
             result["page_date"] = info["date"].isoformat() if info["date"] else None
             result["page_home"] = info["home"]
             result["page_away"] = info["away"]
+
+            # 赔率后端明确返回 null 时，说明当前事件/地区没有赛前盘口。
+            # 1X2、亚盘和大小球共用同一个赔率菜单，继续逐个等待只会重复
+            # 同样的请求并浪费 2 * ODDS_WAIT_MS。
+            if (result.get("odds_api") or {}).get("empty_menu"):
+                result["raw"] = {market: [] for market in markets}
+                result["error"] = (
+                    "Flashscore 赔率接口未返回赛前盘口"
+                    "（可能是地区或供应商限制）"
+                )
+                logger.warning(
+                    "Flashscore 无可用赛前盘口，跳过其他市场: "
+                    f"event_id={(result.get('odds_api') or {}).get('event_id')}"
+                )
+                return result
 
             for market in markets:
                 if market != "1x2":
