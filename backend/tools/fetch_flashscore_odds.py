@@ -29,9 +29,14 @@ Djurgarden(主) vs Mjallby，赔率完全错配。
      按"日期 ±1 天 + 双方队名"定位那一行 -> 取出该行的 `?mid=`。
   3. 用 `?mid=` 重新打开 odds 页并再次核对日期，仍不一致则抛错（宁可无赔率，
      也不能喂给 LLM 错场次的赔率）。
-  4. 赔率表渲染完成前 Flashscore 偶发把浏览器甩到站点默认页（如
-     https://www.flashscore.com/snooker/）。此时落地 URL 不再是 /match/ 路径，
-     换新标签页重试，超过 GOTO_RETRY 次放弃（见 MATCH_URL_PREFIX）。
+  4. 反爬有两种表现，都不能当成"该场无赔率"，必须换新标签页重试，超过
+     GOTO_RETRY 次放弃（见 MATCH_URL_PREFIX）：
+       a) 整页被甩到站点默认页（如 https://www.flashscore.com/snooker/），
+          落地 URL 不再是 /match/ 路径；
+       b) 页面外壳正常渲染（标题/日期/两队名都在），但赔率区连容器都没出来，
+          表现为干等 ODDS_WAIT_MS 后一行赔率都读不到。
+     真正的"该场没有赔率"是赔率区容器已渲染、只是没有数据行，此时正常返回空结果。
+     用 `_has_odds_tab()` 区分 (b) 与真正的无赔率。
 
 输出结构与 API-Football 的 `odds_data` 同构，可直接喂给
 `prediction.predict._odds_to_text` / `_save_odds`：
@@ -92,8 +97,15 @@ MATCH_URL_PREFIX = "https://www.flashscore.com/match/"
 # 赔率表渲染的最长等待（毫秒）
 ODDS_WAIT_MS = 25000
 
-# 被甩到非比赛页时，换新标签页重试的次数（超过则放弃，宁可无赔率）
-GOTO_RETRY = 3
+# 页面被甩走 / 赔率区没加载出来时，换新标签页重试的次数（超过则放弃，宁可无赔率）
+GOTO_RETRY = 4
+
+# 两次重试之间的退避间隔（秒），避免连续请求被判定为刷屏
+RETRY_BACKOFF_SEC = 3
+
+# 判定"该场确实没有赔率"所需的连续确认次数。只看一次不够可靠——页面被限速时也可能
+# 渲染出赔率区外壳却没有数据行，所以要求再看一轮仍然没有行才敢下结论。
+NO_ODDS_CONFIRM = 2
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -246,6 +258,14 @@ def _to_float(raw: str):
 # 赔率表里已渲染出至少一行（用作等待条件）
 _HAS_ROWS_JS = "() => !!document.querySelector('div.ui-table__row')"
 
+# 赔率区容器是否已渲染。用于区分「该场确实没有赔率」（容器在但没数据行）
+# 与「赔率区压根没加载出来」（连容器都没有，说明被反爬拦了/异步请求失败，必须重试）。
+_HAS_ODDS_TAB_JS = (
+    "() => !!document.querySelector("
+    "'.oddsTab__tableWrapper, .tabContent__odds-comparison, "
+    "[class*=\"oddsTab\"], [class*=\"odds-comparison\"]')"
+)
+
 # 抽取赔率表每一行：庄家名 / 盘口线 / 各位赔率（含是否被撤单）
 _ROWS_JS = """
 () => Array.from(document.querySelectorAll('div.ui-table__row')).map(r => {
@@ -327,34 +347,43 @@ def _new_context(browser):
     return context
 
 
-def _wait_odds_table(page, url: str) -> None:
-    """等赔率表渲染完成；页面被 Flashscore 甩离比赛页时立即返回，不再空等。"""
+def _wait_odds_table(page, url: str) -> str:
+    """等赔率表渲染完成。
+
+    返回状态:
+      'rows'     已渲染出赔率行
+      'no-rows'  等待超时仍无赔率行（可能该场确实没有赔率，也可能赔率区没加载出来）
+      'kicked'   Flashscore 把浏览器甩到了比赛页以外的地址（反爬的一种表现）
+    """
     deadline = time.monotonic() + ODDS_WAIT_MS / 1000
     while time.monotonic() < deadline:
         if not page.url.startswith(MATCH_URL_PREFIX):
             logger.debug(f"Flashscore 已离开比赛页（被重定向）: {url} -> {page.url}")
-            return
+            return "kicked"
         try:
             if page.evaluate(_HAS_ROWS_JS):
-                break
+                page.wait_for_timeout(2000)  # 等赔率动画/占位值替换完成
+                return "rows"
         except Exception:
             pass  # 页面正在导航/替换文档，下一轮再看
         page.wait_for_timeout(500)
-    else:
-        logger.debug(f"Flashscore 赔率表未出现（可能该场无赔率）: {url}")
-    page.wait_for_timeout(2000)  # 等赔率动画/占位值替换完成
+    logger.debug(f"Flashscore 赔率表未出现: {url}")
+    return "no-rows"
 
 
-def _goto_odds(page, url: str) -> bool:
-    """打开赔率页并等待表格异步渲染完成。
+def _has_odds_tab(page) -> bool:
+    """赔率区容器是否已渲染（见 _HAS_ODDS_TAB_JS 说明）。"""
+    try:
+        return bool(page.evaluate(_HAS_ODDS_TAB_JS))
+    except Exception:
+        return False
 
-    返回 True 表示页面仍停留在比赛页（赔率可能为空）；False 表示 Flashscore 把浏览器
-    重定向到了比赛页以外的位置（站点默认页 / 某运动栏目），此时应换新标签页重试。
-    """
+
+def _goto_odds(page, url: str) -> str:
+    """打开赔率页并等待异步渲染，返回 'rows' / 'no-rows' / 'kicked'。"""
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     _accept_consent(page)
-    _wait_odds_table(page, url)
-    return page.url.startswith(MATCH_URL_PREFIX)
+    return _wait_odds_table(page, url)
 
 
 def _read_page_info(page) -> dict:
@@ -614,19 +643,41 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
                 pass
             page = context.new_page()
 
-        def goto_odds(url: str) -> None:
-            """打开赔率页；被 Flashscore 重定向到非比赛页时换新标签页重试。"""
+        def goto_odds(url: str) -> bool:
+            """打开赔率页并确保赔率区真的加载出来了。
+
+            返回 True  拿到了赔率行，或页面已正常渲染但该场确实没有赔率；
+            返回 False 该场确实没有赔率（赔率区容器在、只是没有数据行）。
+
+            下面两种情况都不是"该场无赔率"，必须换新标签页重试：
+              - 被甩到比赛页以外（站点默认页 / 某运动栏目）
+              - 页面外壳渲染得挺好（标题、比分条、两队名都在），但赔率区连容器都没出来
+                —— 这是 Flashscore 拦掉了赔率的异步请求，实测会表现为整页空等
+                   ODDS_WAIT_MS 后一行赔率都读不到。
+            """
+            no_odds_seen = 0
             for attempt in range(1, GOTO_RETRY + 1):
-                if _goto_odds(page, url):
-                    return
+                state = _goto_odds(page, url)
+                if state == "rows":
+                    return True
+                if state == "no-rows" and _has_odds_tab(page):
+                    no_odds_seen += 1
+                    if no_odds_seen >= NO_ODDS_CONFIRM:
+                        logger.info(f"Flashscore 该场确实没有赔率（赔率区为空）: {url}")
+                        return False
+                    reason = "赔率区为空，再复核一次"
+                else:
+                    no_odds_seen = 0
+                    reason = "被重定向到非比赛页" if state == "kicked" else "赔率区未加载"
                 logger.warning(
-                    f"Flashscore 被重定向到非比赛页 {page.url}，"
+                    f"Flashscore {reason}（{page.url}），"
                     f"第 {attempt}/{GOTO_RETRY} 次重试: {url}"
                 )
                 if attempt < GOTO_RETRY:
                     _fresh_page()
+                    time.sleep(RETRY_BACKOFF_SEC)
             raise RuntimeError(
-                f"Flashscore 连续 {GOTO_RETRY} 次从 {url} 重定向到非比赛页 {page.url}"
+                f"Flashscore 连续 {GOTO_RETRY} 次没能加载 {url} 的赔率区"
             )
 
         try:
