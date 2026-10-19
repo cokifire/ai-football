@@ -30,13 +30,24 @@ RATE_LIMIT_RETRIES = 3              # 非日额度的 429 重试次数
 MAX_RATE_LIMIT_WAIT = 60.0          # 单次限流等待上限，避免任务无限阻塞
 API_RATE_LIMIT = max(settings.api_football_rate_limit, 1)
 API_RATE_WINDOW = max(settings.api_football_rate_window, 1.0)
+# 均匀节流间隔：10 次/分钟 -> 6s/次。用于本地节流与无 Retry-After 时的 429 退避。
+MIN_REQUEST_INTERVAL = API_RATE_WINDOW / API_RATE_LIMIT
+# 429 无 Retry-After 时的退避上限（保证单次等待落在 6~10s 区间内）。
+RATE_LIMIT_MAX_BACKOFF = 10.0
 
 
 class _ApiRateLimiter:
-    """进程内共享限流器，避免多个同步/异步任务共同冲垮同一个 API key。"""
+    """进程内共享限流器，避免多个同步/异步任务共同冲垮同一个 API key。
+
+    采用「均匀节流」而非「攒满窗口再干等」: 相邻请求至少间隔
+    ``API_RATE_WINDOW / API_RATE_LIMIT`` 秒(默认 6s), 使请求平摊在整个窗口内,
+    单次等待时长因此落在 6~10s 而不是接近整个窗口的 48s+。
+    滑动窗口仍作为兜底, 防止外部并发调用一次性打满额度。
+    """
 
     def __init__(self):
-        self._timestamps = deque()
+        self._timestamps: deque[float] = deque()
+        self._next_slot = 0.0  # monotonic 时间戳: 下一个允许发出请求的时刻
         self._lock = Lock()
 
     def acquire(self) -> None:
@@ -45,12 +56,28 @@ class _ApiRateLimiter:
                 now = time.monotonic()
                 while self._timestamps and now - self._timestamps[0] >= API_RATE_WINDOW:
                     self._timestamps.popleft()
-                if len(self._timestamps) < API_RATE_LIMIT:
+
+                wait = max(self._next_slot - now, 0.0)
+                if wait <= 0.0 and len(self._timestamps) >= API_RATE_LIMIT:
+                    # 兜底: 窗口被外部调用打满, 等到最早一次请求滑出窗口
+                    wait = max(API_RATE_WINDOW - (now - self._timestamps[0]) + 0.1, 0.1)
+
+                if wait <= 0.0:
                     self._timestamps.append(now)
+                    self._next_slot = now + MIN_REQUEST_INTERVAL
                     return
-                wait = API_RATE_WINDOW - (now - self._timestamps[0]) + 0.1
-            logger.info(f"[API-Football] 请求达到 {API_RATE_LIMIT}/{int(API_RATE_WINDOW)} 限制，等待 {wait:.1f}s")
-            time.sleep(max(wait, 0.1))
+
+                # 提前占位, 避免并发调用者醒来后挤占同一时间点
+                slot = now + wait
+                self._timestamps.append(slot)
+                self._next_slot = slot + MIN_REQUEST_INTERVAL
+
+            logger.info(
+                f"[API-Football] 达到 {API_RATE_LIMIT}/{int(API_RATE_WINDOW)} 限流, "
+                f"节流等待 {wait:.1f}s"
+            )
+            time.sleep(wait)
+            return
 
 
 _api_rate_limiter = _ApiRateLimiter()
@@ -92,9 +119,13 @@ def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
     return any(marker in lowered for marker in daily_markers)
 
 
-def _rate_limit_wait_seconds(response: httpx.Response, attempt: int) -> float:
-    """读取 Retry-After；缺失或无效时使用指数退避。"""
-    retry_after = (response.headers.get("retry-after") or "").strip()
+def _rate_limit_wait_seconds(response: httpx.Response | None = None, attempt: int = 0) -> float:
+    """读取 Retry-After；缺失或无效时按均匀节流间隔退避(6s/10s/10s)。
+
+    API-Football 的限流以分钟窗口计, 因此退避基数取 ``窗口/额度``(默认 6s),
+    而不是传输层故障用的 1.5s, 避免"等 1.5s 再撞一次限流"。
+    """
+    retry_after = ((response.headers.get("retry-after") if response else None) or "").strip()
     if retry_after:
         try:
             return min(max(float(retry_after), 0.0), MAX_RATE_LIMIT_WAIT)
@@ -105,7 +136,7 @@ def _rate_limit_wait_seconds(response: httpx.Response, attempt: int) -> float:
                     return min(max(retry_at.timestamp() - time.time(), 0.0), MAX_RATE_LIMIT_WAIT)
             except (TypeError, ValueError, IndexError, OverflowError):
                 pass
-    return TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt)
+    return min(MIN_REQUEST_INTERVAL * (2 ** attempt), RATE_LIMIT_MAX_BACKOFF)
 
 
 def _limit_diagnostics(response: httpx.Response, body: str) -> str:
@@ -147,10 +178,11 @@ def api_football_get_sync(
     last_err: Exception | None = None
     key_label = "single"
     for attempt in range(max(TRANSPORT_ERROR_RETRIES, RATE_LIMIT_RETRIES)):
-        t0 = time.monotonic()
         try:
             # 每次真正发出的请求（包括重试）都占用一个额度。
             _api_rate_limiter.acquire()
+            # 计时从通过限流器之后开始，避免把节流等待算成"慢请求"。
+            t0 = time.monotonic()
             r = _sync_http_client.get(
                 url,
                 headers={"x-apisports-key": key},
@@ -259,7 +291,7 @@ async def api_football_get_async(
         if any(term in error_text for term in ("rate limit", "ratelimit", "too many requests")):
             if attempt >= RATE_LIMIT_RETRIES - 1:
                 raise ApiFootballRateLimited(f"响应体限流: {endpoint}")
-            await asyncio.sleep(TRANSPORT_ERROR_BASE_DELAY * (2 ** attempt))
+            await asyncio.sleep(_rate_limit_wait_seconds(r, attempt))
             continue
         return data
 
