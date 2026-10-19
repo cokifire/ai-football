@@ -1,9 +1,10 @@
 """
-回填指定月份比赛的 Expected goals (xG) / Goals prevented 数据。
+回填指定月份比赛的 Expected goals (xG) / Goals prevented /
+Passes in final third 数据。
 
 数据来源: Flashscore 单场 stats 页 (复用 tools/fetch_flashscore_match_xg.scrape_match_xg,
 需 Playwright + 可访问 Flashscore)。结果落库到 fixture_statistics
-(stat_type = 'expected_goals' / 'goals_prevented')。
+(stat_type = 'expected_goals' / 'goals_prevented' / 'passes_final_third')。
 
 约束
 ----
@@ -26,6 +27,14 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+
+# app/core/config.py 的 env_file = ".env" 是相对路径，按 CWD 解析；从仓库根直接
+# `python tools/backfill_september_xg.py` 会找不到 backend/.env，悄悄退回
+# localhost:3306 默认值并报 Access denied。这里显式按脚本位置加载，使脚本从任意
+# 目录运行都拿到同一套配置（os.environ 优先级高于 env_file）。
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(BACKEND / ".env")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -64,11 +73,18 @@ def find_month_fixtures(db, year, month):
 
 
 def existing_xg_teams(db, fixture_ids):
+    """返回 xG 与 passes_final_third 都已齐备的 (fixture_id, team_id)。
+
+    只看 expected_goals 会把「已回填过 xG」的比赛判为已完成, 导致后加的
+    passes_final_third 永远补不上; 因此要求两项同时存在才跳过。
+    注意 goals_prevented 仍是尽力而为 (并非每场都展示), 不参与判定。
+    """
     if not fixture_ids:
         return set()
     stmt = text(
         "SELECT fixture_id, team_id FROM fixture_statistics "
-        "WHERE stat_type = 'expected_goals' AND fixture_id IN :ids"
+        "WHERE stat_type IN ('expected_goals','passes_final_third') AND fixture_id IN :ids "
+        "GROUP BY fixture_id, team_id HAVING COUNT(DISTINCT stat_type) = 2"
     ).bindparams(bindparam("ids", expanding=True))
     rows = db.execute(stmt, {"ids": fixture_ids}).fetchall()
     return {(r[0], r[1]) for r in rows}
@@ -82,6 +98,7 @@ def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
         for stat_type, value in (
             ("expected_goals", vals.get("xg")),
             ("goals_prevented", vals.get("goals_prevented")),
+            ("passes_final_third", vals.get("passes_final_third")),
         ):
             if value is None:
                 continue
@@ -107,7 +124,7 @@ def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="回填指定月份比赛的 xG / Goals prevented")
+    ap = argparse.ArgumentParser(description="回填指定月份比赛的 xG / Goals prevented / Passes in final third")
     ap.add_argument("--year", type=int, default=2026)
     ap.add_argument("--month", type=int, default=9)
     ap.add_argument("--dry-run", action="store_true")
@@ -142,12 +159,12 @@ def main():
                 continue
             need.append(f)
 
-        print(f"\n===== {args.year}-{args.month:02d} 比赛 xG 补缺扫描 =====")
-        print(f"该月比赛总数        : {len(fixtures)}")
-        print(f"已有 xG (跳过)      : {len(already)}")
-        print(f"未结束 (不抓)       : {len(skip_status)}")
-        print(f"球队不在 flashscore : {len(skip_map)}")
-        print(f"可补缺 (双方都在map): {len(need)}")
+        print(f"\n===== {args.year}-{args.month:02d} 比赛 Flashscore 统计补缺扫描 =====")
+        print(f"该月比赛总数          : {len(fixtures)}")
+        print(f"已齐备 xG+PFT (跳过)  : {len(already)}")
+        print(f"未结束 (不抓)         : {len(skip_status)}")
+        print(f"球队不在 flashscore   : {len(skip_map)}")
+        print(f"可补缺 (双方都在map)  : {len(need)}")
 
         if skip_map:
             print("\n-- 因球队不在 flashscore_team_map.json 跳过 --")
@@ -192,8 +209,10 @@ def main():
                 if written:
                     ok += 1
                     print(f"  OK 写入 {written} 条: "
-                          f"home xG={stats['home']['xg']}/GP={stats['home']['goals_prevented']}, "
-                          f"away xG={stats['away']['xg']}/GP={stats['away']['goals_prevented']}")
+                          f"home xG={stats['home']['xg']}/GP={stats['home']['goals_prevented']}"
+                          f"/PFT={stats['home']['passes_final_third']}, "
+                          f"away xG={stats['away']['xg']}/GP={stats['away']['goals_prevented']}"
+                          f"/PFT={stats['away']['passes_final_third']}")
                 else:
                     fail += 1
                     print("  FAIL Flashscore 未返回 xG/GP 数据 (0 条写入)")

@@ -33,6 +33,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 同 backfill_september_xg.py：app/core/config.py 的 env_file = ".env" 按 CWD
+# 解析，从仓库根直接运行会退回 localhost:3306 默认值。按脚本位置显式加载，
+# 保证从任意目录运行都拿到同一套 DB 配置。
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 import re
 from sqlalchemy import text
 from playwright.sync_api import sync_playwright
@@ -282,17 +289,18 @@ def _resolve_via_h2h(page, stats_url, match_date, home_hash=None, away_hash=None
 
 
 def extract_stats(page):
-    """从已渲染的 stats 页抽取 xG 与 Goals prevented。
+    """从已渲染的 stats 页抽取 xG / Goals prevented / Passes in final third。
 
     Flashscore stats 页 body 纯文本布局: 每个统计项占 3 行
         <主队值>
         <统计项名称>          例如 'Expected goals (xG)' / 'Goals prevented'
+                             / 'Passes in final third'
         <客队值>
     因此解析时: 找到标签行, 其上=home, 其下=away。
 
-    注意: 并非每场都展示 'Goals prevented' (部分比赛只有 Expected goals)。
-    因此只等待 'Expected goals' 出现即可; 'Goals prevented' 缺失时返回 None,
-    由上层 upsert 跳过 (不写入)。
+    注意: 并非每场都展示 'Goals prevented' 与 'Passes in final third'
+    (低级别联赛/老比赛常缺这些行)。因此只等待 'Expected goals' 出现即可;
+    缺失项返回 None, 由上层 upsert 跳过 (不写入)。
     """
     page.wait_for_function(
         "() => document.body.innerText.includes('Expected goals')",
@@ -318,9 +326,10 @@ def extract_stats(page):
 
     xg_home, xg_away = find_pair("Expected goals")
     gp_home, gp_away = find_pair("Goals prevented")
+    pft_home, pft_away = find_pair("Passes in final third")
     return {
-        "home": {"xg": xg_home, "goals_prevented": gp_home},
-        "away": {"xg": xg_away, "goals_prevented": gp_away},
+        "home": {"xg": xg_home, "goals_prevented": gp_home, "passes_final_third": pft_home},
+        "away": {"xg": xg_away, "goals_prevented": gp_away, "passes_final_third": pft_away},
         "lines": lines,
     }
 

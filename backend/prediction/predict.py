@@ -913,6 +913,84 @@ def _fetch_lineups_text(fixture_id: int, home_id: int, away_id: int) -> str:
         return "首发阵容获取失败。按阵容未确认处理，特别是世界杯/国家队赛事必须降低置信度。"
 
 
+# --- 无效控球(possession trap) 判定参数 ---
+# 效力差 = 控球占比 − Field Tilt(进攻三区传球占比)。窗口内样本不足时不判定。
+FIELD_TILT_WINDOW = 5           # 取样窗口: 近 N 场已完赛比赛
+FIELD_TILT_GAP_TRIGGER = 0.08   # 触发阈值: 效力差 ≥ 8pp 视为无效控球
+FIELD_TILT_CAP = 0.02           # 概率移动上限 (与 schedule_density 同量级)
+
+
+def _stat_float(value) -> float | None:
+    """把 fixture_statistics.stat_value 字符串转成浮点数。
+
+    控球率等存的是 '58%' 这类带百分号的字符串, 与 features.py 的 pf() 口径一致。
+    """
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace('%', '').strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_field_tilt_gap(db, team_id, kickoff,
+                           window: int = FIELD_TILT_WINDOW) -> dict:
+    """近 ``window`` 场已完赛比赛的「控球占比 − Field Tilt」均值。
+
+    Field Tilt 用 Flashscore 的 ``passes_final_third`` 按场次内外相除得到,
+    控球占比取自 API-Football 的 ``Ball Possession``。两者都按本场双方求和
+    归一化为占比, 这样即便两家数据商的三区边界/控球口径略有差异, 也不会被
+    直接放大成假信号。
+
+    某场必须四项数值(己方/对手 × 三区传球/控球)全部齐备才计入; 凑不满
+    ``window`` 场返回 ``status=UNAVAILABLE``, 由调用方按缺失处理, 不使用
+    射门、角球等作为代理近似。
+    """
+    if kickoff is None:
+        return {"status": "UNAVAILABLE", "samples": 0, "reason": "缺少本场开赛时间"}
+
+    rows = db.execute(text(f"""
+        SELECT f.id, f.date,
+               MAX(CASE WHEN fs.team_id =  :team AND fs.stat_type = 'passes_final_third'
+                        THEN fs.stat_value END) AS own_pft,
+               MAX(CASE WHEN fs.team_id <> :team AND fs.stat_type = 'passes_final_third'
+                        THEN fs.stat_value END) AS opp_pft,
+               MAX(CASE WHEN fs.team_id =  :team AND fs.stat_type = 'Ball Possession'
+                        THEN fs.stat_value END) AS own_poss,
+               MAX(CASE WHEN fs.team_id <> :team AND fs.stat_type = 'Ball Possession'
+                        THEN fs.stat_value END) AS opp_poss
+          FROM fixtures f
+          JOIN fixture_statistics fs ON fs.fixture_id = f.id
+         WHERE (f.home_id = :team OR f.away_id = :team)
+           AND f.date < :kickoff
+           AND f.status_short IN ('FT','AET','PEN')
+         GROUP BY f.id, f.date
+         ORDER BY f.date DESC
+         LIMIT {int(window)}
+    """), {"team": team_id, "kickoff": kickoff}).fetchall()
+
+    gaps = []
+    for row in rows:
+        own_pft = _stat_float(row[2])
+        opp_pft = _stat_float(row[3])
+        own_poss = _stat_float(row[4])
+        opp_poss = _stat_float(row[5])
+        if own_pft is None or opp_pft is None or own_poss is None or opp_poss is None:
+            continue
+        tilt_den = own_pft + opp_pft
+        poss_den = own_poss + opp_poss
+        if tilt_den <= 0 or poss_den <= 0:
+            continue
+        gaps.append(own_poss / poss_den - own_pft / tilt_den)
+
+    if len(gaps) < window:
+        return {"status": "UNAVAILABLE", "samples": len(gaps),
+                "reason": f"近{window}场中仅 {len(gaps)} 场可算出三区传球占比与控球占比"}
+
+    return {"status": "AVAILABLE", "samples": len(gaps),
+            "gap": round(sum(gaps) / len(gaps), 4)}
+
+
 def _bayes_evidence(db, fixture: dict, lineups_text: str,
                     intel_status: str = "UNAVAILABLE") -> tuple[list[dict], list[dict], list[str]]:
     """Create a source ledger and only mechanically-supported Bayesian updates.
@@ -931,10 +1009,12 @@ def _bayes_evidence(db, fixture: dict, lineups_text: str,
     now = datetime.now().isoformat()
     # official_fixture 已移除：本场比赛信息实际来自本地 fixtures 表，与
     # source-local-fixtures 是同一个数据源，保留一条只会让账本重复计数。
+    # fbref / understat 已移除：两者登记的分别是「队名搜索页」与「联赛整赛季页」，
+    # 无法解析到单场 fixture，属永远无法核验的来源，留作 CANDIDATE 等于名不副实，
+    # 故整条删除。它们的战术数据角色由 flashscore(每场 stats 页回填) 接管。
     candidates = [
         ("official_lineups", f"API-Football fixtures/lineups?fixture={fixture['id']}"),
-        ("fbref", f"https://fbref.com/en/search/search.fcgi?search={fixture['home_name']}+{fixture['away_name']}"),
-        ("understat", f"https://understat.com/league/{fixture['league_name']}"),
+        ("flashscore", "fixture_statistics:passes_final_third ← Flashscore .../summary/stats/overall/"),
         ("club_news", f"https://www.google.com/search?q={fixture['home_name']}+{fixture['away_name']}+team+news"),
     ]
     ledger = [{"id": f"source-{i + 1}", "kind": kind, "query_or_url": url,
@@ -985,20 +1065,38 @@ def _bayes_evidence(db, fixture: dict, lineups_text: str,
     if not confirmed:
         risks.append("首发未确认；核心轴线伤停和轮换影响只能降级处理")
 
-    # Possession without Field Tilt is explicitly not enough to call the trap.
-    # 本地拿不到同口径的进攻三区传球/触球切分（fixtures/players 已停止同步），
-    # 因此不做代理指标近似，保持不可用，仅把缺失原因说清楚供 LLM 引用。
-    updates.append({
-        "type": "possession_trap", "status": "UNAVAILABLE", "side": None,
-        "reason": ("缺少同口径 Field Tilt：本地无进攻三区传球/触球切分数据，"
-                   "fixture_player_stats 已停止同步；因此不以单独控球率推断无效控球"),
-        "source_ids": ["source-2", "source-3"],
-    })
+    # 无效控球(possession trap): 控球占比 − Field Tilt(进攻三区传球占比) = 效力差。
+    # 效力差显著为正 = 球权集中在中后场 = 无效控球。
+    # Field Tilt 来自 Flashscore 的 passes_final_third, 控球率来自 API-Football 的
+    # Ball Possession。窗口内样本不齐一律 UNAVAILABLE, 不用射门/角球做代理近似。
+    for side, team_id in (("home", fixture["home_id"]), ("away", fixture["away_id"])):
+        ft = _recent_field_tilt_gap(db, team_id, fixture.get("date"))
+        if ft["status"] != "AVAILABLE":
+            updates.append({"type": "possession_trap", "status": "UNAVAILABLE", "side": side,
+                            "reason": f"{ft['reason']}；因此不以单独控球率推断无效控球",
+                            "source_ids": ["source-2", "source-local-fixtures"]})
+            continue
+        gap = ft["gap"]
+        trapped = gap >= FIELD_TILT_GAP_TRIGGER
+        updates.append({
+            "type": "possession_trap", "status": "AVAILABLE", "side": side,
+            "delta": -FIELD_TILT_CAP if trapped else 0.0,
+            "cap": FIELD_TILT_CAP, "gap": gap, "samples": ft["samples"],
+            "reason": (f"控球占比高于三区传球占比 {gap:.1%}，控球多为无效控球"
+                       if trapped else
+                       f"控球占比与三区传球占比差 {gap:.1%}，未触发无效控球"),
+            "source_ids": ["source-2", "source-local-fixtures"],
+        })
+        if trapped:
+            risks.append(
+                f"{'主队' if side == 'home' else '客队'}控球偏向中后场，"
+                f"控球优势未转化为进攻三区压力")
     updates.append({
         "type": "style_matchup", "status": "UNAVAILABLE", "side": None,
         "reason": ("无经核验的身高/回追/出球弱点对位数据：球员属性仅有 players 表历史快照，"
-                   "无法构建本场对位指标"),
-        "source_ids": ["source-2", "source-3"],
+                   "无法构建本场对位指标；原先引用的 fbref/understat 搜索/联赛页不能按场解析，"
+                   "已从来源账本中删除"),
+        "source_ids": [],
     })
     return ledger, updates, risks
 
