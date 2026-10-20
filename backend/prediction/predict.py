@@ -14,6 +14,7 @@ import sys
 import json
 import pickle
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -39,30 +40,18 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 FEATURE_COLS_PATH = os.path.join(MODELS_DIR, 'feature_cols.pkl')
 
 
-# ── API-Football 请求节流（免费版 10 次/分钟）──
-import time
-from collections import deque
-from threading import Lock
+# ── API-Football 请求节流 ──
+# 统一走 app.core.api_football 的进程级共享限流器：预测路径与赛程同步路径
+# 必须共用同一份 10 次/分钟预算，否则两者叠加会把服务端推到 ~19 次/分钟。
+from app.core.api_football import (
+    _api_rate_limiter,
+    _rate_limit_wait_seconds,
+    is_quota_exhausted,
+    mark_quota_exhausted,
+)
 
-_API_RATE_LIMIT = 10          # 免费版每分钟最多请求次数
-_API_RATE_WINDOW = 60.0       # 滚动时间窗（秒）
-_api_timestamps: deque = deque()
-_api_rate_lock = Lock()
-
-
-def _throttle_api_football():
-    """限制对 API-Football 的请求频率：任意 60 秒滚动窗口内最多 10 次。"""
-    with _api_rate_lock:
-        now = time.monotonic()
-        # 清理已离开时间窗的时间戳
-        while _api_timestamps and now - _api_timestamps[0] >= _API_RATE_WINDOW:
-            _api_timestamps.popleft()
-        # 窗口已满则等待最早的一次离开窗口
-        if len(_api_timestamps) >= _API_RATE_LIMIT:
-            wait = _API_RATE_WINDOW - (now - _api_timestamps[0]) + 0.1
-            if wait > 0:
-                time.sleep(wait)
-        _api_timestamps.append(time.monotonic())
+# 预测路径上 429 的重试次数（与统一 client 的 RATE_LIMIT_RETRIES 对齐）
+_API_GET_RETRIES = 3
 
 
 def _http_with_deadline(method: str, url: str, *, headers=None, params=None,
@@ -100,34 +89,64 @@ def _http_with_deadline(method: str, url: str, *, headers=None, params=None,
 
 
 def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
-    """带节流地请求 API-Football 的指定接口，返回解析后的 JSON。"""
-    _throttle_api_football()
+    """带节流地请求 API-Football 的指定接口，返回解析后的 JSON。
+
+    节流走 app.core.api_football 的共享限流器（与赛程同步共用同一份预算）；
+    HTTP 仍经 _http_with_deadline，保留墙钟超时保护——httpx 的 timeout 不
+    覆盖 DNS 解析阶段，见该函数说明。
+    """
     if not settings.api_football_base_url:
         logger.debug("api_football_base_url 未配置，跳过 API-Football 请求")
         return {}
+    if is_quota_exhausted():
+        logger.debug(f"API-Football 当日额度已耗尽，跳过请求 [{path}]")
+        return {}
     url = f"{settings.api_football_base_url.rstrip('/')}/{path.lstrip('/')}"
-    resp = _http_with_deadline(
-        "GET", url,
-        headers={"x-apisports-key": settings.api_football_key},
-        params=params, timeout=timeout, label="API-Football",
-    )
-    if resp is None:
-        logger.warning(f"API-Football 请求无响应 [{path}] params={params}")
-        return {}
-    try:
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            f"API-Football 响应失败 [{path}] status={resp.status_code} "
-            f"params={params}: {e}; body={resp.text[:500]!r}"
+
+    for attempt in range(_API_GET_RETRIES):
+        # 每次真正发出的请求（含重试）都占用共享额度
+        _api_rate_limiter.acquire()
+        resp = _http_with_deadline(
+            "GET", url,
+            headers={"x-apisports-key": settings.api_football_key},
+            params=params, timeout=timeout, label="API-Football",
         )
-        return {}
-    # 即便 HTTP 200，接口也可能在 errors 字段返回限流/配额等错误（如当日请求数耗尽）
-    if isinstance(data, dict) and data.get("errors"):
-        _msg = data["errors"].get("requests") or data["errors"].get("message") or str(data["errors"])
-        logger.warning(f"API-Football 返回错误 [{path}]: {_msg}")
-    return data
+        if resp is None:
+            logger.warning(f"API-Football 请求无响应 [{path}] params={params}")
+            return {}
+
+        if resp.status_code == 429:
+            if attempt >= _API_GET_RETRIES - 1:
+                logger.warning(f"API-Football 短时限流重试耗尽 [{path}]")
+                return {}
+            wait = _rate_limit_wait_seconds(resp, attempt)
+            # 共享窗口：把本地节奏一并后移，避免后续请求继续踩在同一条边界上
+            _api_rate_limiter.penalize(wait)
+            logger.warning(
+                f"API-Football 短时限流 [{path}] (429)，{wait:.1f}s 后重试 #{attempt + 1}"
+            )
+            time.sleep(wait)
+            continue
+
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"API-Football 响应失败 [{path}] status={resp.status_code} "
+                f"params={params}: {e}; body={resp.text[:500]!r}"
+            )
+            return {}
+        # 即便 HTTP 200，接口也可能在 errors 字段返回限流/配额等错误（如当日请求数耗尽）
+        if isinstance(data, dict) and data.get("errors"):
+            _msg = data["errors"].get("requests") or data["errors"].get("message") or str(data["errors"])
+            logger.warning(f"API-Football 返回错误 [{path}]: {_msg}")
+            # errors.requests 是当日额度耗尽的明确信号：置位闩锁，避免后续
+            # 预测继续消耗已用尽的额度。
+            if isinstance(data["errors"], dict) and "requests" in data["errors"]:
+                mark_quota_exhausted(f"{path}: {_msg}")
+        return data
+    return {}
 
 
 def _load_feature_cols() -> list[str]:
