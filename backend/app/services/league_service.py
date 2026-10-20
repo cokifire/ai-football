@@ -1,8 +1,8 @@
 from datetime import date
 from sqlalchemy.orm import Session
 from loguru import logger
-import httpx
 
+from app.core.api_football import api_football_get_sync
 from app.core.config import settings
 from app.core.whitelist import WHITELIST_LEAGUE_IDS
 from app.models.league import League, Season
@@ -36,12 +36,8 @@ def sync_leagues(db: Session) -> None:
     logger.info("开始同步联赛数据...")
 
     try:
-        response = httpx.get(
-            f"{settings.api_football_base_url}/leagues",
-            headers={"x-apisports-key": settings.api_football_key},
-            timeout=30.0,
-        )
-        response.raise_for_status()
+        # 走统一 client，纳入共享限流器；裸 httpx 调用不受节流约束会打爆配额。
+        response = api_football_get_sync("leagues", timeout=30.0)
         data = response.json()
     except Exception as e:
         logger.error(f"拉取联赛数据失败: {e}")

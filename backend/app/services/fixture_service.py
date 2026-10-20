@@ -7,7 +7,13 @@ import httpx
 import time
 
 from app.core.config import settings
-from app.core.api_football import ApiFootballQuotaExceeded, api_football_get_sync
+from app.core.api_football import (
+    ApiFootballQuotaExceeded,
+    ApiFootballRateLimited,
+    api_football_get_sync,
+    _api_rate_limiter,
+    is_quota_exhausted,
+)
 from app.db.session import SessionLocal
 from app.models.league import League, Season
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
@@ -162,10 +168,9 @@ def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
         response = _api_get_http("fixtures", params)
         remaining = response.headers.get("x-ratelimit-requests-remaining", "?")
         logger.debug(f"API[{response.status_code}] fixtures params={params}  remaining={remaining}")
-        # remaining=0 仍可能是本次请求成功消耗掉最后一个额度；只有
-        # 429 或响应体明确返回额度/限流错误时才应放弃本次数据。
-        if response.status_code == 429:
-            raise ApiFootballQuotaExceeded()
+        # remaining=0 仍可能是本次请求成功消耗掉最后一个额度；只有响应体明确
+        # 返回额度/限流错误时才应放弃本次数据。429 不会走到这里——统一 client
+        # 要么重试，要么抛 ApiFootballRateLimited，从不返回 429 响应。
         response.raise_for_status()
         data = response.json()
 
@@ -182,10 +187,21 @@ def _fetch_fixtures_by_params(params: dict) -> tuple[dict | None, str | None]:
                 raise ApiFootballQuotaExceeded()
             return (None, err_msg)
         return (data, None)
-    except ApiFootballQuotaExceeded:
+    except (ApiFootballQuotaExceeded, ApiFootballRateLimited):
+        # 限流/额度耗尽按异常类型向上传播：调用方要靠类型分支重试，
+        # 字符串匹配 "rateLimit" 永远匹配不上中文异常信息，会静默变成死代码。
         raise
     except Exception as e:
         return (None, str(e))
+
+
+def _fetch_with_ratelimit_retry(params: dict) -> tuple[dict | None, str | None]:
+    """带一次短时限流重试的请求；额度耗尽或重试仍限流则按异常类型抛出。"""
+    try:
+        return _fetch_fixtures_by_params(params)
+    except ApiFootballRateLimited:
+        time.sleep(10)
+        return _fetch_fixtures_by_params(params)
 
 
 def _parse_free_plan_date_range(err_msg: str) -> tuple[str | None, str | None]:
@@ -207,11 +223,7 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
     # ── 步骤1: 先探测今天，确认日期窗口 ──
     allowed_dates: set[str] = set()
     today_str = today.strftime("%Y-%m-%d")
-    data, err = _fetch_fixtures_by_params({"date": today_str, "timezone": DATE_SYNC_TIMEZONE})
-
-    if data is None and err and "rateLimit" in err:
-        time.sleep(10)
-        data, err = _fetch_fixtures_by_params({"date": today_str, "timezone": DATE_SYNC_TIMEZONE})
+    data, err = _fetch_with_ratelimit_retry({"date": today_str, "timezone": DATE_SYNC_TIMEZONE})
 
     if data is not None:
         # 今天可用，尝试识别完整窗口
@@ -263,14 +275,10 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
         if date_str == today_str and data is not None:
             items = data.get("response", [])
         else:
-            d, e = _fetch_fixtures_by_params({"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
+            d, e = _fetch_with_ratelimit_retry({"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
             if d is None:
-                if e and "rateLimit" in e:
-                    time.sleep(10)
-                    d, e = _fetch_fixtures_by_params({"date": date_str, "timezone": DATE_SYNC_TIMEZONE})
-                if d is None:
-                    logger.warning(f"date={date_str} 跳过: {e}")
-                    continue
+                logger.warning(f"date={date_str} 跳过: {e}")
+                continue
             items = d.get("response", [])
 
         date_synced = 0
@@ -318,6 +326,11 @@ def sync_fixtures(db: Session) -> None:
     processed = 0
 
     for season in seasons:
+        # _sync_one_league_by_season 会把额度耗尽当普通失败吞掉（返回 plan_error=None），
+        # 这里显式检查闩锁，避免继续对剩余联赛白跑一遍。
+        if is_quota_exhausted():
+            logger.warning("API-Football 当日额度已耗尽，中止联赛赛程同步")
+            break
         synced, plan_error = _sync_one_league_by_season(db, season.league_id, season.year)
         processed += 1
 
@@ -340,6 +353,18 @@ def sync_fixtures(db: Session) -> None:
 
     logger.info(f"赛程每日同步完成，共 {total_synced} 场")
     print(f"  赛程每日同步完成: {total_synced} 场")
+
+    # 额度已耗尽就没必要再 drain 和跑子数据了，直接留给次日
+    if is_quota_exhausted():
+        logger.warning("API-Football 当日额度已耗尽，跳过子数据同步")
+        return
+
+    # 等本进程的 60s 配额窗口从服务端那边滚出去再开始子数据,
+    # 否则同步(8 个左右) + 子数据(数百个) 在同一分钟内累计超 10 次,
+    # 服务端按它的窗口起点计会判第 11 次 429。
+    slept = _api_rate_limiter.wait_for_drain(keep=0, max_wait=90.0)
+    if slept > 0:
+        logger.info(f"赛程同步已用满窗口，drain {slept:.0f}s 再启动子数据")
 
     # 赛后子数据同步
     sync_completed_sub_data(db)
@@ -446,6 +471,10 @@ def _sync_one_fixture_sub_data(fixture_id: int) -> bool:
             return True
         except Exception as e:
             db.rollback()
+            if is_quota_exhausted():
+                # 额度耗尽不是瞬时故障：退避重试只会白白消耗时间，直接放弃
+                logger.debug(f"子数据跳过 fixture={fixture_id}（当日额度已耗尽）")
+                return False
             if attempt < RETRY_MAX - 1:
                 time.sleep(3 * (2 ** attempt))  # 退避: 3s, 6s, 12s
                 logger.debug(f"子数据重试 fixture={fixture_id} #{attempt+1}")
@@ -483,6 +512,13 @@ def sync_completed_sub_data(db: Session) -> None:
 
     # 分批处理
     for i in range(0, len(ids), BATCH_SIZE):
+        # 当日额度已耗尽：后续每一场都会立刻失败，继续跑只是空转，直接中止。
+        if is_quota_exhausted():
+            logger.warning(
+                f"API-Football 当日额度已耗尽，中止子数据同步："
+                f"已完成 {total_ok}/{len(ids)}，剩余 {len(ids) - i} 场留待次日"
+            )
+            break
         batch = ids[i : i + BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {

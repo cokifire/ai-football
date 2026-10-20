@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from app.db.session import get_db
+from datetime import datetime
 from app.services.scheduler import (
     get_scheduler_status, stop_scheduled_task, start_scheduled_task,
-    update_task,
+    update_task, _claim_task, _update_db,
 )
 from app.services.league_service import sync_leagues
 from app.services.team_service import sync_teams
@@ -90,6 +91,14 @@ def _run_task_with_stream(task_id: str, task_name: str, sync_fn):
     """在日志捕获下执行任务，所有 loguru + print 输出推送到 SSE 队列"""
     from app.db.session import SessionLocal
 
+    # 与定时任务共用 is_running 占位：任务正在跑则直接放弃。否则手动触发会和
+    # 08:30 的定时同步并发跑第二遍 sync_fixtures，重复拉子数据且 _do_fetch 的
+    # "已存在则跳过"检查与插入之间存在竞态。
+    if not _claim_task(task_id, datetime.now()):
+        push_task_message(task_id, f"⚠ {task_name} 已在运行中，本次手动触发已跳过")
+        push_task_message(task_id, "__DONE__")
+        return
+
     # 捕获 loguru 日志
     sink = _TaskLogSink(task_id)
     fmt = "{time:HH:mm:ss} | {level: <8} | {message}"
@@ -117,6 +126,7 @@ def _run_task_with_stream(task_id: str, task_name: str, sync_fn):
         push_task_message(task_id, f"✗ {task_name} 执行失败: {e}")
     finally:
         logger.remove(handler_id)
+        _update_db(task_id, is_running=0)
         push_task_message(task_id, "__DONE__")
 
 
@@ -190,8 +200,14 @@ async def trigger_standing_sync(_: AdminAuth, db: Session = Depends(get_db)):
 
 @router.post("/scheduler/fixtures/sync")
 async def trigger_fixture_sync(_: AdminAuth, db: Session = Depends(get_db)):
+    """同步执行的遗留端点：同样要先占位，否则会和定时任务并发跑两遍子数据。"""
     logger.info("手动触发: 赛程每日同步")
-    sync_fixtures(db)
+    if not _claim_task("fixture_daily", datetime.now()):
+        raise HTTPException(status_code=409, detail="赛程每日同步正在运行中，请稍后再试")
+    try:
+        sync_fixtures(db)
+    finally:
+        _update_db("fixture_daily", is_running=0)
     return {"status": "ok"}
 
 @router.post("/scheduler/fixtures/live")

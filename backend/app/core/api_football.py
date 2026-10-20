@@ -30,18 +30,31 @@ RATE_LIMIT_RETRIES = 3              # 非日额度的 429 重试次数
 MAX_RATE_LIMIT_WAIT = 60.0          # 单次限流等待上限，避免任务无限阻塞
 API_RATE_LIMIT = max(settings.api_football_rate_limit, 1)
 API_RATE_WINDOW = max(settings.api_football_rate_window, 1.0)
-# 均匀节流间隔：10 次/分钟 -> 6s/次。用于本地节流与无 Retry-After 时的 429 退避。
-MIN_REQUEST_INTERVAL = API_RATE_WINDOW / API_RATE_LIMIT
+# 预留的配额余量: 服务端窗口与本地窗口并不同步(服务端按自己的首次请求/自然分钟
+# 计时), 本地按 窗口/额度 精确放行等于贴着上限跑, 边界错开就会出现"第 11 次"。
+# 因此节流时按 额度-1 计算间隔: 10 次/分钟 -> 60/9 ≈ 6.7s, 留一次余量。
+RATE_LIMIT_HEADROOM = 1
+EFFECTIVE_RATE_LIMIT = max(API_RATE_LIMIT - RATE_LIMIT_HEADROOM, 1)
+# 均匀节流间隔：用于本地节流与无 Retry-After 时的 429 退避。
+MIN_REQUEST_INTERVAL = API_RATE_WINDOW / EFFECTIVE_RATE_LIMIT
 # 429 无 Retry-After 时的退避上限（保证单次等待落在 6~10s 区间内）。
 RATE_LIMIT_MAX_BACKOFF = 10.0
+
+# 免费套餐硬上限。配置值高于它只会让服务端持续 429，启动即告警。
+KNOWN_PLAN_CEILING = 10
+if API_RATE_LIMIT > KNOWN_PLAN_CEILING:
+    logger.warning(
+        f"[API-Football] API_FOOTBALL_RATE_LIMIT={API_RATE_LIMIT} 高于免费套餐上限 "
+        f"{KNOWN_PLAN_CEILING}，服务端会持续 429；请改为 {KNOWN_PLAN_CEILING} 或确认套餐已升级"
+    )
 
 
 class _ApiRateLimiter:
     """进程内共享限流器，避免多个同步/异步任务共同冲垮同一个 API key。
 
     采用「均匀节流」而非「攒满窗口再干等」: 相邻请求至少间隔
-    ``API_RATE_WINDOW / API_RATE_LIMIT`` 秒(默认 6s), 使请求平摊在整个窗口内,
-    单次等待时长因此落在 6~10s 而不是接近整个窗口的 48s+。
+    ``API_RATE_WINDOW / (API_RATE_LIMIT - 1)`` 秒(默认约 6.7s), 使请求平摊在
+    整个窗口内, 单次等待时长因此落在 6~10s 而不是接近整个窗口的 48s+。
     滑动窗口仍作为兜底, 防止外部并发调用一次性打满额度。
     """
 
@@ -49,6 +62,40 @@ class _ApiRateLimiter:
         self._timestamps: deque[float] = deque()
         self._next_slot = 0.0  # monotonic 时间戳: 下一个允许发出请求的时刻
         self._lock = Lock()
+
+    def penalize(self, seconds: float) -> None:
+        """收到服务端 429 后把本地节流窗口整体后移, 重新对齐服务端窗口。
+
+        服务端一旦判定超限, 它的窗口起点与我们本地记录的并不一致; 只在本次请求
+        上 sleep 而不移动本地节奏, 后续请求仍会踩在同一个边界上反复 429。
+        """
+        with self._lock:
+            self._next_slot = max(self._next_slot, time.monotonic() + max(seconds, 0.0))
+
+    def wait_for_drain(self, keep: int = 0, max_wait: float = 90.0) -> float:
+        """等待直到滑动窗口里剩余请求数 <= ``keep``, 让本进程配额占满的 60s
+        在服务端那边完整滚出去, 再开始下一阶段任务。
+
+        ``sync_fixtures`` 等"会一气发 10 个请求"的任务结束后, 调用此方法再
+        跑 ``sync_completed_sub_data``, 避免两段任务 1 分钟内合计 11+ 个请求
+        把服务端撞 429。``max_wait`` 是单次最长等待秒数, 防止对账时间漂移时
+        无限阻塞。
+        """
+        deadline = time.monotonic() + max_wait
+        target = max(keep, 0)
+        slept = 0.0
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= API_RATE_WINDOW:
+                    self._timestamps.popleft()
+                if len(self._timestamps) <= target or now >= deadline:
+                    return slept
+                # 等到最早一次请求滑出窗口
+                wait = API_RATE_WINDOW - (now - self._timestamps[0]) + 0.1
+                actual = min(wait, max(deadline - now, 0.1))
+            time.sleep(actual)
+            slept += actual
 
     def acquire(self) -> None:
         while True:
@@ -94,6 +141,34 @@ class ApiFootballQuotaExceeded(Exception):
 
 class ApiFootballRateLimited(ApiFootballError):
     """收到短时限流，重试后仍未恢复。"""
+
+
+# ── 当日额度耗尽闩锁 ─────────────────────────────────────────
+# 一旦确认当日额度耗尽就置位，后续请求直接快速失败，不再逐个重试。
+# 否则 ``sync_completed_sub_data`` 会对 200 场比赛逐个重试 3 次（退避
+# 1.5/3/6s），在 key 已失效的情况下空转近一小时；而上层
+# ``_sync_one_league_by_season`` 会把 ApiFootballQuotaExceeded 当成普通失败
+# 吞掉继续跑下一个联赛，日志里只剩"拉取…失败"，看不出是额度问题。
+_daily_quota_exhausted = False
+
+
+def mark_quota_exhausted(reason: str = "") -> None:
+    """标记当日额度已耗尽，后续 API-Football 请求直接快速失败。"""
+    global _daily_quota_exhausted
+    if not _daily_quota_exhausted:
+        logger.warning(f"[API-Football] 当日额度已耗尽，后续请求快速失败：{reason}")
+    _daily_quota_exhausted = True
+
+
+def is_quota_exhausted() -> bool:
+    """当日额度是否已耗尽（供调用方提前放弃长任务）。"""
+    return _daily_quota_exhausted
+
+
+def reset_quota_latch() -> None:
+    """每个调度 tick 开始时复位闩锁，新的一天额度会恢复。"""
+    global _daily_quota_exhausted
+    _daily_quota_exhausted = False
 
 
 def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
@@ -159,12 +234,14 @@ def api_football_get_sync(
     """同步 GET, 返回 httpx.Response (调用方自行 .json() / 读 headers)。
 
     单一 API key 额度耗尽时抛出 ApiFootballQuotaExceeded；其它错误抛
-    ApiFootballError。
+    ApiFootballError。当日额度已确认耗尽时直接快速失败，不再消耗额度重试。
     """
     params = params or {}
     key = (settings.api_football_key or "").strip()
     if not key:
         raise ApiFootballError("API-Football key 未配置 (api_football_key)")
+    if _daily_quota_exhausted:
+        raise ApiFootballQuotaExceeded(f"API-Football key 当日额度已耗尽: {endpoint}")
 
     timeout_cfg = httpx.Timeout(
         connect=CONNECT_TIMEOUT,
@@ -198,9 +275,11 @@ def api_football_get_sync(
 
             body = r.text or ""
             if _is_daily_quota_exhausted(r.status_code, body):
-                logger.warning(
-                    f"[API-Football][{key_label}] 明确的当日额度耗尽 {endpoint} "
-                    f"({r.status_code})；{_limit_diagnostics(r, body)}"
+                # 置位闩锁：本次任务剩余的请求全部快速失败，避免空转一小时
+                mark_quota_exhausted(f"{endpoint} status={r.status_code}")
+                logger.debug(
+                    f"[API-Football][{key_label}] 额度耗尽诊断 {endpoint}；"
+                    f"{_limit_diagnostics(r, body)}"
                 )
                 raise ApiFootballQuotaExceeded(f"API-Football key 额度耗尽: {endpoint}")
 
@@ -212,6 +291,8 @@ def api_football_get_sync(
                         f"[API-Football][{key_label}] 短时限流 {endpoint} (429)，"
                         f"{wait:.1f}s 后重试 #{attempt + 1}；{_limit_diagnostics(r, body)}"
                     )
+                    # 同时把本地节流窗口后移，否则后续请求仍踩在同一个边界上。
+                    _api_rate_limiter.penalize(wait)
                     time.sleep(wait)
                     continue
                 logger.warning(
@@ -256,9 +337,11 @@ async def api_football_get_async(
     """异步 GET (配合共享 AsyncClient 使用), 返回解析后的 JSON dict。
 
     使用共享 client 默认 headers 中的单一 key，并在额度耗尽时抛出
-    ApiFootballQuotaExceeded。
+    ApiFootballQuotaExceeded。当日额度已确认耗尽时直接快速失败。
     """
     params = params or {}
+    if _daily_quota_exhausted:
+        raise ApiFootballQuotaExceeded(f"API-Football key 当日额度已耗尽: {endpoint}")
     for attempt in range(RATE_LIMIT_RETRIES):
         await asyncio.to_thread(_api_rate_limiter.acquire)
         t0 = time.monotonic()
@@ -276,11 +359,14 @@ async def api_football_get_async(
 
         body = r.text or ""
         if _is_daily_quota_exhausted(r.status_code, body):
+            mark_quota_exhausted(f"{endpoint} status={r.status_code}")
             raise ApiFootballQuotaExceeded(f"额度耗尽: {endpoint}")
         if r.status_code == 429:
             if attempt >= RATE_LIMIT_RETRIES - 1:
                 raise ApiFootballRateLimited(f"短时限流: {endpoint}")
-            await asyncio.sleep(_rate_limit_wait_seconds(r, attempt))
+            wait = _rate_limit_wait_seconds(r, attempt)
+            _api_rate_limiter.penalize(wait)
+            await asyncio.sleep(wait)
             continue
 
         logger.debug(f"[API-Football][async] {endpoint} -> {r.status_code} ({elapsed:.2f}s)")
@@ -291,7 +377,11 @@ async def api_football_get_async(
         if any(term in error_text for term in ("rate limit", "ratelimit", "too many requests")):
             if attempt >= RATE_LIMIT_RETRIES - 1:
                 raise ApiFootballRateLimited(f"响应体限流: {endpoint}")
-            await asyncio.sleep(_rate_limit_wait_seconds(r, attempt))
+            # HTTP 200 但响应体限流：同样要把本地窗口后移，否则后续请求继续
+            # 落在服务端窗口的同一条边界上。
+            wait = _rate_limit_wait_seconds(r, attempt)
+            _api_rate_limiter.penalize(wait)
+            await asyncio.sleep(wait)
             continue
         return data
 

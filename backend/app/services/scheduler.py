@@ -5,6 +5,7 @@ from sqlalchemy import text
 from loguru import logger
 
 from app.db.session import SessionLocal
+from app.core.api_football import reset_quota_latch
 from app.services.league_service import sync_leagues
 from app.services.team_service import sync_teams
 from app.services.player_service import sync_players
@@ -94,16 +95,51 @@ def _update_db(task_key: str, **kwargs):
         db.close()
 
 
+def _claim_task(task_id: str, last_run) -> bool:
+    """原子占位：仅当 is_running = 0 时置 1，已被占用返回 False。
+
+    用单条 ``UPDATE ... WHERE is_running = 0`` 保证原子性，定时任务与手动触发
+    （乃至跨进程）不会同时跑同一个任务。赛程同步跑两遍的后果不只是多花配额：
+    ``sync_completed_sub_data`` 会重复拉取同一批比赛，而 ``_do_fetch`` 的
+    "已存在则跳过"检查与插入之间存在竞态，可能写入重复行。
+    """
+    db = SessionLocal()
+    try:
+        res = db.execute(
+            text(
+                "UPDATE scheduler_tasks SET is_running = 1, last_run = :last_run "
+                "WHERE id = :id AND is_running = 0"
+            ),
+            {"id": task_id, "last_run": last_run},
+        )
+        db.commit()
+        return res.rowcount == 1
+    finally:
+        db.close()
+
+
 def run_task(task_id: str, task_name: str, sync_fn, db=None):
-    """执行任务（供定时 loop 和手动触发共用）"""
+    """执行任务（供定时 loop 和手动触发共用）。
+
+    执行前先原子占位；任务已在运行则直接跳过，返回 False。
+    """
+    if not _claim_task(task_id, datetime.now()):
+        logger.warning(f"[Scheduler] {task_name} 已在运行中，跳过本次触发")
+        return False
+
+    # 每个 tick 复位额度闩锁：新的一天 API-Football 额度会恢复。
+    reset_quota_latch()
+
     own_db = db is None
     if own_db:
         db = SessionLocal()
     try:
         sync_fn(db)
+        return True
     finally:
         if own_db:
             db.close()
+        _update_db(task_id, is_running=0)
 
 
 def get_scheduler_status() -> dict:
@@ -263,17 +299,18 @@ async def _run_loop(task_key: str):
         if not row or not row["is_enabled"]:
             break
 
-        _update_db(task_key, is_running=1, last_run=datetime.now())
         logger.info(f"[Scheduler] 触发: {row['name']}")
 
+        # is_running 的占位与释放都由 run_task 负责（见 _claim_task），
+        # 这里不再单独设置，否则占位检查会永远为真。
         try:
             await asyncio.to_thread(run_task, task_key, row['name'], sync_fn)
         except asyncio.CancelledError:
+            # loop 被取消（配置更新/关停）时释放占位，避免残留 is_running=1
+            _update_db(task_key, is_running=0)
             raise
         except Exception as e:
             logger.error(f"[Scheduler] {row['name']} 异常: {e}")
-        finally:
-            _update_db(task_key, is_running=0)
 
 
 # ──── 初始化 ────
