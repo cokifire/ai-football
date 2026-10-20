@@ -169,32 +169,64 @@ def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
 
 
+def _sig_words(name: str) -> list:
+    """队名中去掉通用词（FC/IF/AC...）后的实词，供词干与缩写匹配使用。"""
+    return [w for w in _norm(name).split() if w and w not in _NAME_STOPWORDS]
+
+
 def _stem(name: str) -> str:
     """取队名中最有辨识度的词干（最长单词的前 5 个字符），用于宽松匹配。
 
     Flashscore 常显示短名（"Djurgarden"），库里存全名（"Djurgardens IF"），
     直接包含判断会失败，用词干前缀则能命中。
     """
-    words = [w for w in _norm(name).split() if w not in _NAME_STOPWORDS]
+    words = _sig_words(name)
     if not words:
         return _norm(name)[:5]
     return max(words, key=len)[:5]
 
 
+def _acronym(name: str) -> str:
+    """队名的首字母缩写，用于匹配 Flashscore 的缩写短名。
+
+    例：'Paris Saint Germain' -> 'psg'、'Bayern Munich' -> 'bm'。
+
+    Flashscore 的赛程/赔率页大量使用缩写短名，而库里存的是全名，缩写与全名
+    之间**没有任何公共前缀**（'psg' vs 'paris'），只靠 `_stem` 的词干匹配会漏，
+    必须单独补这一路。单实词的队名不产生缩写（'AC Milan' 去掉 'ac' 只剩 'milan'），
+    避免 'a'/'m' 这类单字母造成误命中。
+    """
+    words = _sig_words(name)
+    if len(words) < 2:
+        return ""
+    return "".join(w[0] for w in words)
+
+
 def _names_match(a: str, b: str) -> bool:
-    """两支球队名是否指向同一队（兼容全名/短名/前后缀差异）。"""
+    """两支球队名是否指向同一队（兼容全名/短名/缩写差异）。"""
     na, nb = _norm(a), _norm(b)
     if not na or not nb:
         return False
     if na == nb or na in nb or nb in na:
         return True
-    return _stem(a) in nb or _stem(b) in na
+    if _stem(a) in nb or _stem(b) in na:
+        return True
+    # 缩写兜底：页面显示 'PSG'、库里存 'Paris Saint Germain'
+    for full, short in ((a, nb), (b, na)):
+        acr = _acronym(full)
+        if len(acr) >= 2 and acr == short:
+            return True
+    return False
 
 
 def _row_has_team(row_norm: str, team: str) -> bool:
-    """赛程页的一行文本里是否出现了指定球队。"""
+    """赛程页的一行文本里是否出现了指定球队（兼容缩写短名）。"""
     if not row_norm:
         return False
+    # 缩写必须整词命中，"Apsg" 里含 "psg" 不算
+    acr = _acronym(team)
+    if len(acr) >= 2 and acr in row_norm.split():
+        return True
     for w in _norm(team).split():
         if w in _NAME_STOPWORDS or len(w) < 3:
             continue
@@ -496,20 +528,43 @@ def _resolve_mid(page, info: dict, target: date_cls, home_name: str, away_name: 
 
 # ────────────────────────────── 赔率解析 ──────────────────────────────
 
+def _normalize_row(raw: dict) -> dict | None:
+    """把 JS 抽出的一行原始数据结构化；该行不可用时返回 None。
+
+    亚盘/大小球的盘口线，Flashscore 有时单独渲染、有时又被渲染成
+    `a.oddsCell__odd` 混进赔率数组的首位（实测两种模板都出现过）。混进来时必须摘掉：
+      - 否则行数变成 3，`_parse_market` 里"必须恰好 2 个赔率"的判定会整行丢弃；
+      - 负盘口（'-2.5'）还会因为不在 1.0~1000 区间被 `_to_float` 判为 None，
+        连带把这一行一起丢掉 —— 于是整张亚盘表全部落空。
+    判据是"首项文本等于盘口线文本"，这样 '-2, -2.5' 这类四分盘写法也能摘掉。
+    注意要 `>= 2` 而不是 `> 2`：某一侧被庄家撤单时（页面显示 '-'），该行只剩
+    [盘口线, 另一侧赔率] 两项，此时也必须摘掉，否则盘口线会被当成赔率读进去
+    （实测出现过把 "2" 当成大小球 2 球盘的 over 赔率）。摘掉后只剩 1 个赔率，
+    该行会被 `_parse_market` 正常丢弃。1X2 行没有盘口线（line 为空），不会误伤。
+    """
+    if any(o.get("removed") for o in raw.get("odds", [])):
+        return None  # 已被庄家撤下
+    line_text = (raw.get("line") or "").strip()
+    texts = [o.get("text") for o in raw.get("odds", [])]
+    if line_text and len(texts) >= 2 and (texts[0] or "").strip() == line_text:
+        texts = texts[1:]
+    odds = [_to_float(t) for t in texts]
+    if any(o is None for o in odds):
+        return None  # 占位值 / 已撤单
+    return {
+        "bookmaker": raw.get("bookmaker") or "",
+        "line": _parse_line(line_text),
+        "odds": odds,
+    }
+
+
 def _read_rows(page) -> list[dict]:
     """读取当前赔率页所有行，转成结构化 dict。"""
     rows = []
     for raw in page.evaluate(_ROWS_JS) or []:
-        odds = [_to_float(o["text"]) for o in raw.get("odds", [])]
-        if any(o is None for o in odds):
-            continue  # 占位值 / 已被庄家撤下
-        if any(o.get("removed") for o in raw.get("odds", [])):
-            continue
-        rows.append({
-            "bookmaker": raw.get("bookmaker") or "",
-            "line": _parse_line(raw.get("line", "")),
-            "odds": odds,
-        })
+        row = _normalize_row(raw)
+        if row:
+            rows.append(row)
     return rows
 
 
