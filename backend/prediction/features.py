@@ -60,7 +60,7 @@ def _load_all_data():
             SELECT fixture_id, team_id, stat_type, stat_value
             FROM fixture_statistics
             WHERE stat_type IN (
-                'expected_goals','Total Shots','Shots on Goal',
+                'expected_goals','expected_goals_against','Total Shots','Shots on Goal',
                 'Ball Possession','Corner Kicks','Passes %','Fouls'
             )
         """)).fetchall()
@@ -106,6 +106,7 @@ def _pivot_stats(stats: pd.DataFrame) -> pd.DataFrame:
     pivoted.columns.name = None
     col_map = {
         'expected_goals': 'xg',
+        'expected_goals_against': 'xga',
         'Total Shots': 'shots',
         'Shots on Goal': 'shots_on',
         'Ball Possession': 'possession',
@@ -206,7 +207,7 @@ def _compute_match_stats_form(fixtures: pd.DataFrame, stats_pivoted: pd.DataFram
     s = stats_pivoted.merge(fix_dates, on='fixture_id', how='left')
     s = s.sort_values('date')
 
-    stat_cols = [c for c in ['xg', 'shots', 'shots_on', 'possession', 'corners',
+    stat_cols = [c for c in ['xg', 'xga', 'shots', 'shots_on', 'possession', 'corners',
                               'passes_pct', 'fouls'] if c in s.columns]
 
     results = []
@@ -417,7 +418,8 @@ def main():
     # 比赛统计（主队）
     h_ms = ms5.rename(columns={
         'team_id': 'home_id',
-        'ms_xg': 'h_xg5', 'ms_shots': 'h_shots5', 'ms_shots_on': 'h_shots_on5',
+        'ms_xg': 'h_xg5', 'ms_xga': 'h_xga5',
+        'ms_shots': 'h_shots5', 'ms_shots_on': 'h_shots_on5',
         'ms_possession': 'h_possession5', 'ms_corners': 'h_corners5',
         'ms_passes_pct': 'h_passes_pct5', 'ms_fouls': 'h_fouls5',
     })
@@ -426,7 +428,8 @@ def main():
     # 比赛统计（客队）
     a_ms = ms5.rename(columns={
         'team_id': 'away_id',
-        'ms_xg': 'a_xg5', 'ms_shots': 'a_shots5', 'ms_shots_on': 'a_shots_on5',
+        'ms_xg': 'a_xg5', 'ms_xga': 'a_xga5',
+        'ms_shots': 'a_shots5', 'ms_shots_on': 'a_shots_on5',
         'ms_possession': 'a_possession5', 'ms_corners': 'a_corners5',
         'ms_passes_pct': 'a_passes_pct5', 'ms_fouls': 'a_fouls5',
     })
@@ -548,7 +551,8 @@ def _match_stats_single(db, team_id, before_date, n=5):
         JOIN fixtures f ON fs.fixture_id = f.id
         WHERE fs.team_id = :tid AND f.date < :dt
           AND f.status_short IN ('FT','AET','PEN')
-          AND fs.stat_type IN ('expected_goals','Total Shots','Shots on Goal',
+          AND fs.stat_type IN ('expected_goals','expected_goals_against',
+                               'Total Shots','Shots on Goal',
                                'Ball Possession','Corner Kicks','Passes %','Fouls')
         ORDER BY f.date DESC LIMIT :lim
     """), {"tid": team_id, "dt": before_date, "lim": n * 10}).fetchall()
@@ -570,10 +574,11 @@ def _match_stats_single(db, team_id, before_date, n=5):
 
     def avg(lst): return sum(lst) / len(lst) if lst else None
 
-    xg, shots, shots_on, poss, corners, passes, fouls = [], [], [], [], [], [], []
+    xg, xga, shots, shots_on, poss, corners, passes, fouls = [], [], [], [], [], [], [], []
     for fid in order:
         s = fstats[fid]
         v = pf(s.get('expected_goals')); xg.append(v) if v is not None else None
+        v = pf(s.get('expected_goals_against')); xga.append(v) if v is not None else None
         v = pf(s.get('Total Shots')); shots.append(v) if v is not None else None
         v = pf(s.get('Shots on Goal')); shots_on.append(v) if v is not None else None
         v = pf(s.get('Ball Possession')); poss.append(v) if v is not None else None
@@ -582,7 +587,8 @@ def _match_stats_single(db, team_id, before_date, n=5):
         v = pf(s.get('Fouls')); fouls.append(v) if v is not None else None
 
     return {
-        "xg_avg": avg(xg), "shots_avg": avg(shots), "shots_on_avg": avg(shots_on),
+        "xg_avg": avg(xg), "xga_avg": avg(xga),
+        "shots_avg": avg(shots), "shots_on_avg": avg(shots_on),
         "possession_avg": avg(poss), "corners_avg": avg(corners),
         "passes_pct_avg": avg(passes), "fouls_avg": avg(fouls),
     }
@@ -719,11 +725,13 @@ def extract_features_for_fixture(db, fixture_row: dict) -> dict | None:
         "win_rate_diff": (hf5.get("win_rate") or 0) - (af5.get("win_rate") or 0),
         "gf_diff5": (hf5.get("goals_for_avg") or 0) - (af5.get("goals_for_avg") or 0),
         "pts_diff5": (hf5.get("points_avg") or 0) - (af5.get("points_avg") or 0),
-        "h_xg5": hms.get("xg_avg"), "h_shots5": hms.get("shots_avg"),
+        "h_xg5": hms.get("xg_avg"), "h_xga5": hms.get("xga_avg"),
+        "h_shots5": hms.get("shots_avg"),
         "h_shots_on5": hms.get("shots_on_avg"), "h_possession5": hms.get("possession_avg"),
         "h_corners5": hms.get("corners_avg"), "h_passes_pct5": hms.get("passes_pct_avg"),
         "h_fouls5": hms.get("fouls_avg"),
-        "a_xg5": ams.get("xg_avg"), "a_shots5": ams.get("shots_avg"),
+        "a_xg5": ams.get("xg_avg"), "a_xga5": ams.get("xga_avg"),
+        "a_shots5": ams.get("shots_avg"),
         "a_shots_on5": ams.get("shots_on_avg"), "a_possession5": ams.get("possession_avg"),
         "a_corners5": ams.get("corners_avg"), "a_passes_pct5": ams.get("passes_pct_avg"),
         "a_fouls5": ams.get("fouls_avg"),
