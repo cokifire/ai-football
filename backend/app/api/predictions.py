@@ -185,13 +185,32 @@ async def get_predictions(
     league_id: int | None = Query(None),
     season: int | None = Query(None),
     team: str | None = Query(None),
+    llm_model: str | None = Query(None, description="按实际生成预测的 LLM 模型筛选"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     return await asyncio.to_thread(
-        _get_predictions_sync, db, fixture_id, date, date_from, date_to, category, league_id, season, team, page, page_size
+        _get_predictions_sync, db, fixture_id, date, date_from, date_to, category,
+        league_id, season, team, llm_model, page, page_size
     )
+
+
+@router.get("/predictions/models")
+async def get_prediction_models(db: Session = Depends(get_db)):
+    """返回预测中心可用的 LLM 模型及其预测数量。"""
+    return await asyncio.to_thread(_get_prediction_models_sync, db)
+
+
+def _get_prediction_models_sync(db: Session):
+    rows = db.execute(text("""
+        SELECT p.llm_model AS model, COUNT(*) AS count
+        FROM predictions p
+        WHERE p.llm_model IS NOT NULL AND TRIM(p.llm_model) <> ''
+        GROUP BY p.llm_model
+        ORDER BY count DESC, p.llm_model ASC
+    """)).fetchall()
+    return {"data": [dict(row._mapping) for row in rows]}
 
 
 @router.get("/predictions/accuracy")
@@ -202,6 +221,7 @@ async def get_predictions_accuracy(
     league_id: int | None = Query(None, description="按联赛筛选"),
     season: int | None = Query(None, description="按赛季（年份）筛选"),
     team: str | None = Query(None, description="按球队名（含）筛选"),
+    llm_model: str | None = Query(None, description="按实际生成预测的 LLM 模型筛选"),
     category: str | None = Query(None, description="按模型分组/类别筛选，如 胜平负/WDL"),
     win_pct_min: float | None = Query(None, description="胜负信心百分比下限，如 60 表示 >=60%"),
     win_pct_max: float | None = Query(None, description="胜负信心百分比上限"),
@@ -221,7 +241,8 @@ async def get_predictions_accuracy(
         "handicap": (hand_pct_min, hand_pct_max),
     }
     return await asyncio.to_thread(
-        _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team, category, pct_ranges
+        _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team,
+        llm_model, category, pct_ranges
     )
 
 
@@ -267,7 +288,7 @@ def _parse_pct(val) -> float | None:
         return None
 
 
-def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, category, pct_ranges=None):
+def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, llm_model, category, pct_ranges=None):
     pct_ranges = pct_ranges or {}
     conditions = ["f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL"]
     params: dict = {}
@@ -293,6 +314,9 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ca
     if team:
         conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
         params["team"] = f"%{team.strip()}%"
+    if llm_model:
+        conditions.append("p.llm_model = :llm_model")
+        params["llm_model"] = llm_model.strip()
     if category:
         conditions.append("f.category = :category")
         params["category"] = category
@@ -406,7 +430,7 @@ def _derive_result_flags(d: dict, actual_h, actual_a):
     return win_correct, over_correct, handicap_correct, score_correct
 
 
-def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, league_id, season, team, page, page_size):
+def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, league_id, season, team, llm_model, page, page_size):
     try:
         conditions = []
         params: dict = {}
@@ -438,6 +462,9 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
         if team:
             conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
             params["team"] = f"%{team.strip()}%"
+        if llm_model:
+            conditions.append("p.llm_model = :llm_model")
+            params["llm_model"] = llm_model.strip()
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -449,6 +476,7 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
         # JOIN 源表（leagues / teams）以使用 _zh 中文字段兜底
         rows = db.execute(text(f"""
             SELECT p.fixture_id, p.match_date, p.model_group,
+                   p.llm_model,
                    p.win_home, p.win_draw, p.win_away, p.over25_prob,
                    p.top3_scores, p.lambda_home, p.lambda_away, p.handicap,
                    p.win_correct, p.over25_correct, p.handicap_correct, p.score_in_top3,
@@ -527,6 +555,7 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
                     "handicap": d.get("handicap"),
                 },
                 "llm": {
+                    "model": d.get("llm_model"),
                     "win": d.get("llm_win"),
                     "win_pct": d.get("llm_win_pct"),
                     "score": d.get("llm_score"),

@@ -19,6 +19,7 @@ interface AccuracyFilters {
   leagueId: string
   season: string
   team: string
+  llmModel: string
 }
 
 type PctRange = { min: string; max: string }
@@ -66,6 +67,7 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
       if (filters.leagueId.trim()) params.league_id = filters.leagueId.trim()
       if (filters.season.trim()) params.season = filters.season.trim()
       if (filters.team.trim()) params.team = filters.team.trim()
+      if (filters.llmModel) params.llm_model = filters.llmModel
       // 置信度区间：按类别分别下发，仅影响对应类别的样本与命中统计
       for (const [key, cfg] of Object.entries(PCT_FILTERS)) {
         const range = debouncedPct[key as keyof PctInputs]
@@ -86,7 +88,7 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
     }
     }
     fetchAccuracy()
-  }, [filters.dateFrom, filters.dateTo, filters.leagueId, filters.season, filters.team, debouncedPct])
+  }, [filters.dateFrom, filters.dateTo, filters.leagueId, filters.season, filters.team, filters.llmModel, debouncedPct])
 
   const setPctField = (key: keyof PctInputs, field: 'min' | 'max', value: string) => {
     setPctInputs((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }))

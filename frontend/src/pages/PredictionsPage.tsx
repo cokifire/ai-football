@@ -30,6 +30,7 @@ interface PredictionDetail {
     handicap: string | null
   } | null
   llm: {
+    model: string | null
     win: string | null
     win_pct: number | null
     score: string | null
@@ -58,6 +59,7 @@ interface FilterValues {
   leagueId: string
   season: string
   team: string
+  llmModel: string
 }
 
 interface LeagueOption {
@@ -65,6 +67,11 @@ interface LeagueOption {
   name: string
   name_zh?: string
   seasons?: { year: number }[]
+}
+
+interface ModelOption {
+  model: string
+  count: number
 }
 
 export default function PredictionsPage() {
@@ -77,8 +84,10 @@ export default function PredictionsPage() {
   const [leagueId, setLeagueId] = useState('')
   const [season, setSeason] = useState('')
   const [team, setTeam] = useState('')
-  const [appliedFilters, setAppliedFilters] = useState<FilterValues>({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '' })
+  const [llmModel, setLlmModel] = useState('')
+  const [appliedFilters, setAppliedFilters] = useState<FilterValues>({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '', llmModel: '' })
   const [leagues, setLeagues] = useState<LeagueOption[]>([])
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const seasons = useMemo(() => {
     const league = leagues.find((item) => item.id === Number(leagueId))
     return league?.seasons?.map((item) => item.year) || []
@@ -127,6 +136,7 @@ export default function PredictionsPage() {
           league_id: appliedFilters.leagueId.trim() || undefined,
           season: appliedFilters.season.trim() || undefined,
           team: appliedFilters.team.trim() || undefined,
+          llm_model: appliedFilters.llmModel || undefined,
         },
       })
       .then((res) => {
@@ -141,6 +151,10 @@ export default function PredictionsPage() {
     apiClient.get('/leagues', { params: { enabled: true, page_size: 200 } })
       .then((res) => setLeagues(res.data.data || []))
       .catch(() => setLeagues([]))
+
+    apiClient.get('/predictions/models')
+      .then((res) => setModelOptions(res.data.data || []))
+      .catch(() => setModelOptions([]))
   }, [])
 
   useEffect(() => {
@@ -149,7 +163,7 @@ export default function PredictionsPage() {
 
   const handleSearch = () => {
     setPage(1)
-    setAppliedFilters({ dateFrom, dateTo, leagueId, season, team })
+    setAppliedFilters({ dateFrom, dateTo, leagueId, season, team, llmModel })
   }
 
   const resetFilters = () => {
@@ -158,8 +172,9 @@ export default function PredictionsPage() {
     setLeagueId('')
     setSeason('')
     setTeam('')
+    setLlmModel('')
     setPage(1)
-    setAppliedFilters({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '' })
+    setAppliedFilters({ dateFrom: '', dateTo: '', leagueId: '', season: '', team: '', llmModel: '' })
   }
 
   const openRecentFixture = (fixtureId: number) => {
@@ -241,7 +256,7 @@ export default function PredictionsPage() {
         <div className="border-b border-gray-200 bg-gray-50/70 px-6 py-4">
           <div className="mb-3 flex items-center gap-2">
             <span className="text-sm font-semibold text-gray-700">筛选条件</span>
-            {(appliedFilters.dateFrom || appliedFilters.dateTo || appliedFilters.leagueId || appliedFilters.season || appliedFilters.team) && <span className="badge-gray">已应用</span>}
+            {(appliedFilters.dateFrom || appliedFilters.dateTo || appliedFilters.leagueId || appliedFilters.season || appliedFilters.team || appliedFilters.llmModel) && <span className="badge-gray">已应用</span>}
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <div>
@@ -269,6 +284,22 @@ export default function PredictionsPage() {
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">球队</label>
               <input className="input" placeholder="队名含…" value={team} onChange={(e) => setTeam(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">预测模型</label>
+              <select
+                className="input min-w-[220px]"
+                value={llmModel}
+                onChange={(e) => setLlmModel(e.target.value)}
+                title="按实际生成预测的 LLM 模型筛选"
+              >
+                <option value="">全部模型</option>
+                {modelOptions.map((item) => (
+                  <option key={item.model} value={item.model}>
+                    {item.model}（{item.count}场）
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex items-end gap-2">
               <button className="btn btn-primary btn-sm" onClick={handleSearch}>搜索</button>
