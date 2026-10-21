@@ -91,16 +91,18 @@ def existing_xg_teams(db, fixture_ids):
 
 
 def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
-    """只补缺失项，绝不覆盖已有值。
+    """写入 xG / goals_prevented / passes_final_third，已有值一律覆盖。
 
-    API-Football 自带的全场统计里已含 expected_goals / goals_prevented（其 xG 模型
-    与 Flashscore 不同，数值会略有出入），而 passes_final_third 只有 Flashscore 才
-    提供。因此已存在的 stat_type 一律保留原值、只插入缺失的那条（通常是 PFT），
-    避免回填时用 Flashscore 的 xG/GP 覆盖掉 API-Football 已有的值。
+    xG/GP 以 Flashscore 为准覆盖 API-Football 已有的值：一场比赛主客两队的 xG
+    必须来自同一个数据源，否则 xGA(= 同场对手 xG，见 tools/backfill_xga.py) 的
+    恒等式会把两个不同模型的数值缝在一起，出现 xG 与 xGA 对不上的情况。
+
+    expected_goals_against 会在同一次写入里按该恒等式同步（本队 xGA = 对手 xG），
+    所以回填完无需再跑 tools/backfill_xga.py --force。
     """
     written = 0
 
-    def _fill(team_id, team_name, vals):
+    def _upsert(team_id, team_name, vals):
         nonlocal written
         for stat_type, value in (
             ("expected_goals", vals.get("xg")),
@@ -115,15 +117,46 @@ def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
                 .first()
             )
             if exist:
-                continue  # 已有值（API-Football 或此前回填），保留不动
-            db.add(FixtureStatistic(
-                fixture_id=fixture_id, team_id=team_id,
-                team_name=team_name, stat_type=stat_type, stat_value=str(value),
-            ))
+                exist.stat_value = str(value)
+                exist.team_name = team_name
+            else:
+                db.add(FixtureStatistic(
+                    fixture_id=fixture_id, team_id=team_id,
+                    team_name=team_name, stat_type=stat_type, stat_value=str(value),
+                ))
             written += 1
 
-    _fill(home_id, home_name, stats["home"])
-    _fill(away_id, away_name, stats["away"])
+    _upsert(home_id, home_name, stats["home"])
+    _upsert(away_id, away_name, stats["away"])
+
+    # xGA(= 同场对手的 xG) 一并写入，让恒等式 A.xga == B.xg 当场成立，
+    # 不必再单独跑 tools/backfill_xga.py --force 去补同步。
+    # 值取本次实际写入的那个对象再 str()，保证与对手 expected_goals 逐字节一致
+    # （backfill_xga.verify() 就是按逐字节相等来自检的）。
+    for team_id, team_name, opp_xg in (
+        (home_id, home_name, stats["away"].get("xg")),
+        (away_id, away_name, stats["home"].get("xg")),
+    ):
+        if opp_xg is None:
+            continue  # 对手 xG 缺失时不推测填充（与 backfill_xga.py 口径一致）
+        value = str(opp_xg)
+        exist = (
+            db.query(FixtureStatistic)
+            .filter_by(fixture_id=fixture_id, team_id=team_id,
+                       stat_type="expected_goals_against")
+            .first()
+        )
+        if exist:
+            exist.stat_value = value
+            exist.team_name = team_name
+        else:
+            db.add(FixtureStatistic(
+                fixture_id=fixture_id, team_id=team_id,
+                team_name=team_name, stat_type="expected_goals_against",
+                stat_value=value,
+            ))
+        written += 1
+
     db.commit()
     return written
 
@@ -220,7 +253,7 @@ def main():
                           f"/PFT={stats['away']['passes_final_third']}")
                 else:
                     fail += 1
-                    print("  FAIL 无新增数据 (Flashscore 未返回可写值，或该场这些指标均已存在)")
+                    print("  FAIL Flashscore 未返回 xG/GP 数据 (0 条写入)")
             except Exception as e:
                 fail += 1
                 print(f"  FAIL 抓取失败: {e}")
