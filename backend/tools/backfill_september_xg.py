@@ -91,9 +91,16 @@ def existing_xg_teams(db, fixture_ids):
 
 
 def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
+    """只补缺失项，绝不覆盖已有值。
+
+    API-Football 自带的全场统计里已含 expected_goals / goals_prevented（其 xG 模型
+    与 Flashscore 不同，数值会略有出入），而 passes_final_third 只有 Flashscore 才
+    提供。因此已存在的 stat_type 一律保留原值、只插入缺失的那条（通常是 PFT），
+    避免回填时用 Flashscore 的 xG/GP 覆盖掉 API-Football 已有的值。
+    """
     written = 0
 
-    def _upsert(team_id, team_name, vals):
+    def _fill(team_id, team_name, vals):
         nonlocal written
         for stat_type, value in (
             ("expected_goals", vals.get("xg")),
@@ -108,17 +115,15 @@ def upsert_xg(db, fixture_id, home_id, home_name, away_id, away_name, stats):
                 .first()
             )
             if exist:
-                exist.stat_value = str(value)
-                exist.team_name = team_name
-            else:
-                db.add(FixtureStatistic(
-                    fixture_id=fixture_id, team_id=team_id,
-                    team_name=team_name, stat_type=stat_type, stat_value=str(value),
-                ))
+                continue  # 已有值（API-Football 或此前回填），保留不动
+            db.add(FixtureStatistic(
+                fixture_id=fixture_id, team_id=team_id,
+                team_name=team_name, stat_type=stat_type, stat_value=str(value),
+            ))
             written += 1
 
-    _upsert(home_id, home_name, stats["home"])
-    _upsert(away_id, away_name, stats["away"])
+    _fill(home_id, home_name, stats["home"])
+    _fill(away_id, away_name, stats["away"])
     db.commit()
     return written
 
@@ -215,7 +220,7 @@ def main():
                           f"/PFT={stats['away']['passes_final_third']}")
                 else:
                     fail += 1
-                    print("  FAIL Flashscore 未返回 xG/GP 数据 (0 条写入)")
+                    print("  FAIL 无新增数据 (Flashscore 未返回可写值，或该场这些指标均已存在)")
             except Exception as e:
                 fail += 1
                 print(f"  FAIL 抓取失败: {e}")

@@ -13,6 +13,7 @@ from app.db.base import Base
 # 导入所有模型，确保 autogenerate 能检测到
 from app.models.league import League, Season  # noqa: F401
 from app.models.team import Team, Venue  # noqa: F401
+from app.models.api_status import ApiStatus  # noqa: F401
 
 config = context.config
 

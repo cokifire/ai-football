@@ -127,7 +127,8 @@ def run_task(task_id: str, task_name: str, sync_fn, db=None):
         logger.warning(f"[Scheduler] {task_name} 已在运行中，跳过本次触发")
         return False
 
-    # 每个 tick 复位额度闩锁：新的一天 API-Football 额度会恢复。
+    # 每个 tick 复位额度闩锁：新的一天 API-Football 额度会恢复。同步清 ``api_status``
+    # 表缓存与 ``quota_exhausted``，让所有进程从同一起点开始。
     reset_quota_latch()
 
     own_db = db is None

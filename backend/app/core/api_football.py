@@ -144,31 +144,30 @@ class ApiFootballRateLimited(ApiFootballError):
 
 
 # ── 当日额度耗尽闩锁 ─────────────────────────────────────────
-# 一旦确认当日额度耗尽就置位，后续请求直接快速失败，不再逐个重试。
-# 否则 ``sync_completed_sub_data`` 会对 200 场比赛逐个重试 3 次（退避
-# 1.5/3/6s），在 key 已失效的情况下空转近一小时；而上层
-# ``_sync_one_league_by_season`` 会把 ApiFootballQuotaExceeded 当成普通失败
-# 吞掉继续跑下一个联赛，日志里只剩"拉取…失败"，看不出是额度问题。
-_daily_quota_exhausted = False
+# 闩锁状态现在由 ``app.services.api_status_service`` 持久化到 ``api_status`` 表
+# （原 ``_daily_quota_exhausted`` 是进程内 bool，调度进程与手动工具看不到对方状态）。
+# 这里只保留 3 个薄包装函数，把调用全部转发到 service，使所有调用方的 import
+# 路径不变 (``from app.core.api_football import is_quota_exhausted, ...``)。
+from app.services.api_status_service import (
+    is_quota_exhausted as _service_is_quota_exhausted,
+    mark_quota_exhausted as _service_mark_quota_exhausted,
+    reset_provider as _service_reset_provider,
+)
 
 
 def mark_quota_exhausted(reason: str = "") -> None:
-    """标记当日额度已耗尽，后续 API-Football 请求直接快速失败。"""
-    global _daily_quota_exhausted
-    if not _daily_quota_exhausted:
-        logger.warning(f"[API-Football] 当日额度已耗尽，后续请求快速失败：{reason}")
-    _daily_quota_exhausted = True
+    """标记当日额度已耗尽：写 ``api_status`` 表 + 进程缓存，后续请求快速失败。"""
+    _service_mark_quota_exhausted("api-football", reason)
 
 
 def is_quota_exhausted() -> bool:
-    """当日额度是否已耗尽（供调用方提前放弃长任务）。"""
-    return _daily_quota_exhausted
+    """当日额度是否已耗尽（供调用方提前放弃长任务）。跨进程共享，跨天自动复位。"""
+    return _service_is_quota_exhausted("api-football")
 
 
 def reset_quota_latch() -> None:
-    """每个调度 tick 开始时复位闩锁，新的一天额度会恢复。"""
-    global _daily_quota_exhausted
-    _daily_quota_exhausted = False
+    """每个调度 tick 开始时复位闩锁（清缓存 + DB 置 0），新的一天额度会恢复。"""
+    _service_reset_provider("api-football")
 
 
 def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
@@ -240,7 +239,7 @@ def api_football_get_sync(
     key = (settings.api_football_key or "").strip()
     if not key:
         raise ApiFootballError("API-Football key 未配置 (api_football_key)")
-    if _daily_quota_exhausted:
+    if is_quota_exhausted():
         raise ApiFootballQuotaExceeded(f"API-Football key 当日额度已耗尽: {endpoint}")
 
     timeout_cfg = httpx.Timeout(
@@ -340,7 +339,7 @@ async def api_football_get_async(
     ApiFootballQuotaExceeded。当日额度已确认耗尽时直接快速失败。
     """
     params = params or {}
-    if _daily_quota_exhausted:
+    if is_quota_exhausted():
         raise ApiFootballQuotaExceeded(f"API-Football key 当日额度已耗尽: {endpoint}")
     for attempt in range(RATE_LIMIT_RETRIES):
         await asyncio.to_thread(_api_rate_limiter.acquire)

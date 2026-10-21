@@ -21,6 +21,10 @@ from app.services.fixture_service import sync_fixtures, sync_live_fixtures
 from app.services.prediction_result_service import backfill_results
 from app.services.auto_predict_service import auto_predict
 from app.core.security import AdminAuth, ReadAuth, require_admin
+from app.services.api_status_service import (
+    get_status as get_api_status,
+    reset_provider as reset_api_status,
+)
 
 router = APIRouter()
 
@@ -133,6 +137,21 @@ def _run_task_with_stream(task_id: str, task_name: str, sync_fn):
 @router.get("/scheduler/status")
 async def scheduler_status(_: ReadAuth):
     return await asyncio.to_thread(get_scheduler_status)
+
+
+# ──────────── API-Football 额度状态 (api_status 表) ────────────
+@router.get("/api-status/{provider}")
+async def api_status_get(provider: str, _: ReadAuth):
+    """读取某个 provider 的 ``api_status``（如 ``api-football``）。"""
+    return await asyncio.to_thread(get_api_status, provider)
+
+
+@router.post("/api-status/{provider}/reset")
+async def api_status_reset(provider: str, _: AdminAuth):
+    """管理员手动复位: 强制 ``quota_exhausted=0``, 用于"今天日期还没变但
+    升级了套餐/换了 key"这类场景。"""
+    await asyncio.to_thread(reset_api_status, provider)
+    return {"status": "ok", "message": f"{provider} 额度状态已复位"}
 
 
 @router.post("/scheduler/{task_id}/trigger")

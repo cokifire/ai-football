@@ -4,3 +4,4 @@ from app.models.player import Player, PlayerStats
 from app.models.standing import Standing
 from app.models.fixture import Fixture, FixtureEvent, FixtureLineup, FixtureStatistic, FixturePlayerStat
 from app.models.team_elo import TeamElo
+from app.models.api_status import ApiStatus
