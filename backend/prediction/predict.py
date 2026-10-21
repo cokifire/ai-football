@@ -291,8 +291,12 @@ def _call_llm_provider(
     return None
 
 
-def _call_llm(prompt: str, retries: int = 2) -> dict | None:
-    """优先主预测模型；其不可用或输出不合规时，切换到备用模型。"""
+def _call_llm(prompt: str, retries: int = 2) -> tuple[dict | None, str | None]:
+    """优先主预测模型；其不可用或输出不合规时，切换到备用模型。
+
+    返回 ``(结果, 实际出结果的模型名)``，两侧都失败时为 ``(None, None)``。
+    模型名要落库，否则事后无法区分一条预测是主模型还是备用模型算出来的。
+    """
     primary_name = f"主预测 LLM ({settings.prediction_llm_model})"
     result = _call_llm_provider(
         prompt,
@@ -304,7 +308,7 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
     )
     if result is not None:
         logger.info("预测 LLM 成功: provider=primary, model={}", settings.prediction_llm_model)
-        return result
+        return result, settings.prediction_llm_model
 
     fallback_name = f"备用预测 LLM ({settings.prediction_fallback_llm_model})"
     logger.warning("主预测 LLM 已失败，开始切换备用模型: {}", fallback_name)
@@ -318,7 +322,8 @@ def _call_llm(prompt: str, retries: int = 2) -> dict | None:
     )
     if result is not None:
         logger.info("预测 LLM 成功: provider=fallback, model={}", settings.prediction_fallback_llm_model)
-    return result
+        return result, settings.prediction_fallback_llm_model
+    return None, None
 
 
 def _parse_llm_json(content: str) -> dict | None:
@@ -1407,13 +1412,14 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
 
         # 5. LLM
         llm_result = None
+        llm_model = None
         try:
             prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
                                        lineups_text, weather_text,
                                        intelligence_markdown, bayes_context)
-            llm_result = _call_llm(prompt)
+            llm_result, llm_model = _call_llm(prompt)
         except Exception as e:
             logger.debug(f"LLM失败: {e}")
         if llm_result is None:
@@ -1427,7 +1433,9 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
 
         # 6. 写库
         _save_prediction(db, fixture, xgb_result, llm_result, odds, model_group,
-                         bayes_context, intelligence_markdown=intelligence_markdown)
+                         bayes_context,
+                         intelligence_markdown=intelligence_markdown,
+                         llm_model=llm_model)
 
         # 近10场原始战绩仅本次返回给前端核对，不落库
         result = {
@@ -1451,12 +1459,16 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
 
 
 def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
-                     intelligence_markdown: str = ""):
+                     intelligence_markdown: str = "", llm_model: str | None = None):
     """写入预测结果。
 
     贝叶斯概率（P0/P1/version）不落库：实测 P1 恒等于 P0，而 win_home/win_draw/
     win_away 存的本就是 P1，再存一份只是重复副本。但来源账本、证据更新、风险提示
-    属于可审计信息，予以保留，便于事后回溯某次预测当时究竟依据了什么。
+    属于可审计信息，予以保留，便于事后复盘某次预测当时究竟依据了什么。
+
+    llm_model 落的是实际出结论的那个预测 LLM 的名字：主模型可用时是
+    prediction_llm_model，主模型失败改由备用模型出结果时是
+    prediction_fallback_llm_model。只记名字，不记它的推导过程。
 
     外部情报同样落库：它只在预测当时抓取，请求中途断开后前端靠数据库重建弹窗时
     仍需展示；重复预测若没抓到情报，保留上一次内容而不是清空。
@@ -1476,7 +1488,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
             llm_win, llm_score, llm_win_pct,
             llm_deep_report,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
-            llm_ou_line, llm_ou_type, llm_ou_pct,
+            llm_ou_line, llm_ou_type, llm_ou_pct, llm_model,
             bayes_updates, bayes_evidence, bayes_risk,
             intelligence_markdown,
             created_at, updated_at
@@ -1488,7 +1500,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
             :lw, :ls, :lwp,
             :ldr,
             :hcn, :hct, :hcp,
-            :oun, :out, :oup,
+            :oun, :out, :oup, :lmodel,
             :bupdates, :bevidence, :brisk,
             :imd,
             :now, :now
@@ -1500,6 +1512,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
             llm_deep_report=:ldr,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
             llm_ou_line=:oun, llm_ou_type=:out, llm_ou_pct=:oup,
+            llm_model=COALESCE(:lmodel, llm_model),
             bayes_updates=:bupdates, bayes_evidence=:bevidence, bayes_risk=:brisk,
             intelligence_markdown=COALESCE(NULLIF(:imd, ''), intelligence_markdown),
             model_group=:mgroup, updated_at=:now
@@ -1522,6 +1535,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
         'bevidence': _j((bayes or {}).get('evidence')),
         'brisk': _j({"risks": (bayes or {}).get('risks', []),
                      "market": (bayes or {}).get('market_check')}) if bayes else None,
+        'lmodel': llm_model,
         'imd': intelligence_markdown or '',
         'now': datetime.now(),
     })

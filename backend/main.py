@@ -14,7 +14,10 @@ from app.api.scheduler import router as scheduler_router
 from app.api.predictions import router as predictions_router
 from app.api.logs import router as logs_router
 from app.services.scheduler import init_scheduler, shutdown_scheduler
-from app.db.schema_compat import ensure_prediction_intelligence_column
+from app.db.schema_compat import (
+    ensure_prediction_intelligence_column,
+    ensure_prediction_llm_model_column,
+)
 
 # 初始化日志
 setup_logger()
@@ -29,6 +32,7 @@ async def lifespan(app: FastAPI):
 
     # predictions 表由 raw SQL 维护，补上代码依赖但可能尚未迁移的列
     ensure_prediction_intelligence_column()
+    ensure_prediction_llm_model_column()
 
     logger.info("正在注册定时任务...")
     init_scheduler()
