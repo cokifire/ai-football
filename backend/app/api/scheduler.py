@@ -8,10 +8,9 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from app.db.session import get_db
-from datetime import datetime
 from app.services.scheduler import (
     get_scheduler_status, stop_scheduled_task, start_scheduled_task,
-    update_task, _claim_task, _update_db,
+    update_task, _update_db, _prepare_task_run, run_task,
 )
 from app.services.league_service import sync_leagues
 from app.services.team_service import sync_teams
@@ -98,7 +97,11 @@ def _run_task_with_stream(task_id: str, task_name: str, sync_fn):
     # 与定时任务共用 is_running 占位：任务正在跑则直接放弃。否则手动触发会和
     # 08:30 的定时同步并发跑第二遍 sync_fixtures，重复拉子数据且 _do_fetch 的
     # "已存在则跳过"检查与插入之间存在竞态。
-    if not _claim_task(task_id, datetime.now()):
+    #
+    # 必须复用 ``_prepare_task_run`` 而不是直接调 ``_claim_task``：它额外负责复位
+    # API 额度闩锁。手动触发曾经漏掉复位，导致当天标记过"额度耗尽"后，之后所有
+    # 手动触发都被陈旧的 ``api_status`` 状态拦住（控制面板显示额度仍有剩余）。
+    if not _prepare_task_run(task_id, task_name):
         push_task_message(task_id, f"⚠ {task_name} 已在运行中，本次手动触发已跳过")
         push_task_message(task_id, "__DONE__")
         return
@@ -193,46 +196,54 @@ async def stream_task_logs(task_id: str, _: ReadAuth):
     )
 
 # ═══ 兼容旧接口 ═══
+# 统一改走 ``run_task``：它内部复用 ``_prepare_task_run``（原子占位 + 复位 API
+# 额度闩锁），与定时 loop 和 ``/{task_id}/trigger`` 共用同一段准备逻辑。
+# 之前这里直连 ``sync_fn(db)``，既不占位也不复位，会踩到和手动触发一样的陈旧
+# 额度状态陷阱（当天标记过"额度耗尽"后就一直被拦住，哪怕额度还有剩余）。
+# 任务名与函数统一取 ``TASK_MAP``，避免再出现第三份映射表。
 @router.post("/scheduler/leagues/sync")
 async def trigger_league_sync(_: AdminAuth, db: Session = Depends(get_db)):
-    logger.info("手动触发: 联赛数据同步")
-    sync_leagues(db)
+    name, fn = TASK_MAP["league_sync"]
+    logger.info(f"手动触发: {name}")
+    run_task("league_sync", name, fn, db=db)
     return {"status": "ok"}
 
 @router.post("/scheduler/teams/sync")
 async def trigger_team_sync(_: AdminAuth, db: Session = Depends(get_db)):
-    logger.info("手动触发: 球队数据同步")
-    sync_teams(db)
+    name, fn = TASK_MAP["team_sync"]
+    logger.info(f"手动触发: {name}")
+    run_task("team_sync", name, fn, db=db)
     return {"status": "ok"}
 
 @router.post("/scheduler/players/sync")
 async def trigger_player_sync(_: AdminAuth, db: Session = Depends(get_db)):
-    logger.info("手动触发: 球员数据同步")
-    sync_players(db)
+    name, fn = TASK_MAP["player_sync"]
+    logger.info(f"手动触发: {name}")
+    run_task("player_sync", name, fn, db=db)
     return {"status": "ok"}
 
 @router.post("/scheduler/standings/sync")
 async def trigger_standing_sync(_: AdminAuth, db: Session = Depends(get_db)):
-    logger.info("手动触发: 积分榜数据同步")
-    sync_standings(db)
+    name, fn = TASK_MAP["standing_sync"]
+    logger.info(f"手动触发: {name}")
+    run_task("standing_sync", name, fn, db=db)
     return {"status": "ok"}
 
 @router.post("/scheduler/fixtures/sync")
 async def trigger_fixture_sync(_: AdminAuth, db: Session = Depends(get_db)):
     """同步执行的遗留端点：同样要先占位，否则会和定时任务并发跑两遍子数据。"""
-    logger.info("手动触发: 赛程每日同步")
-    if not _claim_task("fixture_daily", datetime.now()):
+    name, fn = TASK_MAP["fixture_daily"]
+    logger.info(f"手动触发: {name}")
+    # 保留原本的 409 语义：占位失败（定时任务正在跑）时明确告知调用方。
+    if not run_task("fixture_daily", name, fn, db=db):
         raise HTTPException(status_code=409, detail="赛程每日同步正在运行中，请稍后再试")
-    try:
-        sync_fixtures(db)
-    finally:
-        _update_db("fixture_daily", is_running=0)
     return {"status": "ok"}
 
 @router.post("/scheduler/fixtures/live")
 async def trigger_live_sync(_: AdminAuth, db: Session = Depends(get_db)):
-    logger.info("手动触发: 赛程实时同步")
-    sync_live_fixtures(db)
+    name, fn = TASK_MAP["fixture_live"]
+    logger.info(f"手动触发: {name}")
+    run_task("fixture_live", name, fn, db=db)
     return {"status": "ok"}
 
 

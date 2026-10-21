@@ -118,18 +118,36 @@ def _claim_task(task_id: str, last_run) -> bool:
         db.close()
 
 
+def _prepare_task_run(task_id: str, task_name: str) -> bool:
+    """任务执行前的公共准备：原子占位 + 复位 API 额度闩锁。
+
+    定时 loop（``run_task``）与手动触发（``app.api.scheduler._run_task_with_stream``）
+    必须共用这一段。两者曾各自实现占位逻辑，手动路径漏掉了 ``reset_quota_latch``，
+    后果是：当天早些时候某次同步真的撞到日额度上限并被标记后，DB 里
+    ``api_status.quota_exhausted`` 会一直是 1（UTC 自然日不翻页就不会自动复位），
+    于是之后所有手动触发的任务一进来就被"额度已耗尽"拦住 —— 哪怕控制面板显示
+    额度仍有剩余。
+
+    返回 True 表示拿到执行权；调用方负责在 finally 里释放占位。
+    """
+    if not _claim_task(task_id, datetime.now()):
+        return False
+
+    # 每次任务开跑都复位闩锁：新的一天 / 新套餐 / 换 key 后额度会恢复。
+    # 复位只是"给本次运行一次探测机会"：若额度真的耗尽，本轮首个请求会再次
+    # 识别并标记，同一轮内后续调用仍然快速失败。
+    reset_quota_latch()
+    return True
+
+
 def run_task(task_id: str, task_name: str, sync_fn, db=None):
     """执行任务（供定时 loop 和手动触发共用）。
 
     执行前先原子占位；任务已在运行则直接跳过，返回 False。
     """
-    if not _claim_task(task_id, datetime.now()):
+    if not _prepare_task_run(task_id, task_name):
         logger.warning(f"[Scheduler] {task_name} 已在运行中，跳过本次触发")
         return False
-
-    # 每个 tick 复位额度闩锁：新的一天 API-Football 额度会恢复。同步清 ``api_status``
-    # 表缓存与 ``quota_exhausted``，让所有进程从同一起点开始。
-    reset_quota_latch()
 
     own_db = db is None
     if own_db:
