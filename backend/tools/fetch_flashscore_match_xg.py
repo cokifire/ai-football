@@ -36,7 +36,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# 同 backfill_september_xg.py：app/core/config.py 的 env_file = ".env" 按 CWD
+# 同 backfill_xg.py：app/core/config.py 的 env_file = ".env" 按 CWD
 # 解析，从仓库根直接运行会退回 localhost:3306 默认值。按脚本位置显式加载，
 # 保证从任意目录运行都拿到同一套 DB 配置。
 from dotenv import load_dotenv

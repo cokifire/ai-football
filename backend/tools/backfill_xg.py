@@ -14,9 +14,9 @@ Passes in final third 数据。
 
 用法
 ----
-    python tools/backfill_september_xg.py --dry-run
-    python tools/backfill_september_xg.py            # 实际抓取 (默认 3s 间隔)
-    python tools/backfill_september_xg.py --year 2026 --month 8 --limit 5 --sleep 5
+    python tools/backfill_xg.py --dry-run
+    python tools/backfill_xg.py            # 实际抓取 (默认 3s 间隔)
+    python tools/backfill_xg.py --year 2026 --month 8 --limit 5 --sleep 5
 """
 import sys
 import json
@@ -29,7 +29,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 # app/core/config.py 的 env_file = ".env" 是相对路径，按 CWD 解析；从仓库根直接
-# `python tools/backfill_september_xg.py` 会找不到 backend/.env，悄悄退回
+# `python tools/backfill_xg.py` 会找不到 backend/.env，悄悄退回
 # localhost:3306 默认值并报 Access denied。这里显式按脚本位置加载，使脚本从任意
 # 目录运行都拿到同一套配置（os.environ 优先级高于 env_file）。
 from dotenv import load_dotenv  # noqa: E402
