@@ -13,14 +13,17 @@ URL 规律 (来自示例 https://www.flashscore.com/match/football/aik-lzqk4S68/
 
 用法
 ----
-    # 抓取示例比赛 (aik vs orgryte)
-    python tools/fetch_flashscore_match_xg.py --pair lzqk4S68 CGT7Kq4j
+    # 抓取示例比赛 (aik vs orgryte)。--date 必填, 抓取时会拿它核对页面上的场次日期
+    python tools/fetch_flashscore_match_xg.py --pair lzqk4S68 CGT7Kq4j --date 2026-07-26
 
-    # 一次抓多场, 用 --pairs 传 "hash1,hash2" 列表 (空格分隔每组)
-    python tools/fetch_flashscore_match_xg.py --pairs lzqk4S68 CGT7Kq4j 4Kh5hPE1 rBi9iqU7
+    # 一次抓多场, --pairs 按主客成对; --date 按同样顺序重复, 一场一个
+    python tools/fetch_flashscore_match_xg.py \
+        --pairs lzqk4S68 CGT7Kq4j 4Kh5hPE1 rBi9iqU7 \
+        --date 2026-07-26 --date 2026-08-02
 
     # 结果写 JSON 文件 (默认也打印)
-    python tools/fetch_flashscore_match_xg.py --pair lzqk4S68 CGT7Kq4j --out xg_result.json
+    python tools/fetch_flashscore_match_xg.py --pair lzqk4S68 CGT7Kq4j \
+        --date 2026-07-26 --out xg_result.json
 """
 import sys
 import json
@@ -54,10 +57,21 @@ URL_TMPL = (
     "{home_slug}-{home_hash}/{away_slug}-{away_hash}/summary/stats/overall/"
 )
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
+# ── 浏览器参数：与赔率抓取 tools/fetch_flashscore_odds.py 共用同一套反检测配置 ──
+# Flashscore 会把带自动化特征的浏览器甩到站点默认页（如 /snooker/）；两边必须
+# 用同一份配置，否则没对齐的那侧会在批量运行时被系统性拦截。
+# 本文件原先没有这套配置，导致补跑 125 场时有约一半请求被重定向，页面读不到
+# 日期而误报"日期不一致"。
+from tools.fetch_flashscore_odds import UA, CHROME_ARGS, STEALTH_JS, _VIEWPORT
+
+# 判定"还停在比赛页"的标记。stats 页路径恒为 /match/football/<...>/summary/stats/
+# ，比赔率侧的 /match/ 前缀更严格，避免停在 /match/snooker/ 这类别的运动上。
+STATS_URL_MARK = "/match/football/"
+
+# 被甩到站点默认页时，换新标签页重试的次数 / 两次重试之间的退避秒数。
+# 实测重定向率约 1/2，重试 4 次后残留失败概率约 1/16。
+STATS_RETRY = 4
+RETRY_BACKOFF_SEC = 3
 
 
 def slugify(name: str) -> str:
@@ -171,6 +185,24 @@ def _as_date_tuple(target_date):
     return None
 
 
+def _parse_cli_date(value: str):
+    """解析 --date 参数，返回 datetime。
+
+    接受 ``YYYY-MM-DD`` 与 ``'YYYY-MM-DD HH:MM[:SS]'``。只给日期就够了：
+    scrape_match_xg 拿它跟页面显示的日期比对时允许 ±1 天容差，正好覆盖
+    页面按当地时区显示、与库里的北京时间可能差一天的情况。
+    """
+    value = (value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"无法解析日期 {value!r}，请用 YYYY-MM-DD 或 'YYYY-MM-DD HH:MM'"
+    )
+
+
 def _dates_match(page_date, target_date, tol_days=1):
     """比较页面日期与目标日期是否一致 (允许 ±tol_days 天容差)。
 
@@ -204,6 +236,44 @@ def _accept_consent(page):
 def _derive_h2h_url(stats_url: str) -> str:
     """把 stats URL 换成同场比赛的 h2h URL。"""
     return stats_url.replace("/summary/stats/overall/", "/h2h/overall/")
+
+
+def _fresh_page(browser):
+    """新建一个带反检测配置的干净标签页。
+
+    每次重试都用新的 context（而不是复用旧的），因为一旦请求 series 被判定为
+    爬虫，旧 context 里的 cookie/指纹会持续被拒。
+    """
+    ctx = browser.new_context(
+        user_agent=UA, locale="en-US", viewport=_VIEWPORT,
+        has_touch=False, is_mobile=False,
+    )
+    ctx.add_init_script(STEALTH_JS)
+    return ctx.new_page()
+
+
+def _goto_stats(url: str, browser, settle_ms: int = 9000):
+    """打开 stats 页并停在比赛页上；被 Flashscore 甩走就换新标签页重试。
+
+    Flashscore 识别出爬虫时不返回错误页，而是把浏览器重定向到站点默认页
+    （https://www.flashscore.com/snooker/）。此时页面里没有日期、没有数据，
+    不重试就会一路走到"日期不一致"的误判里。
+    """
+    page = _fresh_page(browser)
+    for attempt in range(1, STATS_RETRY + 1):
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        _accept_consent(page)
+        page.wait_for_timeout(settle_ms)
+        if STATS_URL_MARK in page.url:
+            return page
+        print(f"[warn] Flashscore 重定向到非比赛页 {page.url}，"
+              f"第 {attempt}/{STATS_RETRY} 次重试")
+        if attempt < STATS_RETRY:
+            page = _fresh_page(browser)
+            time.sleep(RETRY_BACKOFF_SEC)
+    raise RuntimeError(
+        f"Flashscore 连续 {STATS_RETRY} 次把 {url} 重定向到非比赛页"
+    )
 
 
 def _derive_stats_url_from_match_url(match_url: str) -> str:
@@ -351,14 +421,10 @@ def scrape_match_xg(home_hash, away_hash, hash_to_name, match_date):
     url = build_url(home_hash, away_hash, hash_to_name)
     print(f"[fetch] {url}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent=UA, locale="en-US")
+        browser = p.chromium.launch(headless=True, args=CHROME_ARGS)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            _accept_consent(page)
-
-            # 等待 stats 异步加载完成 (Flashscore 统计表为 JS 异步注入)
-            page.wait_for_timeout(9000)
+            # 打开 stats 页并确保真的停在比赛页（被甩走会换新标签页重试）
+            page = _goto_stats(url, browser)
 
             # 精确核对比赛日期: 若页面日期与目标不一致 (含未开赛/未来场次),
             # 通过 H2H 列表按日期找正确的历史比赛
@@ -370,9 +436,8 @@ def scrape_match_xg(home_hash, away_hash, hash_to_name, match_date):
                     home_hash=home_hash, away_hash=away_hash, hash_to_name=hash_to_name,
                 )
                 print(f"[fetch] 重新加载历史场次: {resolved_url}")
-                page.goto(resolved_url, wait_until="domcontentloaded", timeout=60000)
-                _accept_consent(page)
-                page.wait_for_timeout(9000)
+                # 这条 URL 也得重试：H2H 跳转同样可能被甩到默认页
+                page = _goto_stats(resolved_url, browser)
                 page_date = _get_page_match_date(page)
                 if not _dates_match(page_date, match_date):
                     raise ValueError(
@@ -400,6 +465,9 @@ def main():
                     help="单场比赛: 主队hash 客队hash")
     ap.add_argument("--pairs", nargs="+", metavar="HASH",
                     help="多场: 依次 home1 away1 home2 away2 ... (成对)")
+    ap.add_argument("--date", action="append", type=_parse_cli_date, default=None,
+                    metavar="YYYY-MM-DD[ HH:MM]",
+                    help="比赛日期, 用于核对页面场次; --pairs 时按场次顺序重复, 一场一个")
     ap.add_argument("--out", default=None, help="结果输出 JSON 路径")
     args = ap.parse_args()
 
@@ -415,6 +483,15 @@ def main():
         pairs = [("lzqk4S68", "CGT7Kq4j")]
         print("[info] 未指定 --pair/--pairs, 使用默认示例 (aik vs orgryte)")
 
+    # scrape_match_xg 必须拿到 match_date 才能核对场次（为 None 直接抛错），
+    # 所以这里要求日期数量与场次数严格一致：共用一个日期会静默抓到错场次。
+    dates = args.date or []
+    if len(dates) != len(pairs):
+        print(f"错误: 需要为 {len(pairs)} 场比赛各提供一个 --date，实际给了 {len(dates)} 个")
+        print("      --pair 用 1 个；--pairs 按场次顺序重复 --date，例如")
+        print("      --pairs h1 a1 h2 a2 --date 2026-07-26 --date 2026-08-02")
+        sys.exit(1)
+
     db = SessionLocal()
     try:
         hash_to_name = load_hash_to_name(db)
@@ -422,9 +499,9 @@ def main():
         db.close()
 
     results = []
-    for home, away in pairs:
+    for (home, away), match_date in zip(pairs, dates):
         try:
-            r = fetch_one(home, away, hash_to_name)
+            r = fetch_one(home, away, hash_to_name, match_date)
             results.append(r)
             print(f"  {r['home_name']} (xG={r['home']['xg']}, GP={r['home']['goals_prevented']})"
                   f"  vs  {r['away_name']} (xG={r['away']['xg']}, GP={r['away']['goals_prevented']})")
