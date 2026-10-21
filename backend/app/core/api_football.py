@@ -32,7 +32,7 @@ API_RATE_LIMIT = max(settings.api_football_rate_limit, 1)
 API_RATE_WINDOW = max(settings.api_football_rate_window, 1.0)
 # 预留的配额余量: 服务端窗口与本地窗口并不同步(服务端按自己的首次请求/自然分钟
 # 计时), 本地按 窗口/额度 精确放行等于贴着上限跑, 边界错开就会出现"第 11 次"。
-# 因此节流时按 额度-1 计算间隔: 10 次/分钟 -> 60/9 ≈ 6.7s, 留一次余量。
+# 因此节流时间隔按 额度-1 计算: 10 次/分钟 -> 60/9 ≈ 6.7s, 留一次余量。
 RATE_LIMIT_HEADROOM = 1
 EFFECTIVE_RATE_LIMIT = max(API_RATE_LIMIT - RATE_LIMIT_HEADROOM, 1)
 # 均匀节流间隔：用于本地节流与无 Retry-After 时的 429 退避。
@@ -105,9 +105,11 @@ class _ApiRateLimiter:
                     self._timestamps.popleft()
 
                 wait = max(self._next_slot - now, 0.0)
+                window_full = False
                 if wait <= 0.0 and len(self._timestamps) >= API_RATE_LIMIT:
                     # 兜底: 窗口被外部调用打满, 等到最早一次请求滑出窗口
                     wait = max(API_RATE_WINDOW - (now - self._timestamps[0]) + 0.1, 0.1)
+                    window_full = True
 
                 if wait <= 0.0:
                     self._timestamps.append(now)
@@ -119,10 +121,15 @@ class _ApiRateLimiter:
                 self._timestamps.append(slot)
                 self._next_slot = slot + MIN_REQUEST_INTERVAL
 
-            logger.info(
-                f"[API-Football] 达到 {API_RATE_LIMIT}/{int(API_RATE_WINDOW)} 限流, "
-                f"节流等待 {wait:.1f}s"
-            )
+            if window_full:
+                logger.info(
+                    f"[API-Football] 滑动窗口已满 "
+                    f"({API_RATE_LIMIT}/{int(API_RATE_WINDOW)}s), 等待 {wait:.1f}s"
+                )
+            else:
+                # 常规均匀节流属于设计内行为, 不是服务端报错; 降为 DEBUG,
+                # 避免被误读成"遇到限流"。
+                logger.debug(f"[API-Football] 均匀节流: 等待 {wait:.1f}s")
             time.sleep(wait)
             return
 
@@ -194,10 +201,12 @@ def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
 
 
 def _rate_limit_wait_seconds(response: httpx.Response | None = None, attempt: int = 0) -> float:
-    """读取 Retry-After；缺失或无效时按均匀节流间隔退避(6s/10s/10s)。
+    """读取 Retry-After；缺失或无效时按均匀节流下限退避(6.7s/10s/10s)。
 
-    API-Football 的限流以分钟窗口计, 因此退避基数取 ``窗口/额度``(默认 6s),
-    而不是传输层故障用的 1.5s, 避免"等 1.5s 再撞一次限流"。
+    API-Football 的限流以分钟窗口计, 因此退避基数取 ``窗口/额度``(默认 6.7s),
+    而不是传输层故障用的 1.5s, 避免"等 1.5s 再撞一次限流"。基数无需对齐
+    12~15s 的常规节流区间: 重试仍要经过 acquire() 等下一个节流槽位,
+    退避更短只是让重试更早开始排队, 不会提前发出请求。
     """
     retry_after = ((response.headers.get("retry-after") if response else None) or "").strip()
     if retry_after:

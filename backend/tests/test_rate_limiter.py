@@ -21,6 +21,36 @@ def fast_limiter(monkeypatch):
     return af._ApiRateLimiter()
 
 
+def test_rate_limit_backoff_base_uses_min_interval(monkeypatch):
+    """无 Retry-After 时，429 退避基数取 MIN_REQUEST_INTERVAL（约 6.7s），上限 10s。
+
+    常规节流与退避共用同一个基数，避免两者口径不一致。
+    """
+    monkeypatch.setattr(af, "MIN_REQUEST_INTERVAL", 6.667)
+    monkeypatch.setattr(af, "RATE_LIMIT_MAX_BACKOFF", 10.0)
+    assert af._rate_limit_wait_seconds(None, 0) == pytest.approx(6.667)
+    # 6.667 * 2 = 13.3 被上限 10 截断
+    assert af._rate_limit_wait_seconds(None, 1) == pytest.approx(10.0)
+    assert af._rate_limit_wait_seconds(None, 2) == pytest.approx(10.0)
+
+
+def test_consecutive_acquires_respect_min_interval(fast_limiter):
+    """从第 2 个请求起，相邻两次真实发出时刻的间隔不小于节流间隔。
+
+    这就是"均匀节流从启动后第 2 个请求就生效"的行为约定：第 1 个请求
+    立即放行，之后的每个请求都要排队等间隔。
+    """
+    issued = []
+    for _ in range(3):
+        fast_limiter.acquire()
+        issued.append(time.monotonic())
+
+    assert len(issued) == 3
+    gaps = [issued[i + 1] - issued[i] for i in range(len(issued) - 1)]
+    for g in gaps:
+        assert g >= 2.0 / 3 - 0.05, f"相邻请求间隔 {g:.3f}s 低于节流间隔 0.667s"
+
+
 def test_concurrent_acquire_never_exceeds_server_limit(fast_limiter):
     """多线程争用时，任意 2s 窗口内不得超过服务端额度 4。
 
