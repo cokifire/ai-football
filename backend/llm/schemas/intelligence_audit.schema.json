@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Intelligence audit output",
+  "description": "情报审核输出契约：只列出明确属于目标比赛的资料 id。",
+  "type": "object",
+  "properties": {
+    "accepted_ids": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "可以明确确认属于目标比赛的候选资料 id 列表"
+    }
+  },
+  "required": [
+    "accepted_ids"
+  ],
+  "additionalProperties": false
+}

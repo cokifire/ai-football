@@ -12,7 +12,6 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
 from loguru import logger
 
 
@@ -392,8 +391,19 @@ def _audit_articles_with_agnes(
     """
     if not articles:
         return []
-    if not api_key:
-        logger.info("情报 LLM 审核跳过: api_key_configured=False, candidates={}", len(articles))
+
+    # codex 懒导入：与 Firecrawl SDK 同理，环境缺失时不得阻断预测服务启动。
+    from app.core.config import settings
+    from llm.codex_cli import INTELLIGENCE_AUDIT_SCHEMA_PATH, codex_available, run_codex
+
+    # 原先的 api_key 守卫已失效：模型经 codex CLI 调用，改判 codex 可用性
+    # 与模型配置。缺一即跳过，Firecrawl 的程序校验结果仍然生效。
+    codex_ready = codex_available()
+    if not codex_ready or not (model or "").strip():
+        logger.info(
+            "情报 LLM 审核跳过: codex_available={}, model_configured={}, candidates={}",
+            codex_ready, bool((model or "").strip()), len(articles),
+        )
         return articles
 
     documents = []
@@ -424,29 +434,20 @@ def _audit_articles_with_agnes(
 {json.dumps(documents, ensure_ascii=False)}"""
     logger.info("情报 LLM 审核开始: model={}, candidates={}", model, len(articles))
     try:
-        response = httpx.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                # agnes-2.5-flash 会思考，且供应商把 reasoning token 计入
-                # max_tokens。预算过小会在产出 JSON 前被截断
-                # （finish_reason=length，content 为空），json.loads 随即报
-                # "Expecting value: line 1 column 1 (char 0)"。
-                "max_tokens": 2048,
-            },
-            timeout=45.0,
+        content = run_codex(
+            prompt,
+            schema_path=INTELLIGENCE_AUDIT_SCHEMA_PATH,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            sandbox=settings.codex_sandbox,
+            timeout=float(settings.codex_timeout_intelligence),
+            retries=settings.codex_retries,
+            label="情报 LLM 审核",
         )
-        response.raise_for_status()
-        choice = response.json()["choices"][0]
-        content = (choice["message"].get("content") or "").strip()
-        if not content:
-            raise ValueError(
-                f"审核模型返回空内容: finish_reason={choice.get('finish_reason')}"
-            )
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
+        if not content or not content.strip():
+            raise ValueError("审核模型返回空内容")
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE).strip()
         payload = json.loads(content)
         accepted_ids = payload.get("accepted_ids")
         if not isinstance(accepted_ids, list):
@@ -479,10 +480,14 @@ def _organize_with_agnes(
     model: str,
 ) -> str:
     """Turn filtered article text into compact, structured Markdown."""
-    if not api_key or not raw_markdown or "未获取到可用的外部情报" in raw_markdown:
+    from app.core.config import settings
+    from llm.codex_cli import codex_available, run_codex
+
+    codex_ready = codex_available() and bool((model or "").strip())
+    if not codex_ready or not raw_markdown or "未获取到可用的外部情报" in raw_markdown:
         logger.info(
-            "情报 LLM 清洗跳过: api_key_configured={}, raw_chars={}",
-            bool(api_key), len(raw_markdown or ""),
+            "情报 LLM 清洗跳过: codex_ready={}, raw_chars={}",
+            codex_ready, len(raw_markdown or ""),
         )
         return raw_markdown
 
@@ -515,19 +520,18 @@ def _organize_with_agnes(
 ---
 网页资料结束"""
     try:
-        response = httpx.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 1200,
-            },
-            timeout=60.0,
+        content = run_codex(
+            prompt,
+            # 清洗输出是 Markdown，不套 JSON schema，取最终消息即可
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            sandbox=settings.codex_sandbox,
+            timeout=float(settings.codex_timeout_intelligence),
+            retries=settings.codex_retries,
+            label="情报 LLM 清洗",
         )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"].get("content", "").strip()
+        content = (content or "").strip()
         content = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
         if content.startswith("## 外部比赛情报"):
             # 情报质量是内部评估字段，不作为比赛情报展示或注入预测模型。
@@ -551,8 +555,8 @@ def scrape_match_analysis(
     api_key: str,
     firecrawl_base_url: str = "http://127.0.0.1:3002",
     intelligence_llm_api_key: str = "",
-    intelligence_llm_base_url: str = "https://apihub.agnes-ai.com/v1",
-    intelligence_llm_model: str = "agnes-2.5-flash",
+    intelligence_llm_base_url: str = "",
+    intelligence_llm_model: str = "",
     site: str | list[str] | tuple[str, ...] | None = None,
     limit: int = 3,
 ) -> str:

@@ -378,7 +378,9 @@ export default function FixturesPage() {
     setPredictingIds((prev) => new Set(prev).add(fixture.id))
     setPredictMsg(null)
     apiClient
-      .post(`/predict/${fixture.id}`, {}, { timeout: 900000 })
+      // 后端一次预测包含情报 codex + 预测 codex 两段（各最多 1200s），
+      // 客户端不再设 15 分钟上限，跟随后端超时；连接中断由 recoverPrediction 兜底。
+      .post(`/predict/${fixture.id}`, {}, { timeout: 0 })
       .then((res) => {
         setPredictResult({ fixture, result: res.data.result })
         setFixtures((prev) => prev.map((item) => (

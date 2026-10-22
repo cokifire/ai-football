@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Football prediction output",
+  "description": "最终预测输出契约：10 字段全部为字符串，逐项对应 predictions.llm_* 落库列。",
+  "type": "object",
+  "properties": {
+    "win": {
+      "type": "string",
+      "enum": ["主胜", "平局", "客胜"],
+      "description": "胜负结论"
+    },
+    "win_pct": {
+      "type": "string",
+      "description": "该胜负结论的信心百分比，如 85%"
+    },
+    "score": {
+      "type": "string",
+      "description": "三个最可能比分，逗号分隔，如 2-1,1-1,3-0"
+    },
+    "handicap_num": {
+      "type": "string",
+      "description": "让球盘口线，负数=主队让，正数=客队让，如 -1；必须取已提供赔率中的盘口"
+    },
+    "handicap_team": {
+      "type": "string",
+      "enum": ["主队", "客队"],
+      "description": "建议下注的一方（有赢盘价值的一方）"
+    },
+    "handicap_pct": {
+      "type": "string",
+      "description": "handicap_team 这一方的赢盘概率，如 65%"
+    },
+    "ou_line": {
+      "type": "string",
+      "description": "大小球线，如 2.5；必须取已提供赔率中的盘口"
+    },
+    "ou_type": {
+      "type": "string",
+      "enum": ["大", "小"],
+      "description": "大小球方向"
+    },
+    "ou_pct": {
+      "type": "string",
+      "description": "大小球概率，如 60%"
+    },
+    "deep_report": {
+      "type": "string",
+      "description": "500 字内的深度分析，浓缩贝叶斯流水线的关键结论、剧本与风险"
+    }
+  },
+  "required": [
+    "win",
+    "win_pct",
+    "score",
+    "handicap_num",
+    "handicap_team",
+    "handicap_pct",
+    "ou_line",
+    "ou_type",
+    "ou_pct",
+    "deep_report"
+  ],
+  "additionalProperties": false
+}
