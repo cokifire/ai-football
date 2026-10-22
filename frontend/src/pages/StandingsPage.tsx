@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import apiClient from '../api/client'
 import Loading from '../components/Loading'
 import BracketView, { DrawData, DrawLoading } from '../components/BracketView'
+import TeamDetailModal from '../components/TeamDetailModal'
 
 interface LeagueOption {
   id: number
@@ -81,6 +82,7 @@ export default function StandingsPage() {
   const [draw, setDraw] = useState<DrawData | null>(null)
   const [drawLoading, setDrawLoading] = useState(false)
   const [drawError, setDrawError] = useState('')
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null)
 
   // 加载启用的联赛
   useEffect(() => {
@@ -332,7 +334,13 @@ export default function StandingsPage() {
                           ) : (
                             <div className="w-6 h-6 rounded-full bg-gray-200" />
                           )}
-                          <span className="font-medium">{s.team_name}</span>
+                          <button
+                            type="button"
+                            className="font-medium text-primary-600 hover:underline text-left"
+                            onClick={() => setSelectedTeamId(s.team_id)}
+                          >
+                            {s.team_name}
+                          </button>
                           {s.description && (
                             <span className="text-[11px] text-gray-400 hidden lg:inline">
                               {s.description}
@@ -367,6 +375,11 @@ export default function StandingsPage() {
           </div>
         ))
       ))}
+
+      <TeamDetailModal
+        teamId={selectedTeamId}
+        onClose={() => setSelectedTeamId(null)}
+      />
     </div>
   )
 }
