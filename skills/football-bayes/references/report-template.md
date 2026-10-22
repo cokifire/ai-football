@@ -2,6 +2,10 @@
 
 输出为 Markdown 文件，写到 `/workspace/{主队}vs{客队}_{赛事}{轮次}_贝叶斯分析.md`，最后用 `present_files` 交付。
 
+> **宿主调用场景不适用本模板**：被 ai-football 预测服务调用时，不写报告文件、
+> 不调 `present_files`，最终只输出宿主契约（`--output-schema`）要求的 JSON，
+> 要点压缩进 `deep_report`（≤500 字）。见 `SKILL.md`「宿主集成模式」。
+
 ---
 
 ## 头部元信息（必写）

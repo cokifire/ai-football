@@ -16,3 +16,4 @@ _uvicorn_err.log
 venv
 .playwright-cli/
 .codebuddy/
+README.md
