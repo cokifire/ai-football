@@ -62,6 +62,9 @@ def _build_command(*, workdir: str, out_path: str, model: str, base_url: str,
             "-c", f'model_providers.{pid}.name = "{pid}"',
             "-c", f'model_providers.{pid}.base_url = "{base_url}"',
             "-c", f'model_providers.{pid}.wire_api = "responses"',
+            # env_key 必须显式声明：缺了它 codex 不知道读哪个环境变量，
+            # _spawn_env() 注入的 key 不会进请求头，代理报 401 Missing API key
+            "-c", f'model_providers.{pid}.env_key = "{settings.codex_api_key_env}"',
             "-c", f'model_provider = "{pid}"',
         ]
     if settings.codex_network:
