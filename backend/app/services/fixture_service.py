@@ -110,7 +110,12 @@ def _is_free_plan_error(data: dict) -> bool:
     return False
 
 
-def _sync_one_league_by_season(db: Session, league_id: int, season_year: int) -> tuple[int, dict | None]:
+def _sync_one_league_by_season(
+    db: Session,
+    league_id: int,
+    season_year: int,
+    synced_fixture_ids: set[int] | None = None,
+) -> tuple[int, dict | None]:
     """按 league+season 拉取赛程（付费版），返回 (synced_count, plan_error_data)"""
     msg = f"联赛 {league_id} 赛季 {season_year}"
     page_num = 1
@@ -146,7 +151,9 @@ def _sync_one_league_by_season(db: Session, league_id: int, season_year: int) ->
             break
 
         for row in items:
-            _upsert_fixture(db, row)
+            fixture = _upsert_fixture(db, row)
+            if fixture is not None and synced_fixture_ids is not None:
+                synced_fixture_ids.add(fixture.id)
 
         synced += len(items)
         db.commit()
@@ -213,8 +220,13 @@ def _parse_free_plan_date_range(err_msg: str) -> tuple[str | None, str | None]:
     return (None, None)
 
 
-def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
-                        days_back: int = 7, days_forward: int = 7) -> int:
+def _sync_by_date_range(
+    db: Session,
+    enabled_league_ids: set[int],
+    days_back: int = 7,
+    days_forward: int = 7,
+    synced_fixture_ids: set[int] | None = None,
+) -> int:
     """免费版回退方案: 逐日查询赛程，自动检测免费版日期窗口并仅查询可用日"""
     from datetime import datetime, timedelta
     today = datetime.now()
@@ -285,9 +297,12 @@ def _sync_by_date_range(db: Session, enabled_league_ids: set[int],
         for row in items:
             league_raw = row.get("league", {})
             if league_raw.get("id") in enabled_league_ids:
-                _upsert_fixture(db, row)
-                date_synced += 1
-                total_synced += 1
+                fixture = _upsert_fixture(db, row)
+                if fixture is not None:
+                    if synced_fixture_ids is not None:
+                        synced_fixture_ids.add(fixture.id)
+                    date_synced += 1
+                    total_synced += 1
 
         if date_synced > 0:
             db.commit()
@@ -324,6 +339,8 @@ def sync_fixtures(db: Session) -> None:
     enabled_league_ids = {s.league_id for s in seasons}
     total_synced = 0
     processed = 0
+    # 只把本轮实际拉取/更新的比赛交给子数据同步，避免每日任务扫描历史积压。
+    synced_fixture_ids: set[int] = set()
 
     for season in seasons:
         # _sync_one_league_by_season 会把额度耗尽当普通失败吞掉（返回 plan_error=None），
@@ -331,7 +348,12 @@ def sync_fixtures(db: Session) -> None:
         if is_quota_exhausted():
             logger.warning("API-Football 当日额度已耗尽，中止联赛赛程同步")
             break
-        synced, plan_error = _sync_one_league_by_season(db, season.league_id, season.year)
+        synced, plan_error = _sync_one_league_by_season(
+            db,
+            season.league_id,
+            season.year,
+            synced_fixture_ids,
+        )
         processed += 1
 
         if plan_error is not None:
@@ -344,7 +366,12 @@ def sync_fixtures(db: Session) -> None:
             # 回滚当前赛季未提交的数据
             db.rollback()
             # 按日期范围拉取所有启用联赛的赛程
-            total_synced = _sync_by_date_range(db, enabled_league_ids)
+            # 免费版回退查询会把本轮日期窗口内的比赛 ID 追加到同一个集合。
+            total_synced = _sync_by_date_range(
+                db,
+                enabled_league_ids,
+                synced_fixture_ids=synced_fixture_ids,
+            )
             print(f"  日期范围拉取完成: {total_synced} 场")
             break
         else:
@@ -359,15 +386,14 @@ def sync_fixtures(db: Session) -> None:
         logger.warning("API-Football 当日额度已耗尽，跳过子数据同步")
         return
 
-    # 等本进程的 60s 配额窗口从服务端那边滚出去再开始子数据,
-    # 否则同步(8 个左右) + 子数据(数百个) 在同一分钟内累计超 10 次,
-    # 服务端按它的窗口起点计会判第 11 次 429。
+    # 等本进程的 60s 配额窗口从服务端那边滚出去再开始本轮子数据,
+    # 避免赛程请求与本轮子数据请求在同一分钟内累计超出服务端窗口。
     slept = _api_rate_limiter.wait_for_drain(keep=0, max_wait=90.0)
     if slept > 0:
         logger.info(f"赛程同步已用满窗口，drain {slept:.0f}s 再启动子数据")
 
-    # 赛后子数据同步
-    sync_completed_sub_data(db)
+    # 赛后子数据同步：只处理本轮赛程同步触及的比赛，不扫描全库历史积压。
+    sync_completed_sub_data(db, fixture_ids=synced_fixture_ids)
 
 
 # ──────────── sub-data sync ────────────
@@ -486,22 +512,33 @@ def _sync_one_fixture_sub_data(fixture_id: int) -> bool:
     return False
 
 
-def sync_completed_sub_data(db: Session) -> None:
-    """为已完赛但子数据未同步的比赛并发拉取"""
+def sync_completed_sub_data(
+    db: Session,
+    fixture_ids: set[int] | None = None,
+) -> None:
+    """拉取已完赛比赛的子数据。
+
+    ``fixture_ids`` 不为空时用于每日同步，只处理本轮赛程请求得到的比赛；
+    省略时保留历史补数工具的行为，最多扫描 200 场全库积压。
+    """
     finished_statuses = {"FT", "AET", "PEN", "AWD", "WO"}
-    fixtures = (
-        db.query(Fixture)
-        .filter(
-            Fixture.status_short.in_(finished_statuses),
-            or_(
-                Fixture.sub_data_synced == False,
-                ~exists().where(FixtureLineup.fixture_id == Fixture.id),
-                ~exists().where(FixtureStatistic.fixture_id == Fixture.id),
-            ),
-        )
-        .limit(200)
-        .all()
-    )
+    filters = [
+        Fixture.status_short.in_(finished_statuses),
+        or_(
+            Fixture.sub_data_synced == False,
+            ~exists().where(FixtureLineup.fixture_id == Fixture.id),
+            ~exists().where(FixtureStatistic.fixture_id == Fixture.id),
+        ),
+    ]
+    if fixture_ids is not None:
+        if not fixture_ids:
+            return
+        filters.append(Fixture.id.in_(fixture_ids))
+
+    query = db.query(Fixture).filter(*filters).order_by(Fixture.date.desc())
+    if fixture_ids is None:
+        query = query.limit(200)
+    fixtures = query.all()
     if not fixtures:
         return
 

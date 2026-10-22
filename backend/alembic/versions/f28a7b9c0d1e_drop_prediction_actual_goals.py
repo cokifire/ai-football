@@ -1,7 +1,7 @@
 """drop duplicated actual score columns from predictions
 
 Revision ID: f28a7b9c0d1e
-Revises: d2e3f4a5b6c7
+Revises: d2e3f4a5b6c8
 """
 from typing import Sequence, Union
 
@@ -9,7 +9,7 @@ from alembic import op
 
 
 revision: str = 'f28a7b9c0d1e'
-down_revision: Union[str, None] = 'd2e3f4a5b6c7'
+down_revision: Union[str, None] = 'd2e3f4a5b6c8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

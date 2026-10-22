@@ -19,11 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'predictions',
-        sa.Column('intelligence_markdown', sa.Text(), nullable=True,
-                  comment='外部比赛情报 Markdown'),
-    )
+    bind = op.get_bind()
+    columns = {column['name'] for column in sa.inspect(bind).get_columns('predictions')}
+    if 'intelligence_markdown' not in columns:
+        op.add_column(
+            'predictions',
+            sa.Column('intelligence_markdown', sa.Text(), nullable=True,
+                      comment='外部比赛情报 Markdown'),
+        )
 
 
 def downgrade() -> None:

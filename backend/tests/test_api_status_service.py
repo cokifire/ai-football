@@ -46,6 +46,36 @@ def test_mark_and_read_exhausted_no_db(monkeypatch):
     assert svc.is_quota_exhausted("api-football") is True
 
 
+def test_persist_exhausted_reports_success_after_commit(monkeypatch):
+    """成功 commit 后必须返回 True，不能和 DB 异常都降级成 None。"""
+
+    class _WorkingDB:
+        def __init__(self):
+            self.commits = 0
+
+        def execute(self, *args, **kwargs):
+            return None
+
+        def commit(self):
+            self.commits += 1
+
+        def close(self):
+            pass
+
+    fake = _WorkingDB()
+    monkeypatch.setattr(svc, "SessionLocal", lambda: fake)
+
+    result = svc._persist_exhausted(
+        "api-football",
+        "fixtures/statistics status=429",
+        datetime.now(),
+        date.today(),
+    )
+
+    assert result is True
+    assert fake.commits == 1
+
+
 def test_reset_clears_cache_and_returns_to_false(monkeypatch):
     """reset_provider 应当清内存缓存并强制下一次读取走 DB; DB 不可用时降级为 False。"""
     _force_db_unavailable(monkeypatch)

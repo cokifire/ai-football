@@ -192,7 +192,7 @@ def is_quota_exhausted(provider: str = PROVIDER_API_FOOTBALL) -> bool:
 
 
 @_safe_db
-def _persist_exhausted(db, provider: str, reason: str, now: datetime, today) -> None:
+def _persist_exhausted(db, provider: str, reason: str, now: datetime, today) -> bool:
     _ensure_row(db, provider)
     db.execute(
         text(
@@ -208,6 +208,7 @@ def _persist_exhausted(db, provider: str, reason: str, now: datetime, today) -> 
         {"p": provider, "d": today, "now": now, "err": reason},
     )
     db.commit()
+    return True
 
 
 def mark_quota_exhausted(
@@ -224,7 +225,7 @@ def mark_quota_exhausted(
     _cache[provider] = True
 
     now = datetime.now()
-    if _persist_exhausted(provider, reason, now, _utc_today()) is not None:
+    if _persist_exhausted(provider, reason, now, _utc_today()) is True:
         logger.warning(
             f"[API-Football] 当日额度已耗尽已写入 api_status: provider={provider} "
             f"reason={reason[:80]!r}"

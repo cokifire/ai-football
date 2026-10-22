@@ -22,11 +22,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'predictions',
-        sa.Column('llm_model', sa.String(length=64), nullable=True,
-                  comment='生成本次预测的 LLM 模型名'),
-    )
+    bind = op.get_bind()
+    columns = {column['name'] for column in sa.inspect(bind).get_columns('predictions')}
+    if 'llm_model' not in columns:
+        op.add_column(
+            'predictions',
+            sa.Column('llm_model', sa.String(length=64), nullable=True,
+                      comment='生成本次预测的 LLM 模型名'),
+        )
 
 
 def downgrade() -> None:
