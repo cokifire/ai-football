@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     prediction_llm_base_url: str = ""
     prediction_llm_model: str = ""
 
-    # 备用预测模型（仅作为第二组 -m，仍走 codex；可选）
+    # 备用预测模型（独立 url/key/model；可选）
     prediction_fallback_llm_model: str = ""
+    prediction_fallback_llm_base_url: str = ""
+    prediction_fallback_llm_api_key: str = ""
 
     # ── codex CLI 执行环境 ──
     codex_bin: str = "codex"          # 可执行文件名或绝对路径

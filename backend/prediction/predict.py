@@ -218,7 +218,9 @@ def _normalize_llm_fields(parsed: dict) -> dict:
     return out
 
 
-def _call_codex_provider(prompt: str, *, model: str, provider_name: str) -> dict | None:
+def _call_codex_provider(
+    prompt: str, *, model: str, base_url: str, api_key: str, provider_name: str
+) -> dict | None:
     """经 codex exec 完成一次预测推理，并校验其结构化输出。
 
     失败仅对 codex 自身重试（run_codex 内部按 codex_retries 重试），
@@ -229,8 +231,8 @@ def _call_codex_provider(prompt: str, *, model: str, provider_name: str) -> dict
         prompt,
         schema_path=PREDICTION_SCHEMA_PATH,
         model=model,
-        base_url=settings.prediction_llm_base_url,
-        api_key=settings.prediction_llm_api_key,
+        base_url=base_url,
+        api_key=api_key,
         sandbox=settings.codex_sandbox,
         timeout=float(settings.codex_timeout_predict),
         retries=settings.codex_retries,
@@ -260,7 +262,11 @@ def _call_llm(prompt: str) -> tuple[dict | None, str | None]:
     if (settings.prediction_llm_model or "").strip():
         primary_name = f"codex 主预测 ({settings.prediction_llm_model})"
         result = _call_codex_provider(
-            prompt, model=settings.prediction_llm_model, provider_name=primary_name,
+            prompt,
+            model=settings.prediction_llm_model,
+            base_url=settings.prediction_llm_base_url,
+            api_key=settings.prediction_llm_api_key,
+            provider_name=primary_name,
         )
         if result is not None:
             logger.info("预测 LLM 成功: provider=codex, model={}", settings.prediction_llm_model)
@@ -273,8 +279,14 @@ def _call_llm(prompt: str) -> tuple[dict | None, str | None]:
         return None, None
     fallback_name = f"codex 备用预测 ({fallback_model})"
     logger.warning("主预测模型不可用，切换备用模型: {}", fallback_name)
+    fallback_base_url = settings.prediction_fallback_llm_base_url or settings.prediction_llm_base_url
+    fallback_api_key = settings.prediction_fallback_llm_api_key or settings.prediction_llm_api_key
     result = _call_codex_provider(
-        prompt, model=fallback_model, provider_name=fallback_name,
+        prompt,
+        model=fallback_model,
+        base_url=fallback_base_url,
+        api_key=fallback_api_key,
+        provider_name=fallback_name,
     )
     if result is not None:
         logger.info("预测 LLM 成功: provider=codex-fallback, model={}", fallback_model)
