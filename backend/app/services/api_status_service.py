@@ -228,12 +228,12 @@ def mark_quota_exhausted(
     if _persist_exhausted(provider, reason, now, _utc_today()) is True:
         logger.warning(
             f"[API-Football] 当日额度已耗尽已写入 api_status: provider={provider} "
-            f"reason={reason[:80]!r}"
+            f"reason={reason[:500]!r}"
         )
     else:
         logger.error(
             f"[API-Football] api_status 写入失败, 进程内已置 1, 跨进程同步待 DB 恢复: "
-            f"provider={provider} reason={reason[:80]!r}"
+            f"provider={provider} reason={reason[:500]!r}"
         )
 
 

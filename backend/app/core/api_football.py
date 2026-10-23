@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import json
 from collections import deque
 from email.utils import parsedate_to_datetime
 from threading import Lock
@@ -47,6 +48,25 @@ if API_RATE_LIMIT > KNOWN_PLAN_CEILING:
         f"[API-Football] API_FOOTBALL_RATE_LIMIT={API_RATE_LIMIT} 高于免费套餐上限 "
         f"{KNOWN_PLAN_CEILING}，服务端会持续 429；请改为 {KNOWN_PLAN_CEILING} 或确认套餐已升级"
     )
+
+DAILY_QUOTA_MARKERS = (
+    "request limit for the day",
+    "requests limit for the day",
+    "request limit of the day",
+    "requests limit of the day",
+    "daily request limit",
+    "daily rate limit",
+    "rate limit for the day",
+    "daily limit",
+    "quota for the day",
+    "daily quota",
+    "you have reached the request limit for the day",
+)
+RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "ratelimit",
+    "too many requests",
+)
 
 
 class _ApiRateLimiter:
@@ -181,23 +201,59 @@ def _is_daily_quota_exhausted(status_code: int, body: str) -> bool:
     """判断响应是否明确表示 *当日* 请求额度耗尽。
 
     HTTP 429 本身只代表请求过多，可能是按 IP/代理节点的短时限流；不能
-    仅凭状态码把 key 判为日额度用完。只有响应体明确提到 day/daily 时才判定为额度耗尽。
+    仅凭状态码把 key 判为日额度用完。HTTP 200 只检查 API 返回的 ``errors``
+    字段，避免正常响应 body 中的普通文本触发误判。
     """
-    lowered = body.lower()
     if status_code not in (200, 403, 429):
         return False
-    daily_markers = (
-        "request limit for the day",
-        "requests limit for the day",
-        "request limit of the day",
-        "requests limit of the day",
-        "daily request limit",
-        "daily limit",
-        "quota for the day",
-        "daily quota",
-        "you have reached the request limit for the day",
+    error_text = _response_error_text(status_code, body).lower()
+    return any(marker in error_text for marker in DAILY_QUOTA_MARKERS)
+
+
+def _response_error_text(status_code: int, body: str) -> str:
+    """提取 API 错误文本，避免扫描正常响应的全部 JSON。
+
+    API-Football 有时会用 HTTP 200 携带 ``errors`` 对象返回业务错误。
+    对这种响应只信任 ``errors``；HTTP 200 的 ``response`` 数据和其它元数据
+    不参与额度判定。非 200 的非 JSON 响应则保留正文，兼容网关错误页。
+    """
+    try:
+        payload = json.loads(body)
+    except (TypeError, json.JSONDecodeError):
+        return body if status_code != 200 else ""
+
+    if not isinstance(payload, dict) or "errors" not in payload:
+        return body if status_code != 200 else ""
+
+    errors = payload.get("errors")
+    if not errors:
+        return ""
+    # 不把字段名（例如 ``rateLimit``）混入分类文本，否则每日额度错误
+    # 会被字段名本身误判成普通 rate-limit 错误。
+    def _values_only(value) -> str:
+        if isinstance(value, dict):
+            return " ".join(_values_only(item) for item in value.values())
+        if isinstance(value, list):
+            return " ".join(_values_only(item) for item in value)
+        return str(value)
+
+    return _values_only(errors)
+
+
+def _is_rate_limited_response(status_code: int, body: str) -> bool:
+    """识别 HTTP 429 或 HTTP 200 携带的短时限流业务错误。"""
+    if status_code == 429:
+        return True
+    error_text = _response_error_text(status_code, body).lower()
+    return any(marker in error_text for marker in RATE_LIMIT_MARKERS)
+
+
+def _quota_exhausted_reason(endpoint: str, response: httpx.Response, body: str) -> str:
+    """生成写入 api_status 的脱敏诊断信息，不包含 API key。"""
+    return (
+        f"{endpoint} status={response.status_code}; "
+        f"{_limit_diagnostics(response, body)}"
     )
-    return any(marker in lowered for marker in daily_markers)
 
 
 def _rate_limit_wait_seconds(response: httpx.Response | None = None, attempt: int = 0) -> float:
@@ -284,19 +340,19 @@ def api_football_get_sync(
             body = r.text or ""
             if _is_daily_quota_exhausted(r.status_code, body):
                 # 置位闩锁：本次任务剩余的请求全部快速失败，避免空转一小时
-                mark_quota_exhausted(f"{endpoint} status={r.status_code}")
+                reason = _quota_exhausted_reason(endpoint, r, body)
+                mark_quota_exhausted(reason)
                 logger.debug(
-                    f"[API-Football][{key_label}] 额度耗尽诊断 {endpoint}；"
-                    f"{_limit_diagnostics(r, body)}"
+                    f"[API-Football][{key_label}] 额度耗尽诊断 {reason}"
                 )
                 raise ApiFootballQuotaExceeded(f"API-Football key 额度耗尽: {endpoint}")
 
-            if r.status_code == 429:
-                # 429 不等于日额度耗尽，先在当前 key 上按退避策略重试。
+            if _is_rate_limited_response(r.status_code, body):
+                # 短时限流（包括 HTTP 200 携带 errors.rateLimit）不写日额度闩锁。
                 if attempt < RATE_LIMIT_RETRIES - 1:
                     wait = _rate_limit_wait_seconds(r, attempt)
                     logger.warning(
-                        f"[API-Football][{key_label}] 短时限流 {endpoint} (429)，"
+                        f"[API-Football][{key_label}] 短时限流 {endpoint} ({r.status_code})，"
                         f"{wait:.1f}s 后重试 #{attempt + 1}；{_limit_diagnostics(r, body)}"
                     )
                     # 同时把本地节流窗口后移，否则后续请求仍踩在同一个边界上。
@@ -304,7 +360,7 @@ def api_football_get_sync(
                     time.sleep(wait)
                     continue
                 logger.warning(
-                    f"[API-Football][{key_label}] 短时限流重试耗尽 {endpoint} (429)；"
+                    f"[API-Football][{key_label}] 短时限流重试耗尽 {endpoint} ({r.status_code})；"
                     f"{_limit_diagnostics(r, body)}"
                 )
                 raise ApiFootballRateLimited(f"key[{key_label}] 短时限流: {endpoint}")
@@ -367,11 +423,13 @@ async def api_football_get_async(
 
         body = r.text or ""
         if _is_daily_quota_exhausted(r.status_code, body):
-            mark_quota_exhausted(f"{endpoint} status={r.status_code}")
+            reason = _quota_exhausted_reason(endpoint, r, body)
+            mark_quota_exhausted(reason)
             raise ApiFootballQuotaExceeded(f"额度耗尽: {endpoint}")
-        if r.status_code == 429:
+
+        if _is_rate_limited_response(r.status_code, body):
             if attempt >= RATE_LIMIT_RETRIES - 1:
-                raise ApiFootballRateLimited(f"短时限流: {endpoint}")
+                raise ApiFootballRateLimited(f"短时限流: {endpoint} ({r.status_code})")
             wait = _rate_limit_wait_seconds(r, attempt)
             _api_rate_limiter.penalize(wait)
             await asyncio.sleep(wait)

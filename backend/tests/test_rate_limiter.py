@@ -6,9 +6,45 @@
 import threading
 import time
 
+import httpx
 import pytest
 
 from app.core import api_football as af
+
+
+def test_daily_quota_detection_only_reads_structured_errors():
+    """正常 200 响应中的普通文本不能触发日额度闩锁。"""
+    normal = '{"errors": [], "response": [{"name": "Daily Limit FC"}]}'
+    assert af._is_daily_quota_exhausted(200, normal) is False
+
+    short_rate_limit = '{"errors": {"rateLimit": "The rate limit has been exceeded."}}'
+    assert af._is_daily_quota_exhausted(200, short_rate_limit) is False
+    assert af._is_rate_limited_response(200, short_rate_limit) is True
+
+    daily_limit = (
+        '{"errors": {"rateLimit": '
+        '"The daily request limit for the API has been reached."}}'
+    )
+    assert af._is_daily_quota_exhausted(200, daily_limit) is True
+    assert af._is_rate_limited_response(200, daily_limit) is False
+
+
+def test_quota_reason_contains_endpoint_and_safe_diagnostics():
+    response = httpx.Response(
+        200,
+        headers={
+            "x-ratelimit-requests-remaining": "0",
+            "x-ratelimit-requests-limit": "100",
+        },
+    )
+    body = '{"errors":{"rateLimit":"The daily request limit was reached."}}'
+
+    reason = af._quota_exhausted_reason("leagues", response, body)
+
+    assert "leagues status=200" in reason
+    assert "remaining='0'" in reason
+    assert "limit='100'" in reason
+    assert "daily request limit" in reason
 
 
 @pytest.fixture
