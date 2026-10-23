@@ -240,6 +240,9 @@ def _call_codex_provider(
     )
     if content is None:
         return None
+    # codex 在 exec 完成前不返回中间/流式数据；这里把最终返回的原始内容落日志，
+    # 便于排查前端误判为失败时后端实际收到了什么。
+    logger.info("{} 返回原始内容(长度={}): {!r}", provider_name, len(content), content[:2000])
     parsed = _parse_llm_json(content)
     if not parsed:
         logger.warning("{} 返回内容中未找到 JSON，preview={!r}", provider_name, content[:500])
@@ -259,6 +262,19 @@ def _call_llm(prompt: str) -> tuple[dict | None, str | None]:
     返回 ``(结果, 实际出结果的模型名)``，两侧都失败时为 ``(None, None)``。
     模型名要落库，否则事后无法区分一条预测是主模型还是备用模型算出来的。
     """
+    if settings.prediction_use_codex_default:
+        logger.info("使用 codex 默认模型配置进行预测")
+        result = _call_codex_provider(
+            prompt,
+            model="",
+            base_url="",
+            api_key="",
+            provider_name="codex 默认模型",
+        )
+        if result is not None:
+            return result, "codex:default"
+        return None, None
+
     if (settings.prediction_llm_model or "").strip():
         primary_name = f"codex 主预测 ({settings.prediction_llm_model})"
         result = _call_codex_provider(

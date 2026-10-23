@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     prediction_llm_api_key: str = ""
     prediction_llm_base_url: str = ""
     prediction_llm_model: str = ""
+    # 为 true 时，主预测模型直接使用 codex 自身配置（~/.codex/config.toml），
+    # 忽略下面的 prediction_llm_* 与 fallback 预测模型配置
+    prediction_use_codex_default: bool = False
 
     # 备用预测模型（独立 url/key/model；可选）
     prediction_fallback_llm_model: str = ""

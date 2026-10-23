@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.value_bet_service import compute_value_bets
 from app.services.calibration_service import get_diagnostics
-from prediction.predict import PredictionDataError, PredictionLLMError
+from app.services.prediction_job_service import (
+    create_job,
+    get_job as get_prediction_job,
+    run_prediction_job,
+)
 from app.core.security import AdminAuth
 
 router = APIRouter()
@@ -25,36 +29,34 @@ def _date_to_utc_range(date_str: str) -> tuple[str, str]:
 
 
 @router.post("/predict/{fixture_id}")
-async def predict_match(fixture_id: int, _: AdminAuth):
-    """手动触发单场预测"""
+async def predict_match(
+    fixture_id: int,
+    background_tasks: BackgroundTasks,
+    _: AdminAuth,
+):
+    """手动触发单场预测（异步任务）。
+
+    创建后台任务后立即返回 job_id，前端通过 ``GET /predict/jobs/{job_id}``
+    轮询状态；避免 codex 预测耗时过长导致 HTTP 连接被代理/网关中断。
+    """
     logger.info(f"收到单场预测请求: fixture_id={fixture_id}")
-    import time
-    t0 = time.time()
+    job_id = create_job(fixture_id)
+    background_tasks.add_task(run_prediction_job, job_id, fixture_id)
+    return {
+        "status": "ok",
+        "fixture_id": fixture_id,
+        "job_id": job_id,
+        "message": "预测任务已创建，请轮询 /predict/jobs/{job_id}",
+    }
 
-    def _run():
-        from prediction.predict import predict_fixture
-        return predict_fixture(fixture_id)
 
-    try:
-        result = await asyncio.to_thread(_run)
-    except PredictionDataError as e:
-        # 数据缺失：比赛不存在 / 特征不足 / 模型缺失
-        logger.warning(f"单场预测数据不足 fixture_id={fixture_id}: {e}")
-        raise HTTPException(status_code=400, detail=f"数据不足，无法预测：{e}")
-    except PredictionLLMError as e:
-        # LLM 校验失败：上游大模型未返回合规结果
-        logger.warning(f"单场预测 LLM 校验失败 fixture_id={fixture_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"LLM 预测生成失败：{e}（可重试）")
-    except Exception as e:
-        logger.error(f"单场预测异常 fixture_id={fixture_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"预测异常: {str(e)}")
-
-    elapsed = time.time() - t0
-    logger.info(f"单场预测完成 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
-    return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
-
-    logger.info(f"单场预测完成 fixture_id={fixture_id}, 耗时 {elapsed:.1f}s")
-    return {"status": "ok", "fixture_id": fixture_id, "elapsed": round(elapsed, 1), "result": result}
+@router.get("/predict/jobs/{job_id}")
+async def get_predict_job(job_id: str, _: AdminAuth):
+    """查询单场预测后台任务状态。"""
+    job = get_prediction_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"status": "ok", "job": job}
 
 
 @router.get("/odds/{fixture_id}")

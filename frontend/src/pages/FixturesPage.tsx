@@ -274,11 +274,10 @@ export default function FixturesPage() {
     }
   }
 
-  // 预测会调用外部情报和 LLM，可能在浏览器/网关断开后仍继续在后端执行。
-  // 请求失败时按 fixture 查询数据库，避免把“已入库但响应丢失”显示成预测失败。
+  // 后端预测已改为异步任务模式：点击预测后创建 job，前端轮询 job 状态。
+  // 这里仍保留一次按 fixture 查库的兜底，用于极端情况下任务状态丢失的恢复。
   const recoverPrediction = async (fixture: Fixture): Promise<boolean> => {
     const fixtureId = fixture.id
-    // 与预测请求链路的 900 秒超时对齐；任何中间代理意外断开时仍可等到预测入库。
     for (let attempt = 0; attempt < 300; attempt += 1) {
       try {
         const res = await apiClient.get('/predictions', {
@@ -294,10 +293,52 @@ export default function FixturesPage() {
           return true
         }
       } catch {
-        // 后端仍在处理，继续轮询；最终由调用方显示原始错误。
+        // 后端仍在处理，继续轮询。
       }
       await new Promise((resolve) => window.setTimeout(resolve, 3000))
     }
+    return false
+  }
+
+  // 轮询异步预测任务；codex 总预算约 1200s，这里最多等 3600s。
+  const pollPredictionJob = async (jobId: string, fixture: Fixture): Promise<boolean> => {
+    const maxAttempts = 1800
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const res = await apiClient.get(`/predict/jobs/${jobId}`, { timeout: 10000 })
+        const job = res.data?.job
+        if (!job) {
+          setPredictMsg('预测任务状态丢失，请稍后重试')
+          return false
+        }
+        const status = job.status
+        if (status === 'done') {
+          if (job.result) {
+            setPredictResult({ fixture, result: job.result })
+            setFixtures((prev) => prev.map((item) => (
+              item.id === fixture.id ? { ...item, predicted: true } : item
+            )))
+          } else {
+            // 任务标记完成但无结果，尝试从数据库恢复。
+            const recovered = await recoverPrediction(fixture)
+            if (!recovered) {
+              setPredictMsg('预测结果为空，请稍后重试')
+            }
+          }
+          return true
+        }
+        if (status === 'failed') {
+          setPredictMsg(`预测失败: ${job.error || '未知错误'}`)
+          return false
+        }
+        // pending / running 继续轮询
+      } catch (err: any) {
+        console.error('[Poll Job Error]', err)
+        // 轮询请求失败不重试整个任务，继续下一次轮询。
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 2000))
+    }
+    setPredictMsg('预测等待超时，请稍后重试')
     return false
   }
 
@@ -374,45 +415,36 @@ export default function FixturesPage() {
       .finally(() => setFetchingXgId(null))
   }
 
-  const handlePredict = (fixture: Fixture) => {
+  const handlePredict = async (fixture: Fixture) => {
     setPredictingIds((prev) => new Set(prev).add(fixture.id))
     setPredictMsg(null)
-    apiClient
-      // 后端一次预测包含情报 codex + 预测 codex 两段（各最多 1200s），
-      // 客户端不再设 15 分钟上限，跟随后端超时；连接中断由 recoverPrediction 兜底。
-      .post(`/predict/${fixture.id}`, {}, { timeout: 0 })
-      .then((res) => {
-        setPredictResult({ fixture, result: res.data.result })
-        setFixtures((prev) => prev.map((item) => (
-          item.id === fixture.id ? { ...item, predicted: true } : item
-        )))
+    try {
+      // 后端改为异步任务：创建 job 后立即返回，避免长连接被代理/网关中断。
+      const res = await apiClient.post(`/predict/${fixture.id}`, {}, { timeout: 30000 })
+      const jobId = res.data?.job_id
+      if (!jobId) {
+        setPredictMsg('创建预测任务失败，请稍后重试')
+        return
+      }
+      await pollPredictionJob(jobId, fixture)
+    } catch (err: any) {
+      console.error('[Predict Error]', err)
+      if (err?.response?.data?.detail) {
+        setPredictMsg(`预测失败: ${err.response.data.detail}`)
+      } else if (err?.code === 'ECONNABORTED') {
+        setPredictMsg('预测请求超时，请稍后重试')
+      } else if (err?.message) {
+        setPredictMsg(`预测失败: ${err.message}`)
+      } else {
+        setPredictMsg('预测失败: 网络请求异常')
+      }
+    } finally {
+      setPredictingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(fixture.id)
+        return next
       })
-      .catch((err: any) => {
-        console.error('[Predict Error]', err)
-        // 5xx、连接中断和超时都可能发生在后端写库之后，先确认数据库状态。
-        recoverPrediction(fixture).then((recovered) => {
-          if (recovered) {
-            setPredictMsg(null)
-            return
-          }
-          if (err?.response?.data?.detail) {
-            setPredictMsg(`预测失败: ${err.response.data.detail}`)
-          } else if (err?.code === 'ECONNABORTED') {
-            setPredictMsg('预测请求超时，请稍后重试')
-          } else if (err?.message) {
-            setPredictMsg(`预测失败: ${err.message}`)
-          } else {
-            setPredictMsg('预测失败: 网络请求异常')
-          }
-        })
-      })
-      .finally(() => {
-        setPredictingIds((prev) => {
-          const next = new Set(prev)
-          next.delete(fixture.id)
-          return next
-        })
-      })
+    }
   }
 
   const openTeamDetail = (teamId: number) => {
