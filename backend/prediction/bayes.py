@@ -117,8 +117,8 @@ def apply_finished_fixture_elo(db, fixture_id: int) -> bool:
     home_before, away_before = float(home.elo), float(away.elo)
     home_delta, away_delta = calculate_elo_change(home_before, away_before, fixture.fulltime_home, fixture.fulltime_away)
     home_after, away_after = round(home_before + home_delta, 2), round(away_before + away_delta, 2)
-    db.execute(text("UPDATE team_elos SET elo=:elo WHERE id=:team_id"), {"elo": home_after, "team_id": home.id})
-    db.execute(text("UPDATE team_elos SET elo=:elo WHERE id=:team_id"), {"elo": away_after, "team_id": away.id})
+    db.execute(text("UPDATE team_elos SET elo=:elo, updated_at=NOW() WHERE id=:team_id"), {"elo": home_after, "team_id": home.id})
+    db.execute(text("UPDATE team_elos SET elo=:elo, updated_at=NOW() WHERE id=:team_id"), {"elo": away_after, "team_id": away.id})
     db.execute(text("""
         INSERT INTO team_elo_updates (
             fixture_id, fixture_date, home_team_id, away_team_id,
