@@ -50,7 +50,7 @@ PSV,1784,PSV Eindhoven,197,manual
 Ind del Valle,1783,Independiente del Valle,1153,prefix
 Fenerbahçe,1780,Fenerbahçe,611,exact_norm
 Lille,1780,Lille,79,exact_norm
-Bodø/Glimt,1779,,,unmatched
+Bodø/Glimt,1786,Bodo/Glimt,327,manual
 Lazio,1777,Lazio,487,exact_norm
 West Ham,1777,West Ham,48,exact_norm
 Boca Juniors,1776,Boca Juniors,451,exact_norm
@@ -111,7 +111,7 @@ LDU Quito,1707,LDU de Quito,1158,token
 Amed SK,1706,Amed,3579,manual
 Novorizontino,1705,,,unmatched
 Paris FC,1705,Paris FC,114,exact_norm
-AEK,1704,AEK Larnaca,614,token
+AEK,1701,AEK Athens FC,575,manual
 Belgrano,1703,Belgrano Cordoba,440,token
 Peñarol,1703,Penarol,2348,exact_norm
 Elche,1701,Elche,797,exact_norm
@@ -132,8 +132,8 @@ Eibar,1693,Eibar,545,exact_norm
 Internacional,1693,Internacional,119,exact_norm
 Viking,1693,Viking,759,exact_norm
 Fortaleza,1693,,,unmatched
-Depor,1691,Deportivo La Coruna,1142,prefix
-AZ,1691,Jong AZ,418,token
+Depor,1686,Deportivo La Coruna,544,manual
+AZ,1694,AZ Alkmaar,201,manual
 Castellon,1691,Castellón,5254,exact_norm
 Colo-Colo,1690,Colo Colo,2315,exact_norm
 Frosinone,1690,Frosinone,512,exact_norm
@@ -169,7 +169,7 @@ Guadalajara,1674,Guadalajara Chivas,2278,token
 Juventude,1673,Juventud,2353,substr
 Celtic,1673,Celtic,247,exact_norm
 FC Machida Zelvia,1673,Machida Zelvia,303,substr
-Brest,1672,Dinamo Brest,386,token
+Brest,1676,Stade Brestois 29,106,manual
 Dinamo Zagreb,1672,Dinamo Zagreb,620,exact_norm
 Gladbach,1672,Borussia Mönchengladbach,163,manual
 Hamburg,1671,Hamburger SV,175,prefix
@@ -457,7 +457,7 @@ Gangwon FC,1565,Gangwon FC,2746,exact_norm
 Rodez,1564,Rodez,1301,exact_norm
 Tractor Sazi,1564,Tractor Sazi,2737,exact_norm
 Gil Vicente,1564,GIL Vicente,762,exact_norm
-Sabah FK,1563,,,unmatched
+Sabah FK,1572,Sabah FA,13976,manual
 Gamba Osaka,1563,Gamba Osaka,293,exact_norm
 Cadiz,1563,Cadiz,724,exact_norm
 Minnesota Utd,1563,,,unmatched
@@ -771,7 +771,7 @@ Mlada Boleslav,1496,,,unmatched
 Maritimo,1496,,,unmatched
 Estrela Amadora,1495,Estrela,15130,core
 Wolfsberg,1495,Wolfsberger AC,1025,prefix
-Sparta,1495,Sparta Praha,628,token
+Sparta,1505,Sparta Rotterdam,426,manual
 Salernitana,1494,,,unmatched
 La Serena,1494,D. La Serena,2341,token
 Europa,1494,,,unmatched
@@ -986,7 +986,7 @@ Torrent CF,1448,,,unmatched
 Grasshoppers,1448,,,unmatched
 SD Logroñés,1448,,,unmatched
 Shkendija,1448,Shkendija,609,exact_norm
-Telstar,1448,Telstar,427,exact_norm
+Telstar,1446,Telstar,427,exact_norm
 Ham-Kam,1448,Ham-Kam,2159,exact_norm
 Turan Tovuz,1448,,,unmatched
 Marino de Luanco,1447,,,unmatched
