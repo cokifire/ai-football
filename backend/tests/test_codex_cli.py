@@ -129,6 +129,9 @@ def test_base_url_override_adds_provider_config(monkeypatch):
     assert 'model_providers.codex_env.base_url = "http://localhost:8080/v1"' in cmd
     assert 'model_provider = "codex_env"' in cmd
     assert 'model_providers.codex_env.wire_api = "responses"' in cmd
+    # 自定义 provider 时关闭 multi_agent/web_search，避免发送 namespace/web_search 工具导致 400
+    assert 'features.multi_agent=false' in cmd
+    assert 'web_search = "disabled"' in cmd
 
 
 def test_no_base_url_keeps_server_provider(monkeypatch):
@@ -137,6 +140,9 @@ def test_no_base_url_keeps_server_provider(monkeypatch):
     cmd = holder["proc"].cmd
     assert not any(str(c).startswith("model_providers.") for c in cmd)
     assert not any(str(c).startswith("model_provider =") for c in cmd)
+    # 未覆盖 provider 时不应注入 features 覆盖，尊重服务器默认配置
+    assert 'features.multi_agent=false' not in cmd
+    assert 'web_search = "disabled"' not in cmd
 
 
 def test_output_file_takes_priority_over_stdout(monkeypatch):

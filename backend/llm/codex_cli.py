@@ -54,6 +54,13 @@ def _build_command(*, workdir: str, out_path: str, model: str, base_url: str,
         cmd += ["--output-schema", schema_path]
     # 最终消息文件：优先于 stdout 解析
     cmd += ["-o", out_path]
+    # 非 OpenAI 提供商通常不支持 codex 内置的 namespace 工具（multi_agent、MCP），
+    # 也不支持 OpenAI 托管的 web_search 工具；它们会导致 third-party Responses API
+    # 返回 400: tools[N].type unknown variant `namespace` / `web_search`。
+    # exec 模式为单次非交互调用，本就不需要 multi_agent/web_search，遇到自定义 provider 时关闭。
+    if base_url:
+        cmd += ["-c", "features.multi_agent=false"]
+        cmd += ["-c", 'web_search = "disabled"']
     if base_url:
         # .env 配了 base_url 时覆盖 config.toml 的 provider；key 不在此处，
         # 由 _spawn_env() 以环境变量注入（provider 的 env_key 指向该变量名）。
