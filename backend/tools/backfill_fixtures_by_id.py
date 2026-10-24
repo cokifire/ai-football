@@ -6,6 +6,7 @@
     python tools/backfill_fixtures_by_id.py --start-id 1200000 --min-id 1190000 --sleep 2.0
     python tools/backfill_fixtures_by_id.py --start-id 1200000 --leagues 39,140
     python tools/backfill_fixtures_by_id.py --start-id 1200000 --max-requests 200   # 安全上限
+    python tools/backfill_fixtures_by_id.py --ids 123456,123457 --with-sub-data     # 指定 id + 子数据
 
 逻辑:
     - 从 start-id 开始，每次 id-1 递减查询 GET /fixtures?id=<id>
@@ -15,11 +16,17 @@
     - --max-requests 提供硬性安全上限，避免付费 Key 下无限制刷爆额度/数据库
     - Ctrl+C 可随时中断，会打印本次统计
 
+指定 id 模式:
+    - --ids 提供逗号分隔的 fixture id 列表时, 只处理这些 id, 不做递减扫描
+      (适合按数据库查出的缺数据清单精确回填)
+    - --with-sub-data 会在 upsert 主表后, 同步该场子数据(阵容/统计;
+      事件/球员接口已禁用), 需要相应的 API 额度
+
 注意:
     - 免费版对 ?id= 的历史比赛可能返回 "free plan" 限制错误(无数据)，此时跳过并继续，
       直到额度耗尽自动退出。历史比赛稳定获取需要付费版 Key。
     - fixture id 并非连续，递减过程中大量 id 会返回空(无比赛)，这是该方式的固有低效。
-    - 仅落库 fixture 主表；完赛子数据(事件/阵容/统计)可在之后用现有 refresh 端点补齐。
+    - 默认仅落库 fixture 主表; --with-sub-data 时额外同步子数据(阵容/统计)。
 """
 import sys
 from pathlib import Path
@@ -34,8 +41,13 @@ import argparse
 
 from app.db.session import SessionLocal
 from app.core.config import settings
-from app.core.api_football import api_football_get_sync, ApiFootballQuotaExceeded, ApiFootballError
-from app.services.fixture_service import _upsert_fixture
+from app.core.api_football import (
+    api_football_get_sync,
+    ApiFootballQuotaExceeded,
+    ApiFootballError,
+    is_quota_exhausted,
+)
+from app.services.fixture_service import _upsert_fixture, _sync_one_fixture_sub_data
 
 # 默认允许的联赛 id 白名单
 DEFAULT_LEAGUES = {1, 2, 3, 5, 10, 39, 45, 61, 71, 78, 135, 140}
@@ -108,6 +120,10 @@ def main():
                         help="硬性请求上限, 0=不限制(仅靠额度/下限停止) (默认 0)")
     parser.add_argument("--leagues", type=str, default=None,
                         help="允许的 league id 列表, 逗号分隔 (默认使用内置白名单)")
+    parser.add_argument("--ids", type=str, default=None,
+                        help="逗号分隔的指定 fixture id 列表; 提供后只处理这些 id (不做递减扫描)")
+    parser.add_argument("--with-sub-data", action="store_true",
+                        help="upsert 主表后同步该场子数据(阵容/统计); 需要额外的 API 额度")
     args = parser.parse_args()
 
     if not settings.api_football_key:
@@ -130,27 +146,54 @@ def main():
     else:
         allowed = DEFAULT_LEAGUES
 
-    # 起始 id
-    if args.start_id is not None:
-        fid = args.start_id
-    else:
+    # 显式 id 列表模式: 提供 --ids 时只处理这些 id, 不做递减扫描
+    id_list = None
+    if args.ids:
         try:
-            fid = int(input("请输入起始 fixture id: ").strip())
-        except (ValueError, EOFError):
-            print("无效的 id")
+            id_list = [int(x) for x in args.ids.split(",") if x.strip()]
+        except ValueError:
+            print("错误: --ids 必须是逗号分隔的整数, 如 123456,123457")
             sys.exit(1)
+        if not id_list:
+            print("错误: --ids 解析后为空")
+            sys.exit(1)
+
+    if id_list is None:
+        # 起始 id
+        if args.start_id is not None:
+            fid = args.start_id
+        else:
+            try:
+                fid = int(input("请输入起始 fixture id: ").strip())
+            except (ValueError, EOFError):
+                print("无效的 id")
+                sys.exit(1)
 
     if args.max_requests:
         print(f"[安全上限] 最多处理 {args.max_requests} 个请求")
 
-    print(f"起始 id={fid}, 下限={args.min_id}, 间隔={args.sleep}s, 联赛白名单={sorted(allowed)}")
+    if id_list is not None:
+        print(f"指定 id 模式: {len(id_list)} 个 id, 联赛白名单={sorted(allowed)}, "
+              f"子数据同步={'开' if args.with_sub_data else '关'}")
+    else:
+        print(f"起始 id={fid}, 下限={args.min_id}, 间隔={args.sleep}s, 联赛白名单={sorted(allowed)}")
     print("按 Ctrl+C 可随时中断。")
 
-    checked = saved = skipped_plan = skipped_league = empty = 0
+    def _iter_ids():
+        """生成待处理的 fixture id: --ids 模式按列表顺序, 否则从起始 id 递减到下限"""
+        if id_list is not None:
+            yield from id_list
+        else:
+            f = fid
+            while f >= args.min_id:
+                yield f
+                f -= 1
+
+    checked = saved = skipped_plan = skipped_league = empty = sub_ok = sub_fail = 0
     started = datetime.now()
     db = SessionLocal()
     try:
-        while fid >= args.min_id:
+        for fid in _iter_ids():
             checked += 1
             res = fetch_one(fid)
 
@@ -174,6 +217,7 @@ def main():
                 except ValueError:
                     pass
 
+            upserted = False
             if res["status"] == "free_plan":
                 skipped_plan += 1
                 if skipped_plan % 20 == 0:
@@ -188,6 +232,7 @@ def main():
                         if lid in allowed:
                             _upsert_fixture(db, row)
                             saved += 1
+                            upserted = True
                         else:
                             skipped_league += 1
                     db.commit()
@@ -196,16 +241,27 @@ def main():
                     print(f"\n数据库写入失败 id={fid}: {e}")
                     break
 
+                # 可选: 同步该场子数据(阵容/统计; 事件/球员接口已禁用)
+                if args.with_sub_data and upserted:
+                    if _sync_one_fixture_sub_data(fid):
+                        sub_ok += 1
+                        print(f"  id={fid}: 子数据(阵容/统计)同步完成")
+                    else:
+                        sub_fail += 1
+                        print(f"  id={fid}: 子数据同步失败")
+                        if is_quota_exhausted():
+                            print("\nAPI 当日额度已耗尽，停止。")
+                            break
+
             # 进度输出
             if checked % 25 == 0 or (saved and checked % 5 == 0):
                 elapsed = (datetime.now() - started).total_seconds() / 60
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 已查 {checked} | "
-                      f"保存 {saved} | 跳过(计划){skipped_plan} | "
+                      f"保存 {saved} | 子数据 {sub_ok}/{sub_ok + sub_fail} | "
+                      f"跳过(计划){skipped_plan} | "
                       f"跳过(联赛){skipped_league} | 空 {empty} | id={fid} ({elapsed:.1f}min)")
 
-            fid -= 1
-            if fid >= args.min_id:
-                time.sleep(args.sleep)
+            time.sleep(args.sleep)
     except KeyboardInterrupt:
         print("\n用户中断 (Ctrl+C)")
     finally:
@@ -219,6 +275,9 @@ def main():
     print(f"  跳过(免费版限制): {skipped_plan}")
     print(f"  跳过(非白名单联赛): {skipped_league}")
     print(f"  空数据: {empty}")
+    if args.with_sub_data:
+        print(f"  子数据同步成功: {sub_ok}")
+        print(f"  子数据同步失败: {sub_fail}")
 
 
 if __name__ == "__main__":
