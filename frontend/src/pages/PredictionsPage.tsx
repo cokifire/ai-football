@@ -560,18 +560,6 @@ export default function PredictionsPage() {
                           </span>
                         </div>
                       )}
-                      {selectedPred.llm?.ou_line != null && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-500">盘口</span>
-                          <span className="font-medium">{toText(selectedPred.llm.ou_line)}</span>
-                        </div>
-                      )}
-                      {selectedPred.llm?.ou_pct != null && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-500">概率</span>
-                          <span className="font-medium">{fmtPct(selectedPred.llm.ou_pct)}</span>
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}
@@ -616,18 +604,6 @@ export default function PredictionsPage() {
                         </span>
                       </div>
                     )}
-                    {selectedPred.llm?.handicap_team && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">方向</span>
-                        <span className="font-medium">{toText(selectedPred.llm.handicap_team)}</span>
-                      </div>
-                    )}
-                    {selectedPred.llm?.handicap_pct != null && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">概率</span>
-                        <span className="font-medium">{fmtPct(selectedPred.llm.handicap_pct)}</span>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
@@ -636,8 +612,13 @@ export default function PredictionsPage() {
             {/* LLM 分析 */}
             {selectedPred.llm && (
               <div className="card">
-                <div className="card-header">
+                <div className="card-header flex items-center justify-between">
                   <h3 className="font-semibold">LLM 深度分析</h3>
+                  {selectedPred.llm.model && (
+                    <span className="text-sm text-gray-500">
+                      预测模型：<span className="font-medium text-gray-700">{toText(selectedPred.llm.model)}</span>
+                    </span>
+                  )}
                 </div>
                 <div className="card-body space-y-4">
                   {selectedPred.llm.win && (
