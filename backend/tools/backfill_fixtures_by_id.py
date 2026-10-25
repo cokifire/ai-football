@@ -39,7 +39,9 @@ from datetime import datetime
 import time
 import argparse
 
+from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
+from app.models.fixture import Fixture, FixtureLineup, FixtureStatistic
 from app.core.config import settings
 from app.core.api_football import (
     api_football_get_sync,
@@ -109,6 +111,55 @@ def fetch_one(fid: int) -> dict:
 
     items = data.get("response", [])
     return {"status": "ok" if items else "empty", "data": data, "remaining": remaining}
+
+
+def _save_embedded_sub_data(db: Session, fid: int, row: dict) -> bool:
+    """若 API 返回的 fixture 数据已包含阵容/统计, 直接解析落库, 节省额外 HTTP 请求"""
+    has_sub = False
+    lineups_data = row.get("lineups") or []
+    if lineups_data and not db.query(FixtureLineup).filter(FixtureLineup.fixture_id == fid).first():
+        has_sub = True
+        for team_entry in lineups_data:
+            team_raw = team_entry.get("team") or {}
+            formation = team_entry.get("formation", "")
+            tid = team_raw.get("id")
+            tname = team_raw.get("name", "")
+            for xi in team_entry.get("startXI", []):
+                p = xi.get("player") or {}
+                db.add(FixtureLineup(
+                    fixture_id=fid, team_id=tid, team_name=tname, formation=formation,
+                    player_id=p.get("id"), player_name=p.get("name"), player_number=p.get("number"),
+                    player_position=p.get("pos"), player_grid=p.get("grid"), is_substitute=False
+                ))
+            for sub in team_entry.get("substitutes", []):
+                p = sub.get("player") or {}
+                db.add(FixtureLineup(
+                    fixture_id=fid, team_id=tid, team_name=tname, formation=formation,
+                    player_id=p.get("id"), player_name=p.get("name"), player_number=p.get("number"),
+                    player_position=p.get("pos"), player_grid=p.get("grid"), is_substitute=True
+                ))
+
+    stats_data = row.get("statistics") or []
+    if stats_data and not db.query(FixtureStatistic).filter(FixtureStatistic.fixture_id == fid).first():
+        has_sub = True
+        for team_entry in stats_data:
+            team_raw = team_entry.get("team") or {}
+            tid = team_raw.get("id")
+            tname = team_raw.get("name", "")
+            for stat in team_entry.get("statistics", []):
+                db.add(FixtureStatistic(
+                    fixture_id=fid, team_id=tid, team_name=tname,
+                    stat_type=stat.get("type"),
+                    stat_value=str(stat.get("value")) if stat.get("value") is not None else None
+                ))
+
+    if has_sub:
+        db.query(Fixture).filter(Fixture.id == fid).update(
+            {"sub_data_synced": True}, synchronize_session=False
+        )
+        db.commit()
+        return True
+    return False
 
 
 def main():
@@ -243,9 +294,16 @@ def main():
 
                 # 可选: 同步该场子数据(阵容/统计; 事件/球员接口已禁用)
                 if args.with_sub_data and upserted:
-                    if _sync_one_fixture_sub_data(fid):
+                    embedded_saved = False
+                    for row in res["data"]["response"]:
+                        if _save_embedded_sub_data(db, fid, row):
+                            embedded_saved = True
+                    if embedded_saved:
                         sub_ok += 1
-                        print(f"  id={fid}: 子数据(阵容/统计)同步完成")
+                        print(f"  id={fid}: 内嵌子数据(阵容/统计)直接落库完成 (0额外请求)")
+                    elif _sync_one_fixture_sub_data(fid):
+                        sub_ok += 1
+                        print(f"  id={fid}: 子数据(阵容/统计)接口同步完成")
                     else:
                         sub_fail += 1
                         print(f"  id={fid}: 子数据同步失败")
