@@ -562,6 +562,12 @@ def scrape_match_analysis(
 ) -> str:
     """Search and scrape match intelligence, returning Markdown text.
 
+    Collection stops at the first article that passes review: the remaining
+    sources and the unscoped fallback are then skipped, keeping the Firecrawl
+    quota at roughly one search plus one scrape per fixture. A page rejected by
+    the review LLM is excluded by URL and the search continues for one
+    replacement.
+
     Failures are returned as a short Markdown status so callers can include it
     in a prompt without making external intelligence a hard prediction error.
     """
@@ -591,10 +597,12 @@ def scrape_match_analysis(
             sites = list(INTELLIGENCE_SITES)
 
         # Search each approved source separately so one noisy site cannot
-        # consume the whole result budget. One result per site, at most three.
-        relevant = []
+        # consume the whole result budget. Only one article is ever kept: the
+        # first page that passes review ends the whole search, which keeps the
+        # Firecrawl quota close to one search plus one scrape per fixture.
+        relevant: list[tuple[str, dict[str, Any]]] = []
         used_urls: set[str] = set()
-        query_list = []
+        query_list: list[str] = []
         scrape_options = V1ScrapeOptions(
             formats=["markdown"],
             onlyMainContent=True,
@@ -602,8 +610,34 @@ def scrape_match_analysis(
             blockAds=True,
         )
         per_site_limit = 3
+
+        def _accept_article(article: tuple[str, dict[str, Any]]) -> bool:
+            """Review one scraped article and keep it only when approved.
+
+            A rejected page is recorded in ``used_urls`` so the remaining
+            sources and the unscoped fallback cannot select the same page
+            again; the caller then keeps searching for one replacement.
+            """
+            url = str(article[1].get("url") or article[1].get("link") or "")
+            approved = _audit_articles_with_agnes(
+                [article],
+                home_team=home_team,
+                away_team=away_team,
+                competition=competition,
+                year=year,
+                api_key=intelligence_llm_api_key,
+                base_url=intelligence_llm_base_url,
+                model=intelligence_llm_model,
+            )
+            if not approved:
+                used_urls.add(url)
+                logger.info("情报文章审核未通过，继续查找下一篇: url={}", url)
+                return False
+            relevant.append(article)
+            return True
+
         for source_site in sites:
-            if len(relevant) >= limit:
+            if relevant:
                 break
             queries = [build_query(
                 home_team=home_team,
@@ -650,13 +684,16 @@ def scrape_match_analysis(
                     scrape_options=scrape_options,
                     expected_year=year,
                 )
-                if scraped_matches:
-                    relevant.append(scraped_matches[0])
-                    used_urls.add(str(scraped_matches[0][1].get("url") or scraped_matches[0][1].get("link") or ""))
+                # One approved article ends the search. A rejected page is
+                # recorded by _accept_article and the next source is tried.
+                for article in scraped_matches:
+                    if _accept_article(article):
+                        break
 
-        # If the curated sources do not cover the fixture, broaden discovery
-        # without trusting the entire web. Candidate domains, result identity,
-        # article type, and scraped body are all checked before acceptance.
+        # Reached when no approved source covered the fixture, or when the only
+        # candidate was rejected by review. Discovery is broadened without
+        # trusting the entire web: domains, result identity, article type and
+        # scraped body are all checked before acceptance, one page at a time.
         if not relevant:
             fallback_queries = [
                 build_query(
@@ -668,7 +705,7 @@ def scrape_match_analysis(
                 f'"{_short_team_name(home_team)}" "{_short_team_name(away_team)}" football preview prediction',
             ]
             for query in dict.fromkeys(fallback_queries):
-                if len(relevant) >= limit:
+                if relevant:
                     break
                 query_list.append(query)
                 try:
@@ -689,32 +726,18 @@ def scrape_match_analysis(
                     pair for pair in candidates
                     if str(pair[1].get("url") or pair[1].get("link") or "") not in used_urls
                 ]
-                scraped_matches = _scrape_article_pages(
+                # Scrape a single page per query: the first one that passes
+                # review ends the fallback and later queries are skipped.
+                for article in _scrape_article_pages(
                     app,
                     candidates,
-                    limit=limit - len(relevant),
+                    limit=1,
                     scrape_options=scrape_options,
                     expected_year=year,
-                )
-                for scraped in scraped_matches:
-                    url = str(scraped[1].get("url") or scraped[1].get("link") or "")
-                    if url in used_urls:
-                        continue
-                    relevant.append(scraped)
-                    used_urls.add(url)
-                    if len(relevant) >= limit:
+                ):
+                    if _accept_article(article):
                         break
 
-        relevant = _audit_articles_with_agnes(
-            relevant,
-            home_team=home_team,
-            away_team=away_team,
-            competition=competition,
-            year=year,
-            api_key=intelligence_llm_api_key,
-            base_url=intelligence_llm_base_url,
-            model=intelligence_llm_model,
-        )
         raw_markdown = _as_markdown(
             {"data": [item for _, item in relevant]},
             query="\n".join(query_list),
