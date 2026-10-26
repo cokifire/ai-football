@@ -266,7 +266,6 @@ export default function FixturesPage() {
       top3: xgb.top3,
       lambda_home: xgb.lambda?.home,
       lambda_away: xgb.lambda?.away,
-      handicap: xgb.handicap,
       intelligence_markdown: saved.intelligence_markdown,
       llm: { ...llm, brief_analysis: llm.brief },
       bayes: saved.bayes || null,
@@ -1219,10 +1218,14 @@ function PredictionResult({ result, fixture }: { result: any; fixture?: any }) {
         <div className="border border-gray-100 rounded-lg p-3">
           <h4 className="font-semibold mb-2">让球</h4>
           <div className="text-sm space-y-1">
-            <div className="flex justify-between">
-              <span className="text-gray-500">模型盘口</span>
-              <span className="font-medium">{xgb.handicap || '-'}</span>
-            </div>
+            {xgb.lambda_home != null && xgb.lambda_away != null && (
+              <div className="flex justify-between">
+                <span className="text-gray-500">预期进球 λ</span>
+                <span className="font-medium">
+                  {`主 ${Number(xgb.lambda_home).toFixed(2)} | 客 ${Number(xgb.lambda_away).toFixed(2)}`}
+                </span>
+              </div>
+            )}
             {(llm.handicap_team && llm.handicap_num != null) && (
               <div className="flex justify-between">
                 <span className="text-gray-500">推荐</span>

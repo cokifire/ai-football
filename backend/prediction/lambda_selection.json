@@ -1,0 +1,503 @@
+{
+  "generated_at": "2026-10-26T16:48:40",
+  "targets": [
+    "lambda_home",
+    "lambda_away"
+  ],
+  "variants": {
+    "regularized_squared_error": {
+      "objective": "reg:squarederror",
+      "n_estimators": 200,
+      "learning_rate": 0.05,
+      "max_depth": 4,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "min_child_weight": 5,
+      "reg_lambda": 2.0
+    },
+    "poisson_count": {
+      "objective": "count:poisson",
+      "n_estimators": 200,
+      "learning_rate": 0.05,
+      "max_depth": 4,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "min_child_weight": 5,
+      "reg_lambda": 2.0
+    }
+  },
+  "test_ratio": 0.2,
+  "min_train_rows": 100,
+  "groups": {
+    "L_2": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 760,
+      "n_test": 191,
+      "metrics": {
+        "n_test": 191,
+        "rmse_home": 1.5821,
+        "rmse_away": 1.2249,
+        "rmse_mean": 1.4035,
+        "baseline_rmse_mean": 1.4396,
+        "rmse_vs_baseline": -0.0361,
+        "corr_home": 0.2507,
+        "corr_away": 0.3048,
+        "sign_agreement": 0.5916,
+        "mean_lambda_home": 1.7383,
+        "mean_lambda_away": 1.2698,
+        "group": "L_2",
+        "variant": "poisson_count",
+        "n_train": 760
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_13": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 488,
+      "n_test": 123,
+      "metrics": {
+        "n_test": 123,
+        "rmse_home": 1.1223,
+        "rmse_away": 0.8311,
+        "rmse_mean": 0.9767,
+        "baseline_rmse_mean": 1.013,
+        "rmse_vs_baseline": -0.0363,
+        "corr_home": 0.258,
+        "corr_away": 0.2575,
+        "sign_agreement": 0.439,
+        "mean_lambda_home": 1.3694,
+        "mean_lambda_away": 0.7822,
+        "group": "L_13",
+        "variant": "poisson_count",
+        "n_train": 488
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_39": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1245,
+      "n_test": 312,
+      "metrics": {
+        "n_test": 312,
+        "rmse_home": 1.206,
+        "rmse_away": 1.0557,
+        "rmse_mean": 1.1309,
+        "baseline_rmse_mean": 1.1476,
+        "rmse_vs_baseline": -0.0168,
+        "corr_home": 0.1955,
+        "corr_away": 0.2191,
+        "sign_agreement": 0.4583,
+        "mean_lambda_home": 1.5359,
+        "mean_lambda_away": 1.2343,
+        "group": "L_39",
+        "variant": "poisson_count",
+        "n_train": 1245
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_61": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1073,
+      "n_test": 269,
+      "metrics": {
+        "n_test": 269,
+        "rmse_home": 1.2656,
+        "rmse_away": 1.1984,
+        "rmse_mean": 1.232,
+        "baseline_rmse_mean": 1.259,
+        "rmse_vs_baseline": -0.027,
+        "corr_home": 0.2412,
+        "corr_away": 0.2634,
+        "sign_agreement": 0.5279,
+        "mean_lambda_home": 1.6072,
+        "mean_lambda_away": 1.1624,
+        "group": "L_61",
+        "variant": "poisson_count",
+        "n_train": 1073
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_78": {
+      "variant": "regularized_squared_error",
+      "reason": "RMSE 差距不足 1%，方向一致率更高",
+      "n_train": 1006,
+      "n_test": 252,
+      "metrics": {
+        "n_test": 252,
+        "rmse_home": 1.3475,
+        "rmse_away": 1.1329,
+        "rmse_mean": 1.2402,
+        "baseline_rmse_mean": 1.335,
+        "rmse_vs_baseline": -0.0948,
+        "corr_home": 0.3619,
+        "corr_away": 0.4068,
+        "sign_agreement": 0.5437,
+        "mean_lambda_home": 1.8454,
+        "mean_lambda_away": 1.4106,
+        "group": "L_78",
+        "variant": "regularized_squared_error",
+        "n_train": 1006
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_88": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1053,
+      "n_test": 264,
+      "metrics": {
+        "n_test": 264,
+        "rmse_home": 1.2863,
+        "rmse_away": 1.2332,
+        "rmse_mean": 1.2598,
+        "baseline_rmse_mean": 1.3116,
+        "rmse_vs_baseline": -0.0518,
+        "corr_home": 0.2746,
+        "corr_away": 0.3121,
+        "sign_agreement": 0.4962,
+        "mean_lambda_home": 1.7037,
+        "mean_lambda_away": 1.3884,
+        "group": "L_88",
+        "variant": "poisson_count",
+        "n_train": 1053
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_113": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 904,
+      "n_test": 227,
+      "metrics": {
+        "n_test": 227,
+        "rmse_home": 1.382,
+        "rmse_away": 1.1908,
+        "rmse_mean": 1.2864,
+        "baseline_rmse_mean": 1.3197,
+        "rmse_vs_baseline": -0.0333,
+        "corr_home": 0.2281,
+        "corr_away": 0.2309,
+        "sign_agreement": 0.4802,
+        "mean_lambda_home": 1.5181,
+        "mean_lambda_away": 1.2617,
+        "group": "L_113",
+        "variant": "poisson_count",
+        "n_train": 904
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_135": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1249,
+      "n_test": 313,
+      "metrics": {
+        "n_test": 313,
+        "rmse_home": 1.1457,
+        "rmse_away": 1.0504,
+        "rmse_mean": 1.0981,
+        "baseline_rmse_mean": 1.172,
+        "rmse_vs_baseline": -0.0739,
+        "corr_home": 0.411,
+        "corr_away": 0.2989,
+        "sign_agreement": 0.5495,
+        "mean_lambda_home": 1.3411,
+        "mean_lambda_away": 1.0796,
+        "group": "L_135",
+        "variant": "poisson_count",
+        "n_train": 1249
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "L_140": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1259,
+      "n_test": 315,
+      "metrics": {
+        "n_test": 315,
+        "rmse_home": 1.2258,
+        "rmse_away": 1.0209,
+        "rmse_mean": 1.1233,
+        "baseline_rmse_mean": 1.1802,
+        "rmse_vs_baseline": -0.0569,
+        "corr_home": 0.3622,
+        "corr_away": 0.2708,
+        "sign_agreement": 0.5048,
+        "mean_lambda_home": 1.4344,
+        "mean_lambda_away": 1.1079,
+        "group": "L_140",
+        "variant": "poisson_count",
+        "n_train": 1259
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "AMERICAS": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 488,
+      "n_test": 123,
+      "metrics": {
+        "n_test": 123,
+        "rmse_home": 1.1223,
+        "rmse_away": 0.8311,
+        "rmse_mean": 0.9767,
+        "baseline_rmse_mean": 1.013,
+        "rmse_vs_baseline": -0.0363,
+        "corr_home": 0.258,
+        "corr_away": 0.2575,
+        "sign_agreement": 0.439,
+        "mean_lambda_home": 1.3694,
+        "mean_lambda_away": 0.7822,
+        "group": "AMERICAS",
+        "variant": "poisson_count",
+        "n_train": 488
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "EU2": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1958,
+      "n_test": 490,
+      "metrics": {
+        "n_test": 490,
+        "rmse_home": 1.29,
+        "rmse_away": 1.2306,
+        "rmse_mean": 1.2603,
+        "baseline_rmse_mean": 1.3039,
+        "rmse_vs_baseline": -0.0436,
+        "corr_home": 0.3069,
+        "corr_away": 0.221,
+        "sign_agreement": 0.4796,
+        "mean_lambda_home": 1.662,
+        "mean_lambda_away": 1.4094,
+        "group": "EU2",
+        "variant": "poisson_count",
+        "n_train": 1958
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "EU_CUP": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 760,
+      "n_test": 191,
+      "metrics": {
+        "n_test": 191,
+        "rmse_home": 1.5821,
+        "rmse_away": 1.2249,
+        "rmse_mean": 1.4035,
+        "baseline_rmse_mean": 1.4396,
+        "rmse_vs_baseline": -0.0361,
+        "corr_home": 0.2507,
+        "corr_away": 0.3048,
+        "sign_agreement": 0.5916,
+        "mean_lambda_home": 1.7383,
+        "mean_lambda_away": 1.2698,
+        "group": "EU_CUP",
+        "variant": "poisson_count",
+        "n_train": 760
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "LIGUE1": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1073,
+      "n_test": 269,
+      "metrics": {
+        "n_test": 269,
+        "rmse_home": 1.2656,
+        "rmse_away": 1.1984,
+        "rmse_mean": 1.232,
+        "baseline_rmse_mean": 1.259,
+        "rmse_vs_baseline": -0.027,
+        "corr_home": 0.2412,
+        "corr_away": 0.2634,
+        "sign_agreement": 0.5279,
+        "mean_lambda_home": 1.6072,
+        "mean_lambda_away": 1.1624,
+        "group": "LIGUE1",
+        "variant": "poisson_count",
+        "n_train": 1073
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "BUNDESLIGA": {
+      "variant": "regularized_squared_error",
+      "reason": "RMSE 差距不足 1%，方向一致率更高",
+      "n_train": 1006,
+      "n_test": 252,
+      "metrics": {
+        "n_test": 252,
+        "rmse_home": 1.3475,
+        "rmse_away": 1.1329,
+        "rmse_mean": 1.2402,
+        "baseline_rmse_mean": 1.335,
+        "rmse_vs_baseline": -0.0948,
+        "corr_home": 0.3619,
+        "corr_away": 0.4068,
+        "sign_agreement": 0.5437,
+        "mean_lambda_home": 1.8454,
+        "mean_lambda_away": 1.4106,
+        "group": "BUNDESLIGA",
+        "variant": "regularized_squared_error",
+        "n_train": 1006
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "PL": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1245,
+      "n_test": 312,
+      "metrics": {
+        "n_test": 312,
+        "rmse_home": 1.206,
+        "rmse_away": 1.0557,
+        "rmse_mean": 1.1309,
+        "baseline_rmse_mean": 1.1476,
+        "rmse_vs_baseline": -0.0168,
+        "corr_home": 0.1955,
+        "corr_away": 0.2191,
+        "sign_agreement": 0.4583,
+        "mean_lambda_home": 1.5359,
+        "mean_lambda_away": 1.2343,
+        "group": "PL",
+        "variant": "poisson_count",
+        "n_train": 1245
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "SERIEA": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1249,
+      "n_test": 313,
+      "metrics": {
+        "n_test": 313,
+        "rmse_home": 1.1457,
+        "rmse_away": 1.0504,
+        "rmse_mean": 1.0981,
+        "baseline_rmse_mean": 1.172,
+        "rmse_vs_baseline": -0.0739,
+        "corr_home": 0.411,
+        "corr_away": 0.2989,
+        "sign_agreement": 0.5495,
+        "mean_lambda_home": 1.3411,
+        "mean_lambda_away": 1.0796,
+        "group": "SERIEA",
+        "variant": "poisson_count",
+        "n_train": 1249
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "LALIGA": {
+      "variant": "poisson_count",
+      "reason": "rmse_mean 最低",
+      "n_train": 1259,
+      "n_test": 315,
+      "metrics": {
+        "n_test": 315,
+        "rmse_home": 1.2258,
+        "rmse_away": 1.0209,
+        "rmse_mean": 1.1233,
+        "baseline_rmse_mean": 1.1802,
+        "rmse_vs_baseline": -0.0569,
+        "corr_home": 0.3622,
+        "corr_away": 0.2708,
+        "sign_agreement": 0.5048,
+        "mean_lambda_home": 1.4344,
+        "mean_lambda_away": 1.1079,
+        "group": "LALIGA",
+        "variant": "poisson_count",
+        "n_train": 1259
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    },
+    "GLOBAL": {
+      "variant": "regularized_squared_error",
+      "reason": "RMSE 差距不足 1%，方向一致率更高",
+      "n_train": 9065,
+      "n_test": 2267,
+      "metrics": {
+        "n_test": 2267,
+        "rmse_home": 1.231,
+        "rmse_away": 1.0928,
+        "rmse_mean": 1.1619,
+        "baseline_rmse_mean": 1.2528,
+        "rmse_vs_baseline": -0.091,
+        "corr_home": 0.4014,
+        "corr_away": 0.3619,
+        "sign_agreement": 0.5298,
+        "mean_lambda_home": 1.6272,
+        "mean_lambda_away": 1.2391,
+        "group": "GLOBAL",
+        "variant": "regularized_squared_error",
+        "n_train": 9065
+      },
+      "compared": [
+        "regularized_squared_error",
+        "poisson_count"
+      ]
+    }
+  },
+  "skipped": {},
+  "failed": {}
+}

@@ -114,7 +114,7 @@ def _load_prediction(db, fixture_id: int) -> dict | None:
             """
             SELECT p.fixture_id, p.match_date, p.model_group,
                    p.win_home, p.win_draw, p.win_away, p.over25_prob,
-                   p.top3_scores, p.lambda_home, p.lambda_away, p.handicap,
+                   p.top3_scores, p.lambda_home, p.lambda_away,
                    p.llm_win, p.llm_score, p.llm_win_pct,
                    p.llm_deep_report,
                    p.llm_handicap_num, p.llm_handicap_team, p.llm_handicap_pct,
@@ -195,7 +195,6 @@ def _render_prediction(data: dict) -> None:
         if data.get("lambda_home") is not None and data.get("lambda_away") is not None
         else "-",
     )
-    xgb.add_row("让球参考", data.get("handicap") or "-")
     top3 = data.get("top3_scores") or []
     if isinstance(top3, list):
         top3_text = "  ".join(f"{x.get('score')}({_fmt_pct(x.get('prob'))})" for x in top3 if isinstance(x, dict))

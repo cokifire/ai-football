@@ -27,7 +27,6 @@ interface PredictionDetail {
     over25: { over: number | null; under: number | null } | null
     lambda: { home: number | null; away: number | null } | null
     top3: Array<{ score: string; prob: number }> | null
-    handicap: string | null
   } | null
   llm: {
     model: string | null
@@ -586,24 +585,40 @@ export default function PredictionsPage() {
               </div>
             )}
 
-            {/* 亚盘分析 */}
-            {selectedPred.xgb?.handicap && (
+            {/* 预期进球（λ） */}
+            {selectedPred.xgb?.lambda && (
               <div>
-                <h4 className="font-semibold mb-2">亚盘分析 (XGBoost)</h4>
+                <h4 className="font-semibold mb-2">预期进球 (XGBoost λ)</h4>
+                <div className="border border-gray-100 rounded-lg p-3">
+                  <div className="text-sm space-y-1">
+                    {[
+                      { label: '主队 λ', v: selectedPred.xgb.lambda.home },
+                      { label: '客队 λ', v: selectedPred.xgb.lambda.away },
+                    ].map((r) => (
+                      <div key={r.label} className="flex justify-between">
+                        <span className="text-gray-500">{r.label}</span>
+                        <span className="font-medium">
+                          {r.v != null ? Number(r.v).toFixed(2) : '-'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 让球推荐（LLM） */}
+            {(selectedPred.llm?.handicap_team && selectedPred.llm?.handicap_num != null) && (
+              <div>
+                <h4 className="font-semibold mb-2">让球 (LLM)</h4>
                 <div className="border border-gray-100 rounded-lg p-3">
                   <div className="text-sm space-y-1">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">模型盘口</span>
-                      <span className="font-medium">{toText(selectedPred.xgb.handicap)}</span>
+                      <span className="text-gray-500">推荐</span>
+                      <span className="font-medium">
+                        {`${toText(selectedPred.llm.handicap_team)} ${toText(selectedPred.llm.handicap_num)} (${fmtPct(selectedPred.llm.handicap_pct)})`}
+                      </span>
                     </div>
-                    {selectedPred.llm?.handicap_team && selectedPred.llm?.handicap_num != null && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">推荐</span>
-                        <span className="font-medium">
-                          {`${toText(selectedPred.llm.handicap_team)} ${toText(selectedPred.llm.handicap_num)} (${fmtPct(selectedPred.llm.handicap_pct)})`}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>

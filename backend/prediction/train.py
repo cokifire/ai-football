@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from loguru import logger
 from prediction.training.data import load_features, get_feature_cols, get_groups, train_test_split_temporal
-from prediction.training.model import train_group, save_models
+from prediction.training.model import (
+    compute_feature_medians, train_group, save_models, save_feature_medians,
+)
 from prediction.training.evaluate import evaluate_group
 
 METRICS_PATH = os.path.join(os.path.dirname(__file__), 'metrics.csv')
@@ -33,6 +35,8 @@ def run():
     logger.info(f"分组数: {len(groups)}")
 
     metrics_rows = []
+    # 各分组的**训练段**特征中位数：推理侧必须用同一份填充，否则 train/serve 口径不一致。
+    medians_by_group: dict = {}
 
     for group_key, group_df in groups.items():
         logger.info(f"\n=== {group_key} ({len(group_df):,} 样本) ===")
@@ -46,6 +50,7 @@ def run():
         X_test = df_test[feature_cols]
 
         try:
+            medians_by_group[group_key] = compute_feature_medians(df_train[feature_cols])
             models = train_group(group_key, df_train, feature_cols)
             save_models(group_key, models)
 
@@ -74,6 +79,9 @@ def run():
 
         except Exception as e:
             logger.error(f"  训练失败: {e}")
+
+    if medians_by_group:
+        save_feature_medians(medians_by_group)
 
     # 写评估报告
     if metrics_rows:

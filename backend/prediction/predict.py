@@ -29,11 +29,12 @@ from app.db.session import SessionLocal
 from app.core.config import settings
 from llm.codex_cli import PREDICTION_SCHEMA_PATH, CodexError, run_codex
 from prediction.features import extract_features_for_fixture
-from prediction.training.model import load_models, _fill_na
+from prediction.training.model import load_models
 from prediction.training.data import assign_group
 from prediction.bayes import (
     BAYES_VERSION, apply_updates, blend_prior, market_divergence, team_elo_prior,
 )
+from prediction.training.model import fill_na_with_medians, load_feature_medians
 
 import pandas as pd
 
@@ -1230,7 +1231,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【机器模型数据】XGBoost 原始输出（先验与参数，未经贝叶斯修正），仅供校准参考
     胜平负先验: {xgb_win_text}
     预期进球λ: {lambda_text}（用于泊松派生市场）
-    让球参考:{pw['handicap']}（仅 XGBoost 参考，handicap_num 以赔率盘口为准）  大小球参考:{pw['over25_prob']:.0%}大球
+    大小球参考:{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
     模型最高项:{model_top_text}
 
@@ -1308,25 +1309,24 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             raise PredictionDataError(f"未加载到可用模型（league_id={fixture['league_id']}，请先训练/导入模型）")
 
         X = pd.DataFrame([feat])[feature_cols]
-        X_filled = _fill_na(X)
+        # 必须用训练段持久化的中位数填充：单行 X.median() 等于自身，NaN 会被
+        # XGBoost 当缺失值走默认分支，与训练时的填充口径不一致。
+        medians = load_feature_medians(model_group)
+        if medians is None:
+            logger.warning(
+                "fixture={} 分组 {} 无持久化特征中位数，回退列中位数填充",
+                fixture_id, model_group,
+            )
+        X_filled = fill_na_with_medians(X, medians)
         win_probs = models['win'].predict_proba(X_filled)[0]
         over25_prob = float(models['over25'].predict_proba(X_filled)[0][1])
         lambda_home = float(models['lambda_home'].predict(X_filled)[0])
         lambda_away = float(models['lambda_away'].predict(X_filled)[0])
         top3 = _poisson_top3(lambda_home, lambda_away)
 
-        # 让球: 最低档0.5球, 无"平手"
-        diff = lambda_home - lambda_away
-        ad = abs(diff)
-        if ad < 0.75:
-            val = "0.5"
-        elif ad < 1.25:
-            val = "1"
-        elif ad < 1.75:
-            val = "1.5"
-        else:
-            val = "2"
-        hc = f"{'主让' if diff > 0 else '客让'}{val}球"
+        # 不再由 λ 差值派生「模型盘口」：λ 回归器过拟合，其差值方向在样本外与
+        # 抛硬币无异，派生出的盘口会与胜平负概率公开放置时自相矛盾。
+        # 展示层改为直接呈现 λ 原值，盘口结论以 LLM 基于市场赔率的推荐为准。
 
         xgb_result = {
             'win_home': float(win_probs[2]),
@@ -1336,7 +1336,6 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             'top3': top3,
             'lambda_home': lambda_home,
             'lambda_away': lambda_away,
-            'handicap': hc,
         }
 
         # 4. 全量数据
@@ -1458,7 +1457,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
             fixture_id, home_name, away_name, home_logo, away_logo,
             league_name, match_date, model_group,
             win_home, win_draw, win_away, over25_prob,
-            top3_scores, lambda_home, lambda_away, handicap,
+            top3_scores, lambda_home, lambda_away,
             llm_win, llm_score, llm_win_pct,
             llm_deep_report,
             llm_handicap_num, llm_handicap_team, llm_handicap_pct,
@@ -1469,7 +1468,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
             :fid, :hname, :aname, :hlogo, :alogo,
             :lname, :mdate, :mgroup,
             :wh, :wd, :wa, :o25,
-            :top3, :lh, :la, :hc,
+            :top3, :lh, :la,
             :lw, :ls, :lwp,
             :ldr,
             :hcn, :hct, :hcp,
@@ -1479,7 +1478,7 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
         )
         ON DUPLICATE KEY UPDATE
             win_home=:wh, win_draw=:wd, win_away=:wa, over25_prob=:o25,
-            top3_scores=:top3, lambda_home=:lh, lambda_away=:la, handicap=:hc,
+            top3_scores=:top3, lambda_home=:lh, lambda_away=:la,
             llm_win=:lw, llm_score=:ls, llm_win_pct=:lwp,
             llm_deep_report=:ldr,
             llm_handicap_num=:hcn, llm_handicap_team=:hct, llm_handicap_pct=:hcp,
@@ -1497,7 +1496,6 @@ def _save_prediction(db, fixture, xgb, llm, odds, model_group, bayes=None,
         'o25': xgb['over25_prob'],
         'top3': json.dumps(xgb['top3']),
         'lh': xgb['lambda_home'], 'la': xgb['lambda_away'],
-        'hc': xgb['handicap'],
         'lw': llm.get('win'), 'ls': llm.get('score'), 'lwp': llm.get('win_pct'),
         'ldr': llm.get('deep_report'),
         'hcn': llm.get('handicap_num'), 'hct': llm.get('handicap_team'), 'hcp': llm.get('handicap_pct'),
