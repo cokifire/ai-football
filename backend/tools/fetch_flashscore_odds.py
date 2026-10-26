@@ -307,12 +307,19 @@ def _to_float(raw: str):
 # ui-table__row 切换为 wclOddsRow，两个选择器都保留以兼容不同页面版本。
 _HAS_ROWS_JS = "() => !!document.querySelector('div.ui-table__row, div.wclOddsRow')"
 
-# 赔率区容器是否已渲染。用于区分「该场确实没有赔率」（容器在但没数据行）
-# 与「赔率区压根没加载出来」（连容器都没有，说明被反爬拦了/异步请求失败，必须重试）。
+# 赔率区是否已渲染出来。用于区分「该场确实没有赔率」（赔率区在、只是没数据行）
+# 与「赔率区压根没加载出来」（已被反爬拦或异步请求失败，必须换新标签页重试）。
+#
+# 只认**装赔率内容**的容器：2026-10 起是 wcl* 系列（wclTabsPrematchOdds 及其下的
+# wclOddsContentOverall / wclOddsContent），旧版页面则是 oddsTab__tableWrapper。
+# 注意不要用 .tabContent__odds-comparison / [class*="odds-comparison"]：那是外层标签页
+# 布局，实测即使赔率接口返回空（getPrematchOddsBettingTypeMenu: null）它也可能渲染，
+# 用它当判据会把「确实没有赔率」误判成「赔率区已渲染」。
 _HAS_ODDS_TAB_JS = (
     "() => !!document.querySelector("
-    "'.oddsTab__tableWrapper, .tabContent__odds-comparison, "
-    "[class*=\"oddsTab\"], [class*=\"odds-comparison\"]')"
+    "'.oddsTab__tableWrapper, [class*=\"oddsTab\"], "
+    ".wclTabsPrematchOdds, .wclOddsContentOverall, .wclOddsContent, "
+    ".section__prematchOdds')"
 )
 
 # 抽取赔率表每一行：庄家名 / 盘口线 / 各位赔率（含是否被撤单）
