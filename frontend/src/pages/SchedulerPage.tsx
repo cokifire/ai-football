@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import apiClient, { getApiToken } from '../api/client'
 import Loading from '../components/Loading'
 
@@ -31,6 +31,13 @@ const taskActions = [
   { key: 'fixtures',  label: '赛程同步', desc: '从 API 同步比赛赛程数据' },
 ]
 
+// 按条件回填缺数据比赛（对应 backend/tools/backfill_fixtures_by_id.py）
+const BACKFILL_KEY = 'backfill_fixtures'      // syncing 状态键（与 taskActions.key 同命名空间）
+const BACKFILL_TASK_ID = 'backfill_fixtures'  // SSE 日志队列键 / 后端 task_id
+const BACKFILL_LABEL = '按条件回填'
+const SLEEP_OPTIONS = ['2.0', '4.0', '6.0', '8.0', '10.0']
+const MAX_REQUEST_OPTIONS = ['20', '50', '100', '200']
+
 function taskStatus(t: SchedulerTask): 'running' | 'paused' | 'idle' {
   if (t.is_running) return 'running'
   if (!t.is_enabled) return 'paused'
@@ -45,6 +52,13 @@ export default function SchedulerPage() {
   const [streamLines, setStreamLines] = useState<string[]>([])  // SSE 实时日志行
   const streamAbortRef = useRef<AbortController | null>(null)
 
+  // 按条件回填：月份 / 联赛 / 间隔 / 上限（全部下拉框选择）
+  const [bfMonth, setBfMonth] = useState('')                // '' = 不限月份
+  const [bfLeagues, setBfLeagues] = useState<string[]>([])  // 空 = 全部联赛
+  const [bfSleep, setBfSleep] = useState('4.0')
+  const [bfMaxReq, setBfMaxReq] = useState('0')           // '0' = 不限（靠额度停止）
+  const [leagueOptions, setLeagueOptions] = useState<{ id: number; name: string; country: string }[]>([])
+
   const fetchTasks = useCallback(() => {
     apiClient
       .get('/scheduler/status')
@@ -57,11 +71,45 @@ export default function SchedulerPage() {
     fetchTasks()
   }, [fetchTasks])
 
-  // 触发后 SSE 自动推送日志，不再需要轮询
-  const triggerSync = async (key: string) => {
-    const taskId = TRIGGER_MAP[key]
-    const label = taskActions.find((a) => TRIGGER_MAP[a.key] === taskId)?.label || taskId
+  // 联赛下拉选项（回填用）
+  useEffect(() => {
+    apiClient
+      .get('/leagues', { params: { page_size: 200 } })
+      .then((res) => {
+        const list = (res.data?.data ?? []).map((l: any) => ({
+          id: l.id as number,
+          name: (l.name as string) || '',
+          country: (l.country_name as string) || '',
+        }))
+        list.sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh'))
+        setLeagueOptions(list)
+      })
+      .catch(() => {})
+  }, [])
 
+  // 月份下拉选项：当前月在前，倒序到 2022-01（库内最早比赛）
+  const monthOptions = useMemo(() => {
+    const out: string[] = []
+    const now = new Date()
+    const curY = now.getUTCFullYear()
+    const curM = now.getUTCMonth() + 1
+    for (let yy = curY; yy >= 2022; yy--) {
+      const endM = yy === curY ? curM : 12
+      for (let mm = endM; mm >= 1; mm--) {
+        out.push(`${yy}-${String(mm).padStart(2, '0')}`)
+      }
+    }
+    return out
+  }, [])
+
+  // 触发后 SSE 自动推送日志，不再需要轮询
+  const runWithLogStream = async (
+    key: string,
+    taskId: string,
+    label: string,
+    triggerPath: string,
+    body: Record<string, unknown> | null = null,
+  ) => {
     setSyncing(key)
     setMessage('')
     setStreamLines([])
@@ -107,13 +155,41 @@ export default function SchedulerPage() {
     void streamLogs()
 
     try {
-      await apiClient.post(`/scheduler/${taskId}/trigger`, {}, { timeout: 0 })
+      await apiClient.post(triggerPath, body ?? undefined, { timeout: 0 })
     } catch (err: any) {
       setSyncing(null)
       controller.abort()
       if (streamAbortRef.current === controller) streamAbortRef.current = null
-      setMessage(`❌ 执行失败: ${err.response?.data?.detail || err.message}`)
+      setMessage(`❌ ${label}执行失败: ${err.response?.data?.detail || err.message}`)
     }
+  }
+
+  // 既有定时/同步任务
+  const triggerSync = (key: string) => {
+    const taskId = TRIGGER_MAP[key]
+    const label = taskActions.find((a) => TRIGGER_MAP[a.key] === taskId)?.label || taskId
+    return runWithLogStream(key, taskId, label, `/scheduler/${taskId}/trigger`)
+  }
+
+  // 按条件回填缺数据比赛
+  const triggerBackfill = () => {
+    const picked = bfLeagues.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
+    if (!bfMonth && picked.length === 0) {
+      setMessage('❌ 请至少选择「月份」或「联赛」之一，避免无界回填')
+      return
+    }
+    return runWithLogStream(
+      BACKFILL_KEY,
+      BACKFILL_TASK_ID,
+      BACKFILL_LABEL,
+      `/scheduler/${BACKFILL_TASK_ID}/trigger`,
+      {
+        month: bfMonth || null,
+        leagues: picked.length ? picked : null,
+        sleep: Number(bfSleep),
+        max_requests: Number(bfMaxReq),
+      },
+    )
   }
 
   const toggleTask = async (taskId: string, currentStatus: string) => {
@@ -172,6 +248,91 @@ export default function SchedulerPage() {
                 <span className="text-xs opacity-75 mt-1 font-normal">{action.desc}</span>
               </button>
             ))}
+          </div>
+
+          {/* 按条件回填缺数据比赛 */}
+          <div className="mt-6 pt-5 border-t border-gray-200">
+            <h3 className="text-sm font-medium mb-1">按条件回填缺数据比赛</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              从数据库查出已完赛但缺统计数据的比赛并回填（backfill_fixtures_by_id.py）
+            </p>
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">月份</label>
+                <select
+                  className="select min-w-[130px]"
+                  value={bfMonth}
+                  onChange={(e) => setBfMonth(e.target.value)}
+                  disabled={syncing !== null}
+                >
+                  <option value="">不限（全时段）</option>
+                  {monthOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">联赛</label>
+                <select
+                  className="select min-w-[240px]"
+                  multiple
+                  size={6}
+                  value={bfLeagues}
+                  onChange={(e) => setBfLeagues(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                  disabled={syncing !== null}
+                >
+                  {leagueOptions.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">不选 = 全部联赛；按住 Ctrl/⌘ 可多选</p>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">请求间隔</label>
+                <select
+                  className="select min-w-[110px]"
+                  value={bfSleep}
+                  onChange={(e) => setBfSleep(e.target.value)}
+                  disabled={syncing !== null}
+                >
+                  {SLEEP_OPTIONS.map((s) => (
+                    <option key={s} value={s}>{s} 秒</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">请求上限</label>
+                <select
+                  className="select min-w-[130px]"
+                  value={bfMaxReq}
+                  onChange={(e) => setBfMaxReq(e.target.value)}
+                  disabled={syncing !== null}
+                >
+                  <option value="0">不限（靠额度停止）</option>
+                  {MAX_REQUEST_OPTIONS.map((n) => (
+                    <option key={n} value={n}>{n} 次</option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                className="btn btn-primary"
+                onClick={() => void triggerBackfill()}
+                disabled={syncing !== null}
+              >
+                {syncing === BACKFILL_KEY ? '回填中...' : '启动回填'}
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 mt-3">
+              筛选范围：{bfMonth || '不限月份'} ·{' '}
+              {bfLeagues.length ? `已选 ${bfLeagues.length} 个联赛` : '全部联赛'}
+            </p>
           </div>
         </div>
       </div>
@@ -242,7 +403,7 @@ export default function SchedulerPage() {
           <h2 className="font-semibold flex items-center gap-2">
             <span className={`inline-block w-2 h-2 rounded-full ${syncing ? 'bg-blue-500 animate-pulse' : 'bg-gray-400'}`} />
             实时执行日志
-            {syncing && <span className="text-xs font-normal text-blue-500">— {taskActions.find((a) => a.key === syncing)?.label} 执行中</span>}
+            {syncing && <span className="text-xs font-normal text-blue-500">— {syncing === BACKFILL_KEY ? BACKFILL_LABEL : taskActions.find((a) => a.key === syncing)?.label} 执行中</span>}
           </h2>
           <span className="text-xs text-gray-400">{streamLines.length} 行</span>
         </div>

@@ -2,8 +2,11 @@ import asyncio
 import queue
 import sys
 import io
+import re
+from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -155,6 +158,107 @@ async def api_status_reset(provider: str, _: AdminAuth):
     升级了套餐/换了 key"这类场景。"""
     await asyncio.to_thread(reset_api_status, provider)
     return {"status": "ok", "message": f"{provider} 额度状态已复位"}
+
+
+# ──────────── 按条件回填缺数据比赛 (backfill_fixtures_by_id.py) ────────────
+# 以子进程方式跑脚本, 逐行读取 stdout 推到与定时任务共用的 SSE 队列, 前端
+# 直接复用 GET /scheduler/{task_id}/stream 就能看到实时日志。
+BACKFILL_TASK_ID = "backfill_fixtures"
+BACKFILL_SCRIPT = "tools/backfill_fixtures_by_id.py"
+# app/api/scheduler.py -> app/api -> app -> backend/
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+_backfill_running = False
+
+
+class BackfillFixturesRequest(BaseModel):
+    """按月份/联赛回填缺统计数据的比赛。
+
+    month: YYYY-MM 或 None(不限月份)
+    leagues: 联赛 id 列表, None/空 = 不限联赛
+    sleep: 每次请求间隔秒数
+    max_requests: 硬性请求上限, 0 = 不限制(仅靠额度停止)
+    """
+
+    month: str | None = None
+    leagues: list[int] | None = None
+    sleep: float = 4.0
+    max_requests: int = 0
+
+
+def _build_backfill_cmd(body: BackfillFixturesRequest) -> list[str]:
+    """组装回填脚本命令行。一律走 argv 列表(不经 shell), 入参已先校验。"""
+    cmd = [sys.executable, BACKFILL_SCRIPT]
+    if body.month:
+        cmd += ["--month", body.month]
+    if body.leagues:
+        cmd += ["--leagues", ",".join(str(x) for x in body.leagues)]
+    cmd += ["--sleep", str(body.sleep)]
+    if body.max_requests:
+        cmd += ["--max-requests", str(body.max_requests)]
+    cmd += ["--with-sub-data"]
+    return cmd
+
+
+def _run_backfill_with_stream(cmd: list[str]) -> None:
+    """后台执行回填脚本，并把输出逐行推到 SSE 队列。"""
+    global _backfill_running
+    import subprocess
+    try:
+        push_task_message(BACKFILL_TASK_ID, f"▶ 启动: {' '.join(cmd)}")
+        proc = subprocess.Popen(
+            cmd, cwd=str(BACKEND_ROOT), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                push_task_message(BACKFILL_TASK_ID, line)
+        proc.wait()
+        code = proc.returncode
+        push_task_message(
+            BACKFILL_TASK_ID,
+            "✓ 回填脚本执行完成" if code == 0 else f"✗ 回填脚本退出码 {code}",
+        )
+    except Exception as e:
+        push_task_message(BACKFILL_TASK_ID, f"✗ 启动失败: {e}")
+    finally:
+        _backfill_running = False
+        push_task_message(BACKFILL_TASK_ID, "__DONE__")
+
+
+@router.post("/scheduler/backfill_fixtures/trigger")
+async def trigger_backfill_fixtures(
+    body: BackfillFixturesRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminAuth,
+):
+    """按月份/联赛回填已完赛但缺统计数据的比赛。"""
+    global _backfill_running
+    if _backfill_running:
+        raise HTTPException(status_code=409, detail="回填脚本正在运行中，请等待其结束")
+
+    # 入参严格校验兜底: 前端只给下拉框, 这里再挡一层, 防止拼出危险命令行
+    if body.month and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", body.month):
+        raise HTTPException(status_code=400, detail="month 必须是 YYYY-MM 格式")
+    if not body.month and not body.leagues:
+        raise HTTPException(
+            status_code=400,
+            detail="请至少选择「月份」或「联赛」之一，避免无界回填",
+        )
+    if body.leagues and any(x <= 0 for x in body.leagues):
+        raise HTTPException(status_code=400, detail="leagues 必须为正整数")
+    if not 0 < body.sleep <= 60:
+        raise HTTPException(status_code=400, detail="sleep 必须大于 0 且不超过 60 秒")
+    if not 0 <= body.max_requests <= 1000:
+        raise HTTPException(status_code=400, detail="max_requests 必须在 0~1000 之间")
+
+    cmd = _build_backfill_cmd(body)
+    logger.info(f"手动触发: 按条件回填（后台执行）: {' '.join(cmd)}")
+    _backfill_running = True
+    background_tasks.add_task(_run_backfill_with_stream, cmd)
+    return {"status": "ok", "message": "回填脚本已启动，正在后台执行"}
 
 
 @router.post("/scheduler/{task_id}/trigger")
