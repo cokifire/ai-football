@@ -7,6 +7,8 @@
     python tools/backfill_fixtures_by_id.py --start-id 1200000 --leagues 39,140
     python tools/backfill_fixtures_by_id.py --start-id 1200000 --max-requests 200   # 安全上限
     python tools/backfill_fixtures_by_id.py --ids 123456,123457 --with-sub-data     # 指定 id + 子数据
+    python tools/backfill_fixtures_by_id.py --month 2026-08 --with-sub-data         # 回填某月缺统计数据的比赛
+    python tools/backfill_fixtures_by_id.py --leagues 39,140 --with-sub-data        # 回填某联赛缺统计数据的比赛
 
 逻辑:
     - 从 start-id 开始，每次 id-1 递减查询 GET /fixtures?id=<id>
@@ -19,6 +21,9 @@
 指定 id 模式:
     - --ids 提供逗号分隔的 fixture id 列表时, 只处理这些 id, 不做递减扫描
       (适合按数据库查出的缺数据清单精确回填)
+查询模式:
+    - 提供 --month (YYYY-MM) 或仅提供 --leagues 时, 直接从数据库查出已完赛但
+      缺统计数据的 fixture 并回填, 无需手工维护 id 列表; --with-sub-data 自动开启
     - --with-sub-data 会在 upsert 主表后, 同步该场子数据(阵容/统计;
       事件/球员接口已禁用), 需要相应的 API 额度
 
@@ -39,6 +44,7 @@ from datetime import datetime
 import time
 import argparse
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.fixture import Fixture, FixtureLineup, FixtureStatistic
@@ -84,10 +90,13 @@ def fetch_one(fid: int) -> dict:
     except ApiFootballError as e:
         return {"status": "error", "message": str(e)}
 
-    # 额度耗尽: 剩余请求数为 0
+    # 注意: x-ratelimit-requests-remaining 是「每分钟」滚动窗口的余量, 并非当日额度;
+    # 共享 key 或突发请求会让它短暂归零。归零时不应当作日额度耗尽 -> 改为
+    # 返回 throttle, 由调用方退避重试。真正的日额度耗尽由 api_football_get_sync
+    # 抛 ApiFootballQuotaExceeded 处理 (见下方 except 分支)。
     remaining = r.headers.get("x-ratelimit-requests-remaining")
     if remaining is not None and remaining.strip() in ("0", "0.0"):
-        return {"status": "quota", "message": "x-ratelimit-requests-remaining = 0"}
+        return {"status": "throttle", "message": "x-ratelimit-requests-remaining = 0 (per-minute window)"}
 
     try:
         r.raise_for_status()
@@ -162,6 +171,28 @@ def _save_embedded_sub_data(db: Session, fid: int, row: dict) -> bool:
     return False
 
 
+def _query_missing_ids(db: Session, month: str | None = None, league_ids: set | None = None) -> list[int]:
+    """从 DB 查出已完赛但缺少统计数据(无 fixture_statistics 记录)的 fixture id。
+
+    month: YYYY-MM 或 None(不限月份)。比赛日期按 UTC 存储, 月份边界按 UTC 计算。
+    league_ids: None 表示不限联赛, 否则只取这些联赛。
+    """
+    completed = ("FT", "AET", "PEN")
+    q = db.query(Fixture.id).filter(Fixture.status_short.in_(completed))
+    if month:
+        try:
+            start = datetime.strptime(month, "%Y-%m")
+        except ValueError:
+            raise ValueError("--month 必须是 YYYY-MM 格式, 如 2026-08")
+        end = datetime(start.year + 1, 1, 1) if start.month == 12 else datetime(start.year, start.month + 1, 1)
+        q = q.filter(Fixture.date >= start, Fixture.date < end)
+    if league_ids:
+        q = q.filter(Fixture.league_id.in_(league_ids))
+    has_stats = select(FixtureStatistic.fixture_id).distinct()
+    q = q.filter(~Fixture.id.in_(has_stats))
+    return [row[0] for row in q.order_by(Fixture.id).all()]
+
+
 def main():
     parser = argparse.ArgumentParser(description="从 fixture id 递减回填比赛数据")
     parser.add_argument("--start-id", type=int, default=None, help="起始 fixture id (不传则交互输入)")
@@ -173,6 +204,8 @@ def main():
                         help="允许的 league id 列表, 逗号分隔 (默认使用内置白名单)")
     parser.add_argument("--ids", type=str, default=None,
                         help="逗号分隔的指定 fixture id 列表; 提供后只处理这些 id (不做递减扫描)")
+    parser.add_argument("--month", type=str, default=None,
+                        help="YYYY-MM; 从数据库查出该月缺统计数据的已完赛比赛并回填 (配合 --leagues 可进一步过滤)")
     parser.add_argument("--with-sub-data", action="store_true",
                         help="upsert 主表后同步该场子数据(阵容/统计); 需要额外的 API 额度")
     args = parser.parse_args()
@@ -184,20 +217,22 @@ def main():
         print("错误: 未配置 API_FOOTBALL_BASE_URL，请在 backend/.env 中设置")
         sys.exit(1)
 
-    # 解析联赛白名单
+    # 解析联赛白名单 (None 表示不限制联赛)
+    league_filter = None
     if args.leagues:
         try:
-            allowed = {int(x) for x in args.leagues.split(",") if x.strip()}
+            league_filter = {int(x) for x in args.leagues.split(",") if x.strip()}
         except ValueError:
             print("错误: --leagues 必须是逗号分隔的整数, 如 39,140")
             sys.exit(1)
-        if not allowed:
+        if not league_filter:
             print("错误: --leagues 解析后为空")
             sys.exit(1)
-    else:
-        allowed = DEFAULT_LEAGUES
 
-    # 显式 id 列表模式: 提供 --ids 时只处理这些 id, 不做递减扫描
+    # 查询模式: 提供 --month, 或仅提供 --leagues(未给 --ids/--start-id)时,
+    # 从数据库查出缺统计数据的已完赛比赛, 无需手工维护 id 列表。
+    query_mode = bool(args.month) or (args.leagues and not args.ids and args.start_id is None)
+
     id_list = None
     if args.ids:
         try:
@@ -208,6 +243,30 @@ def main():
         if not id_list:
             print("错误: --ids 解析后为空")
             sys.exit(1)
+    elif query_mode:
+        qdb = SessionLocal()
+        try:
+            id_list = _query_missing_ids(qdb, month=args.month, league_ids=league_filter)
+        except ValueError as e:
+            print(f"错误: {e}")
+            sys.exit(1)
+        finally:
+            qdb.close()
+        if not id_list:
+            scope = f"月份 {args.month}" if args.month else (f"联赛 {sorted(league_filter)}" if league_filter else "全部联赛")
+            print(f"查询模式: {scope} 下没有缺统计数据的已完赛比赛, 无需回填。")
+            sys.exit(0)
+        scope = f"月份 {args.month}" if args.month else (f"联赛 {sorted(league_filter)}" if league_filter else "全部联赛")
+        print(f"查询模式: 从 DB 找到 {len(id_list)} 场缺统计数据的已完赛比赛 ({scope})")
+        if not args.with_sub_data:
+            print("查询模式自动启用 --with-sub-data (回填阵容/统计)。")
+            args.with_sub_data = True
+
+    # 联赛白名单: 查询模式按 league_filter (None=全部), 其它模式默认内置白名单
+    if query_mode:
+        allowed = league_filter  # None = 不限制
+    else:
+        allowed = league_filter if league_filter else DEFAULT_LEAGUES
 
     if id_list is None:
         # 起始 id
@@ -223,11 +282,12 @@ def main():
     if args.max_requests:
         print(f"[安全上限] 最多处理 {args.max_requests} 个请求")
 
+    _wl = "全部" if allowed is None else ",".join(str(x) for x in sorted(allowed))
     if id_list is not None:
-        print(f"指定 id 模式: {len(id_list)} 个 id, 联赛白名单={sorted(allowed)}, "
+        print(f"回填 {len(id_list)} 个 fixture id, 联赛白名单={_wl}, "
               f"子数据同步={'开' if args.with_sub_data else '关'}")
     else:
-        print(f"起始 id={fid}, 下限={args.min_id}, 间隔={args.sleep}s, 联赛白名单={sorted(allowed)}")
+        print(f"起始 id={fid}, 下限={args.min_id}, 间隔={args.sleep}s, 联赛白名单={_wl}")
     print("按 Ctrl+C 可随时中断。")
 
     def _iter_ids():
@@ -246,7 +306,20 @@ def main():
     try:
         for fid in _iter_ids():
             checked += 1
-            res = fetch_one(fid)
+
+            # 分钟级限流重试: 退避后重试同一 id, 不前进、不计入失败
+            throttle_retry = 0
+            while True:
+                res = fetch_one(fid)
+                if res["status"] == "throttle" and throttle_retry < 8:
+                    throttle_retry += 1
+                    print(f"  ⏳ 分钟级限流, 退避 15s 后重试 id={fid} ({throttle_retry}/8)")
+                    time.sleep(15)
+                    continue
+                break
+            if res["status"] == "throttle":
+                print(f"\n持续被分钟级限流(>8次重试), 停止。最后 id={fid}")
+                break
 
             # 额度/硬性上限检查
             if res["status"] == "quota":
@@ -280,7 +353,7 @@ def main():
                 try:
                     for row in res["data"]["response"]:
                         lid = (row.get("league") or {}).get("id")
-                        if lid in allowed:
+                        if allowed is None or lid in allowed:
                             _upsert_fixture(db, row)
                             saved += 1
                             upserted = True
