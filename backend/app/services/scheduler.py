@@ -28,7 +28,7 @@ _DEFAULT_TASKS = {
                        "interval_seconds": LIVE_INTERVAL_SECONDS, "enabled": 0},
     "backfill_pred":  {"name": "预测结果回填",   "start_hour": 9,   "fn": backfill_results,
                        "interval_seconds": None, "enabled": 0},
-    "elo_update":     {"name": "球队 Elo 更新",  "start_hour": 9.1, "fn": update_finished_elos,
+    "elo_update":     {"name": "球队 Elo 更新",  "start_hour": 9.5, "fn": update_finished_elos,
                        "interval_seconds": None, "enabled": 1},
     "auto_predict":   {"name": "赛前自动预测",   "start_hour": 12,  "fn": auto_predict,
                        "interval_seconds": None, "enabled": 0},
