@@ -58,6 +58,8 @@ export default function SchedulerPage() {
   const [bfSleep, setBfSleep] = useState('4.0')
   const [bfMaxReq, setBfMaxReq] = useState('0')           // '0' = 不限（靠额度停止）
   const [leagueOptions, setLeagueOptions] = useState<{ id: number; name: string; country: string }[]>([])
+  const [leagueOpen, setLeagueOpen] = useState(false)
+  const leagueRef = useRef<HTMLDivElement | null>(null)
 
   const fetchTasks = useCallback(() => {
     apiClient
@@ -86,6 +88,25 @@ export default function SchedulerPage() {
       })
       .catch(() => {})
   }, [])
+
+  // 联赛下拉：点击外部或按 Esc 自动折叠
+  useEffect(() => {
+    if (!leagueOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (leagueRef.current && !leagueRef.current.contains(e.target as Node)) {
+        setLeagueOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLeagueOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [leagueOpen])
 
   // 月份下拉选项：当前月在前，倒序到 2022-01（库内最早比赛）
   const monthOptions = useMemo(() => {
@@ -174,6 +195,7 @@ export default function SchedulerPage() {
   // 按条件回填缺数据比赛
   const triggerBackfill = () => {
     const picked = bfLeagues.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
+    setLeagueOpen(false)
     if (!bfMonth && picked.length === 0) {
       setMessage('❌ 请至少选择「月份」或「联赛」之一，避免无界回填')
       return
@@ -272,23 +294,55 @@ export default function SchedulerPage() {
                 </select>
               </div>
 
-              <div>
+              <div className="relative" ref={leagueRef}>
                 <label className="block text-xs text-gray-500 mb-1">联赛</label>
-                <select
-                  className="select min-w-[240px]"
-                  multiple
-                  size={6}
-                  value={bfLeagues}
-                  onChange={(e) => setBfLeagues(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                <button
+                  type="button"
+                  className="input flex items-center justify-between min-w-[240px] text-left"
+                  onClick={() => setLeagueOpen((v) => !v)}
                   disabled={syncing !== null}
                 >
-                  {leagueOptions.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-gray-400 mt-1">不选 = 全部联赛；按住 Ctrl/⌘ 可多选</p>
+                  <span className={bfLeagues.length ? '' : 'text-gray-400'}>
+                    {bfLeagues.length ? `已选 ${bfLeagues.length} 个联赛` : '全部联赛（不限）'}
+                  </span>
+                  <span className="ml-2 text-gray-400">{leagueOpen ? '▲' : '▼'}</span>
+                </button>
+
+                {leagueOpen && (
+                  <div className="absolute z-20 mt-1 w-[280px] max-h-64 overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-lg">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200">
+                      <span className="text-xs text-gray-500">不选 = 全部联赛</span>
+                      <button
+                        type="button"
+                        className="text-xs text-primary-600 hover:underline"
+                        onClick={() => setBfLeagues([])}
+                      >
+                        清空
+                      </button>
+                    </div>
+                    {leagueOptions.map((l) => (
+                      <label
+                        key={l.id}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bfLeagues.includes(String(l.id))}
+                          onChange={() => {
+                            const v = String(l.id)
+                            setBfLeagues((prev) =>
+                              prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v])
+                          }}
+                        />
+                        <span className="truncate">
+                          {l.name}{l.country ? ` · ${l.country}` : ''}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-xs text-gray-400 mt-1">不选 = 全部联赛；可多选</p>
               </div>
 
               <div>
