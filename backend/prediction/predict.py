@@ -1149,12 +1149,22 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
-    model_probs = {'主胜': pw['win_home'], '平局': pw['win_draw'], '客胜': pw['win_away']}
-    model_top = max(model_probs, key=model_probs.get)
-    model_top_pct = model_probs[model_top]
     competition_context = _competition_context(fixture)
     bayes_context = bayes_context or {}
     evidence_text = json.dumps(bayes_context.get("evidence", []), ensure_ascii=False)
+
+    # XGBoost 先验（未经贝叶斯修正）：与 P0/P1 区分。
+    # 注意 pw(=xgb_result) 的胜平负已被 P1 覆盖，不能当作先验。
+    xgb_prior = bayes_context.get("xgb_prior") or {}
+    model_probs = {'主胜': xgb_prior.get('home'), '平局': xgb_prior.get('draw'), '客胜': xgb_prior.get('away')}
+    if all(v is not None for v in model_probs.values()):
+        xgb_win_text = f"主{model_probs['主胜']:.0%} 平{model_probs['平局']:.0%} 客{model_probs['客胜']:.0%}"
+        _top = max(model_probs, key=model_probs.get)
+        model_top_text = f"{_top}({model_probs[_top]:.0%})"
+    else:
+        xgb_win_text = "暂无"
+        model_top_text = "暂无"
+    lambda_text = f"主{pw['lambda_home']:.2f} 客{pw['lambda_away']:.2f}"
 
     # Elo 段落预先拼好（f-string 里不嵌多行三元）：team_elos 缺队时显式写明暂无，
     # 避免模型在拿不到的项上自行臆造实力差。
@@ -1192,7 +1202,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     比赛场地:{fixture.get('venue_city','')}
     比赛地天气及海拔:{weather_text}
 
-    # 【外部比赛情报】
+    # 【外部比赛情报】情报仅供参考。
     {intelligence_markdown}
 
     # 核心数据输入（请基于以下信息进行推理）
@@ -1208,7 +1218,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【赔率数据】
     {odds_section}
 
-    *【贝叶斯结果】这是数值结论，不得改写概率或杜撰盘口
+    *【贝叶斯结果】P0/P1 为宿主已计算的输入，原样引用、不得伪造或杜撰盘口；你的 win/win_pct 是独立判断，可与 P1 不同但需说明依据
     P0: {json.dumps(bayes_context.get('p0', {}), ensure_ascii=False)}
     P1: {json.dumps(bayes_context.get('p1', {}), ensure_ascii=False)}
     风险: {json.dumps(bayes_context.get('risks', []), ensure_ascii=False)}
@@ -1217,29 +1227,26 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【Elo 评分】球队长期实力的客观标尺，用于检验市场定价与模型结论是否偏离基本面
     {elo_section}
 
-    *【机器模型数据】仅作先验校准，不是最终结论
-    胜平负: 主{pw['win_home']:.0%} 平{pw['win_draw']:.0%} 客{pw['win_away']:.0%}
-    让球参考:{pw['handicap']}  大小球参考:{pw['over25_prob']:.0%}大球
+    *【机器模型数据】XGBoost 原始输出（先验与参数，未经贝叶斯修正），仅供校准参考
+    胜平负先验: {xgb_win_text}
+    预期进球λ: {lambda_text}（用于泊松派生市场）
+    让球参考:{pw['handicap']}（仅 XGBoost 参考，handicap_num 以赔率盘口为准）  大小球参考:{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
-    模型最高项:{model_top}({model_top_pct:.0%})
-
-    # 输出约束
-    - 外部情报仅供参考。
+    模型最高项:{model_top_text}
 
     # 分析方法（技能）
-    - 请使用 ${skill_name} 技能完成本次比赛分析：按其贝叶斯流水线（数据底板 → P0 先验 → 战术语境修正 → P1 后验 → 派生市场 → 稳健性网格 → 外部交叉验证）推演，可用该技能的 scripts 辅助计算。
-    - 技能硬性规则同样适用：每个数字可追溯到实际计算；拿不到的数据标 UNAVAILABLE，不编造。
-    - 分析完成后不要输出完整报告，只输出下方要求的 JSON；deep_report 用 500 字以内浓缩关键结论、主要剧本与最大风险。
+    - 请使用 ${skill_name} 技能的宿主路径（路径 B）完成分析：宿主已注入 P0/P1/λ/赔率等数据，只做派生市场、稳健性网格、情报对比与输出，不要重算 P0/P1，可用该技能的 scripts 辅助计算。
 
-    # 请严格输出JSON格式:
+    # output-schema
+    输出约束,请严格输出JSON格式:
     {{"win":"主胜|平局|客胜",
-    "win_pct":"本场预测信心百分比,如85%",
+    "win_pct":"win 所选项的概率（win=主胜则主胜概率），如85%",
     "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
     "handicap_num":"让球盘口线，负数=主队让，正数=客队让，如-1=主让1球（必须取已提供赔率中的盘口）",
     "handicap_team":"建议下注的一方：主队或客队, 填你判断有赢盘价值的一方",
     "handicap_pct":"handicap_team 这一方的赢盘概率，如65%",
     "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
-    "ou_type":"大或小","ou_pct":"大小球概率，如60%",
+    "ou_type":"大或小","ou_pct":"ou_type 所选项的概率（大=大球概率，小=小球概率），如60%",
     "deep_report":"500字内的深度分析"}}
     """
 
