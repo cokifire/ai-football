@@ -248,9 +248,9 @@ def main():
                     ok += 1
                     print(f"  OK 写入 {written} 条: "
                           f"home xG={stats['home']['xg']}/GP={stats['home']['goals_prevented']}"
-                          f"/PFT={stats['home']['passes_final_third']}, "
+                          f"/xGA={stats['away']['xg']}/PFT={stats['home']['passes_final_third']}, "
                           f"away xG={stats['away']['xg']}/GP={stats['away']['goals_prevented']}"
-                          f"/PFT={stats['away']['passes_final_third']}")
+                          f"/xGA={stats['home']['xg']}/PFT={stats['away']['passes_final_third']}")
                 else:
                     fail += 1
                     print("  FAIL Flashscore 未返回 xG/GP 数据 (0 条写入)")
