@@ -197,6 +197,7 @@ export default function FixturesPage() {
   const [status, setStatus] = useState('')
   const [date, setDate] = useState(getBeijingToday())
   const [teamName, setTeamName] = useState('')
+  const [fixtureId, setFixtureId] = useState('')
   const [selectedFixture, setSelectedFixture] = useState<FixtureDetail | null>(null)
   const [fixtureDetail, setFixtureDetail] = useState<FixtureDetail | null>(null)
   const [refreshingFixtureId, setRefreshingFixtureId] = useState<number | null>(null)
@@ -221,15 +222,18 @@ export default function FixturesPage() {
       .catch(() => setLeagues([]))
   }, [])
 
-  const fetchFixtures = () => {
+  const fetchFixtures = (overridePage?: number) => {
     setLoading(true)
+    const rawFixtureId = fixtureId.trim()
+    const parsedFixtureId = rawFixtureId && Number.isFinite(Number(rawFixtureId)) ? Number(rawFixtureId) : null
     const params: Record<string, string | number | undefined> = {
-      page,
+      page: overridePage ?? page,
       page_size: pageSize,
       league_id: leagueId || undefined,
       season: season || undefined,
       status: status || undefined,
       team_name: teamName.trim() || undefined,
+      fixture_id: parsedFixtureId ?? undefined,
     }
     // 后端接受 date 参数（北京时间日期）
     if (date) params.date = date
@@ -249,7 +253,15 @@ export default function FixturesPage() {
 
   const handleSearch = () => {
     setPage(1)
-    fetchFixtures()
+    fetchFixtures(1)
+  }
+
+  // 筛选框内回车立即执行搜索（文本域除外，保留换行）
+  const handleFilterKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return
+    if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') return
+    e.preventDefault()
+    handleSearch()
   }
 
   // GET /predictions 的单条记录 → 预测结果弹窗所需的 result 结构
@@ -497,7 +509,17 @@ export default function FixturesPage() {
       {/* 筛选 */}
       <div className="card mb-6">
         <div className="card-body">
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3" onKeyDown={handleFilterKeyDown}>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">比赛ID</label>
+              <input
+                className="input"
+                placeholder="比赛ID"
+                inputMode="numeric"
+                value={fixtureId}
+                onChange={(e) => setFixtureId(e.target.value)}
+              />
+            </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">联赛</label>
               <select
