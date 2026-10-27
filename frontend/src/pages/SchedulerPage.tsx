@@ -214,6 +214,15 @@ export default function SchedulerPage() {
     )
   }
 
+  // 终止正在运行的回填子进程
+  const stopBackfill = async () => {
+    try {
+      await apiClient.post(`/scheduler/${BACKFILL_TASK_ID}/stop`)
+    } catch (err: any) {
+      setMessage(`❌ 停止失败: ${err.response?.data?.detail || err.message}`)
+    }
+  }
+
   const toggleTask = async (taskId: string, currentStatus: string) => {
     try {
       const action = currentStatus === 'paused' ? 'start' : 'stop'
@@ -380,6 +389,14 @@ export default function SchedulerPage() {
                 disabled={syncing !== null}
               >
                 {syncing === BACKFILL_KEY ? '回填中...' : '启动回填'}
+              </button>
+
+              <button
+                className="btn btn-danger"
+                onClick={() => void stopBackfill()}
+                disabled={syncing !== BACKFILL_KEY}
+              >
+                停止
               </button>
             </div>
 

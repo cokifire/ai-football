@@ -169,6 +169,7 @@ BACKFILL_SCRIPT = "tools/backfill_fixtures_by_id.py"
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 _backfill_running = False
+_backfill_proc = None
 
 
 class BackfillFixturesRequest(BaseModel):
@@ -202,7 +203,7 @@ def _build_backfill_cmd(body: BackfillFixturesRequest) -> list[str]:
 
 def _run_backfill_with_stream(cmd: list[str]) -> None:
     """后台执行回填脚本，并把输出逐行推到 SSE 队列。"""
-    global _backfill_running
+    global _backfill_running, _backfill_proc
     import subprocess
     try:
         push_task_message(BACKFILL_TASK_ID, f"▶ 启动: {' '.join(cmd)}")
@@ -210,6 +211,7 @@ def _run_backfill_with_stream(cmd: list[str]) -> None:
             cmd, cwd=str(BACKEND_ROOT), stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
+        _backfill_proc = proc
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip()
@@ -217,14 +219,17 @@ def _run_backfill_with_stream(cmd: list[str]) -> None:
                 push_task_message(BACKFILL_TASK_ID, line)
         proc.wait()
         code = proc.returncode
-        push_task_message(
-            BACKFILL_TASK_ID,
-            "✓ 回填脚本执行完成" if code == 0 else f"✗ 回填脚本退出码 {code}",
-        )
+        if code == 0:
+            push_task_message(BACKFILL_TASK_ID, "✓ 回填脚本执行完成")
+        elif code == -15:  # SIGTERM：用户点击了「停止」
+            push_task_message(BACKFILL_TASK_ID, "⏹ 回填进程已停止")
+        else:
+            push_task_message(BACKFILL_TASK_ID, f"✗ 回填脚本退出码 {code}")
     except Exception as e:
         push_task_message(BACKFILL_TASK_ID, f"✗ 启动失败: {e}")
     finally:
         _backfill_running = False
+        _backfill_proc = None
         push_task_message(BACKFILL_TASK_ID, "__DONE__")
 
 
@@ -259,6 +264,21 @@ async def trigger_backfill_fixtures(
     _backfill_running = True
     background_tasks.add_task(_run_backfill_with_stream, cmd)
     return {"status": "ok", "message": "回填脚本已启动，正在后台执行"}
+
+
+@router.post("/scheduler/backfill_fixtures/stop")
+async def stop_backfill_fixtures(_: AdminAuth):
+    """终止正在运行的回填子进程（对应页面上的「停止」按钮）。"""
+    global _backfill_proc
+    if _backfill_proc is None or _backfill_proc.poll() is not None:
+        raise HTTPException(status_code=404, detail="当前没有正在运行的回填进程")
+    push_task_message(BACKFILL_TASK_ID, "⏹ 收到停止指令，正在终止回填进程…")
+    _backfill_proc.terminate()
+    try:
+        _backfill_proc.wait(timeout=10)
+    except Exception:
+        _backfill_proc.kill()
+    return {"status": "ok", "message": "回填进程已终止"}
 
 
 @router.post("/scheduler/{task_id}/trigger")

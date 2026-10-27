@@ -44,9 +44,11 @@ from datetime import datetime
 import time
 import argparse
 
-from sqlalchemy import select
+from sqlalchemy import (
+    Column, DateTime, Integer, MetaData, SmallInteger, Table, select,
+)
 from sqlalchemy.orm import Session
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 from app.models.fixture import Fixture, FixtureLineup, FixtureStatistic
 from app.core.config import settings
 from app.core.api_football import (
@@ -61,6 +63,70 @@ from app.services.fixture_service import _upsert_fixture, _sync_one_fixture_sub_
 DEFAULT_LEAGUES = {1, 2, 3, 5, 10, 39, 45, 61, 71, 78, 135, 140}
 
 API_TIMEOUT = 30.0
+
+# ── 「API 确实没有该场统计数据」记账表 ──────────────────────────
+# 部分比赛 API 会返回 HTTP 200 + 空 response（赛事未被免费套餐覆盖或尚未收录），
+# 此时 _fetch_statistics 一行都不写，但接口调用本身"成功"。若不记账，每次运行
+# 都会把同一批永远拿不到数据的比赛重新拉一遍，白烧 API 额度（100 次/天）。
+# 这张表只由本工具读写，不动主模型。
+_ATTEMPT_META = MetaData()
+backfill_attempts = Table(
+    "backfill_fixture_attempts", _ATTEMPT_META,
+    Column("fixture_id", Integer, primary_key=True),
+    Column("had_data", SmallInteger, nullable=False, server_default="0"),
+    Column("attempted_at", DateTime, nullable=True),
+)
+_ATTEMPTS_READY = False
+
+
+def _ensure_attempts_table() -> None:
+    """建表（幂等, create_all 默认 checkfirst）。失败时本工具仍可跑，只是不跳过。"""
+    global _ATTEMPTS_READY
+    try:
+        _ATTEMPT_META.create_all(engine, tables=[backfill_attempts])
+        _ATTEMPTS_READY = True
+    except Exception as e:
+        print(f"⚠ 记账表不可用，本次不做去重跳过: {e}")
+        _ATTEMPTS_READY = False
+
+
+def _record_attempt(fid: int, had_data: bool) -> None:
+    """记录本场尝试结果：had_data=False 表示该场 API 确实没有统计数据。
+
+    用独立会话：外层会话在循环里已经读过一次，MySQL 默认 REPEATABLE READ 会
+    让它一直看到旧快照，用同一个会话判断"有没有记录"会误判。
+    """
+    if not _ATTEMPTS_READY:
+        return
+    db = SessionLocal()
+    try:
+        exists = db.execute(
+            select(backfill_attempts.c.fixture_id).where(backfill_attempts.c.fixture_id == fid)
+        ).first()
+        if exists:
+            db.execute(
+                backfill_attempts.update()
+                .where(backfill_attempts.c.fixture_id == fid)
+                .values(had_data=1 if had_data else 0, attempted_at=datetime.now())
+            )
+        else:
+            db.execute(backfill_attempts.insert().values(
+                fixture_id=fid, had_data=1 if had_data else 0, attempted_at=datetime.now()))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"  ⚠ 记账失败 id={fid}: {e}")
+    finally:
+        db.close()
+
+
+def _stats_count(fid: int) -> int:
+    """统计该场实际写入的统计行数。同样用独立会话，保证读到最新提交。"""
+    db = SessionLocal()
+    try:
+        return db.query(FixtureStatistic).filter(FixtureStatistic.fixture_id == fid).count()
+    finally:
+        db.close()
 
 
 def _normalize_errors(errors) -> str:
@@ -190,6 +256,11 @@ def _query_missing_ids(db: Session, month: str | None = None, league_ids: set | 
         q = q.filter(Fixture.league_id.in_(league_ids))
     has_stats = select(FixtureStatistic.fixture_id).distinct()
     q = q.filter(~Fixture.id.in_(has_stats))
+    # 已确认 API 无统计数据的比赛直接排除，不再消耗额度反复重试
+    if _ATTEMPTS_READY:
+        confirmed_empty = select(backfill_attempts.c.fixture_id).where(
+            backfill_attempts.c.had_data == 0)
+        q = q.filter(~Fixture.id.in_(confirmed_empty))
     return [row[0] for row in q.order_by(Fixture.id).all()]
 
 
@@ -216,6 +287,8 @@ def main():
     if not settings.api_football_base_url:
         print("错误: 未配置 API_FOOTBALL_BASE_URL，请在 backend/.env 中设置")
         sys.exit(1)
+
+    _ensure_attempts_table()
 
     # 解析联赛白名单 (None 表示不限制联赛)
     league_filter = None
@@ -300,7 +373,7 @@ def main():
                 yield f
                 f -= 1
 
-    checked = saved = skipped_plan = skipped_league = empty = sub_ok = sub_fail = 0
+    checked = saved = skipped_plan = skipped_league = empty = sub_ok = sub_fail = sub_no_data = 0
     started = datetime.now()
     db = SessionLocal()
     try:
@@ -371,12 +444,19 @@ def main():
                     for row in res["data"]["response"]:
                         if _save_embedded_sub_data(db, fid, row):
                             embedded_saved = True
-                    if embedded_saved:
-                        sub_ok += 1
-                        print(f"  id={fid}: 内嵌子数据(阵容/统计)直接落库完成 (0额外请求)")
-                    elif _sync_one_fixture_sub_data(fid):
-                        sub_ok += 1
-                        print(f"  id={fid}: 子数据(阵容/统计)接口同步完成")
+                    # 注意: 接口"同步成功"不等于真的取到了数据。API 对部分比赛
+                    # 返回 200 + 空 response, 此时一行都不会写入; 再跑一百次也
+                    # 是空的, 只会白烧额度。这里以实际写入的统计行数为准。
+                    if embedded_saved or _sync_one_fixture_sub_data(fid):
+                        if _stats_count(fid) > 0:
+                            sub_ok += 1
+                            _record_attempt(fid, True)
+                            how = "内嵌" if embedded_saved else "接口"
+                            print(f"  id={fid}: 子数据(阵容/统计){how}同步完成")
+                        else:
+                            sub_no_data += 1
+                            _record_attempt(fid, False)
+                            print(f"  id={fid}: ⚠ API 无该场统计数据（已记账，后续不再重试）")
                     else:
                         sub_fail += 1
                         print(f"  id={fid}: 子数据同步失败")
@@ -389,6 +469,7 @@ def main():
                 elapsed = (datetime.now() - started).total_seconds() / 60
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 已查 {checked} | "
                       f"保存 {saved} | 子数据 {sub_ok}/{sub_ok + sub_fail} | "
+                      f"无数据 {sub_no_data} | "
                       f"跳过(计划){skipped_plan} | "
                       f"跳过(联赛){skipped_league} | 空 {empty} | id={fid} ({elapsed:.1f}min)")
 
@@ -409,6 +490,7 @@ def main():
     if args.with_sub_data:
         print(f"  子数据同步成功: {sub_ok}")
         print(f"  子数据同步失败: {sub_fail}")
+        print(f"  API 无统计数据: {sub_no_data}")
 
 
 if __name__ == "__main__":
