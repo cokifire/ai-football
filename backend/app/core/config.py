@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     # 外部比赛情报（Firecrawl）
     firecrawl_api_key: str = ""
     firecrawl_base_url: str = "http://127.0.0.1:3002"
+    # Firecrawl 托管套餐按月配额（当前账号每月 1000 次调用），不是按天。
+    # 额度在每月该日（1-28）重置；闩锁必须撑到重置日才自动放行，
+    # 否则会每天放行一次、反复重试到再次耗尽。
+    # 默认 9：2026-10-28 从 credit-usage 接口读到的真实账期是
+    # 2026-10-09 ~ 2026-11-09（每月 9 号重置）。套餐/账号变更后在
+    # backend/.env 里改 FIRECRAWL_QUOTA_RESET_DAY，或跑
+    # tools/check_firecrawl_quota.py 对账（会打印真实账期）。
+    firecrawl_quota_reset_day: int = 9
 
     # ── 情报整理 / 主预测 / 备用预测：经 codex CLI 调用的第三方大模型 ──
     # 不再直接 HTTP 调 /chat/completions；这三个字段的用途变为：

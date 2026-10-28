@@ -37,6 +37,236 @@ TRUSTED_FALLBACK_DOMAINS = (
 # 最终注入主预测 LLM 的情报上限；原始文章可较长，但最终只保留关键观点。
 FINAL_INTELLIGENCE_MAX_CHARS = 1800
 
+# ── Firecrawl 额度耗尽识别 ─────────────────────────────────────
+# 与 api-football 走同一套机制: 检测到额度/点数耗尽时调
+# mark_quota_exhausted("firecrawl", reason) 写 api_status 表 (跨进程可见),
+# 之后的情报抓取直接快速失败, 不再反覆冲击一个已经没有额度的数据源。
+# 注意 Firecrawl 是月度配额 (每月 1000 次, 重置日以 credit-usage 账期为准,
+# 当前账号为每月 9 号, 见 settings.firecrawl_quota_reset_day), 因此闩锁的
+# 自动复位按"是否已到过当月重置日"判断, 不是跨天放行。
+#
+# 判定口径刻意照搬 api-football 的 _is_daily_quota_exhausted: 单看状态码
+# 不足以定罪。HTTP 402 (Payment Required) 在 Firecrawl 托管套餐里就是点数/
+# 账期耗尽的确定信号; 403/429 只在响应文本里出现额度类关键词时才判定,
+# 避免把普通限流 (每分钟窗口 / 自托管反代限流) 误当成额度耗尽而白闩锁一天。
+FIRECRAWL_QUOTA_STATUS_CODES = (402,)
+FIRECRAWL_QUOTA_MARKERS = (
+    "insufficient credit",
+    "payment required",
+    "out of credits",
+    "no credits",
+    "credits exhausted",
+    "credit limit",
+    "credits remaining: 0",
+    "quota exceeded",
+    "quota exhausted",
+    "quota reached",
+    "monthly quota",
+    "plan limit",
+    "exceeded your",
+    "upgrade your plan",
+    "billing",
+)
+
+# 写入 api_status 的诊断信息里出现 api_key 时的掩码。
+_REDACTED_KEY = "***"
+
+
+def _redact_key(text: str, api_key: str) -> str:
+    """把文本里出现的 api_key 抹掉, 防止凭证写进 api_status.last_error。"""
+    key = (api_key or "").strip()
+    if key and key in text:
+        return text.replace(key, _REDACTED_KEY)
+    return text
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    """从 Firecrawl SDK 抛出的异常里取 HTTP 状态码 (兼容多种 SDK 形状)。
+
+    v1 SDK 走 requests.exceptions.HTTPError, 状态码挂在 .response;
+    其它 SDK/反代可能直接把 status_code 或 status 挂在异常对象上。
+    """
+    for holder in (exc, getattr(exc, "response", None)):
+        if holder is None:
+            continue
+        for attr in ("status_code", "status"):
+            value = getattr(holder, attr, None)
+            if isinstance(value, int):
+                return value
+    return None
+
+
+def _exception_text(exc: BaseException) -> str:
+    """取异常的可见文本: 消息本身 + 响应体摘要 (HTTPError 把 body 挂在 response 上)。"""
+    parts = [str(exc)]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            parts.append(str(response.text or "")[:500])
+        except Exception:  # noqa: BLE001 - 诊断文本提取不得引入新异常
+            pass
+    return " ".join(parts).casefold()
+
+
+def is_firecrawl_quota_exhausted(exc: BaseException) -> bool:
+    """判断异常是否表示 Firecrawl 额度/点数已耗尽, 而非普通限流或瞬时故障。"""
+    status = _exception_status_code(exc)
+    if status in FIRECRAWL_QUOTA_STATUS_CODES:
+        return True
+    text = _exception_text(exc)
+    return any(marker in text for marker in FIRECRAWL_QUOTA_MARKERS)
+
+
+def _firecrawl_quota_reason(action: str, exc: BaseException, api_key: str) -> str:
+    """生成写入 api_status 的脱敏诊断信息 (截断 + 抹 api_key)。"""
+    message = _redact_key(" ".join(str(exc).split())[:500], api_key)
+    return f"firecrawl {action} status={_exception_status_code(exc)}; {message}"
+
+
+def _note_firecrawl_quota(action: str, exc: BaseException, api_key: str) -> bool:
+    """识别额度耗尽并写入 api_status (provider=firecrawl); 返回是否已标记。
+
+    与 api-football 的日额度闩锁同一套 service: 先更进程缓存再 best-effort
+    写 DB, 同进程和其它进程后续的情报抓取都会快速失败。DB 不可用或本工具被
+    以脚本方式直接运行 (无 app 包) 时只记日志, 不把额度记账失败升级成
+    预测流程异常。
+    """
+    if not is_firecrawl_quota_exhausted(exc):
+        return False
+    reason = _firecrawl_quota_reason(action, exc, api_key)
+    try:
+        # 懒导入: 与 Firecrawl SDK / codex 同理, 环境缺失不得阻断预测服务启动,
+        # 也让本文件被直接运行时不必先挂上 app 包。
+        from app.services.api_status_service import PROVIDER_FIRECRAWL, mark_quota_exhausted
+
+        mark_quota_exhausted(PROVIDER_FIRECRAWL, reason)
+    except Exception as import_exc:  # noqa: BLE001 - 记账失败不得炸掉抓取流程
+        logger.warning("Firecrawl 额度耗尽标记失败 (api_status 不可用): {}", import_exc)
+    logger.error("Firecrawl 额度已耗尽, 已记入 api_status (provider=firecrawl): {}", reason)
+    return True
+
+
+def _firecrawl_quota_latched() -> bool:
+    """api_status 里 firecrawl 额度是否已置为耗尽 (跨进程共享, 月度重置日自动放行)。"""
+    try:
+        from app.services.api_status_service import PROVIDER_FIRECRAWL, is_quota_exhausted
+
+        return bool(is_quota_exhausted(PROVIDER_FIRECRAWL))
+    except Exception:  # noqa: BLE001 - 读闩锁失败按"未耗尽"放行, 由上游响应兜底
+        return False
+
+def _credit_usage_fields(response: Any) -> dict:
+    """从 SDK 响应里取 credit-usage 字段, 兼容 pydantic 对象与裸 dict 两种形状。"""
+    if isinstance(response, dict):
+        data = response.get("data", response)
+    else:
+        data = getattr(response, "data", response)
+
+    def _pick(name: str):
+        if isinstance(data, dict):
+            return data.get(name)
+        return getattr(data, name, None)
+
+    return {
+        "remaining_credits": _pick("remaining_credits"),
+        "plan_credits": _pick("plan_credits"),
+        "billing_period_start": _pick("billing_period_start"),
+        "billing_period_end": _pick("billing_period_end"),
+    }
+
+
+def refresh_firecrawl_quota_status(
+    *,
+    api_key: str,
+    firecrawl_base_url: str = "http://127.0.0.1:3002",
+) -> dict:
+    """主动查询 Firecrawl 剩余点数, 并把 api_status 表同步成真实状态。
+
+    被动识别 (抓到 402/额度文案才 mark) 有个盲区: 额度可能是在别处被用完的
+    (控制台手动跑、其它脚本、上一个进程), 本地闩锁并不知情, 于是继续发请求
+    继续 402。这里调托管套餐的 credit-usage 接口主动对账:
+
+    - remaining <= 0 -> mark_quota_exhausted("firecrawl"): 写库 + 进程缓存,
+      之后的情报抓取直接快速失败, 不再拿 402 试探;
+    - remaining > 0  -> reset_provider("firecrawl"): 清掉可能已过期的闩锁
+      (额度恢复/套餐升级后不必等每月重置日);
+    - 接口不可用 (自托管实例没有该端点 / 网络故障) -> 不动闩锁, 返回 unknown,
+      被动识别继续兜底, 已有的闩锁状态保持原样。
+
+    返回 {"status": "exhausted"|"available"|"unknown", "remaining_credits":
+    int|None, "plan_credits": int|None, "billing_period_start"/"_end",
+    "error"}。本函数自身不抛异常 — 查询失败只是状态不更新, 不能影响调用方。
+    """
+    firecrawl_base_url = (firecrawl_base_url or "http://127.0.0.1:3002").strip().rstrip("/")
+    result: dict[str, Any] = {
+        "status": "unknown",
+        "remaining_credits": None,
+        "plan_credits": None,
+        "billing_period_start": None,
+        "billing_period_end": None,
+        "error": "",
+    }
+
+    try:
+        try:
+            from firecrawl import V1FirecrawlApp as FirecrawlClient
+        except ImportError:
+            from firecrawl import FirecrawlApp as FirecrawlClient
+
+        app = FirecrawlClient(api_key=api_key or None, api_url=firecrawl_base_url)
+        fields = _credit_usage_fields(app.get_credit_usage())
+    except Exception as exc:  # noqa: BLE001 - 查询失败不得影响调用方, 闩锁保持原样
+        result["error"] = _redact_key(" ".join(str(exc).split())[:500], api_key)
+        logger.warning("Firecrawl 额度查询失败, 保持 api_status 原状: {}", result["error"])
+        return result
+
+    def _as_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    remaining = _as_int(fields.get("remaining_credits"))
+    plan = _as_int(fields.get("plan_credits"))
+    result.update(
+        remaining_credits=remaining,
+        plan_credits=plan,
+        billing_period_start=fields.get("billing_period_start"),
+        billing_period_end=fields.get("billing_period_end"),
+    )
+
+    if remaining is None:
+        result["error"] = "credit-usage 响应缺少 remaining_credits"
+        logger.warning("Firecrawl 额度查询响应无法解析, 保持 api_status 原状: {}", fields)
+        return result
+
+    period = (
+        f"period={fields.get('billing_period_start')}~{fields.get('billing_period_end')}"
+    )
+    if remaining <= 0:
+        reason = f"credit-usage: remaining={remaining}/{plan}, {period}"
+        try:
+            from app.services.api_status_service import PROVIDER_FIRECRAWL, mark_quota_exhausted
+
+            mark_quota_exhausted(PROVIDER_FIRECRAWL, reason)
+        except Exception as import_exc:  # noqa: BLE001 - 记账失败只记日志
+            logger.warning("Firecrawl 额度耗尽标记失败 (api_status 不可用): {}", import_exc)
+        result["status"] = "exhausted"
+        logger.warning("Firecrawl 额度已用完, 已记入 api_status: {}", reason)
+        return result
+
+    try:
+        from app.services.api_status_service import PROVIDER_FIRECRAWL, reset_provider
+
+        reset_provider(PROVIDER_FIRECRAWL)
+    except Exception as import_exc:  # noqa: BLE001 - 复位失败只记日志
+        logger.warning("Firecrawl 额度复位失败 (api_status 不可用): {}", import_exc)
+    result["status"] = "available"
+    logger.info("Firecrawl 额度可用, api_status 已复位: remaining={}/{}, {}", remaining, plan, period)
+    return result
+
+
+
 
 def build_query(
     *,
@@ -268,6 +498,7 @@ def _scrape_article_pages(
     limit: int,
     scrape_options: Any,
     expected_year: int | str,
+    api_key: str = "",
 ) -> list[tuple[str, dict[str, Any]]]:
     """Replace search snippets with Markdown scraped from article detail URLs."""
     scraped = []
@@ -305,6 +536,10 @@ def _scrape_article_pages(
                 continue
             scraped.append((source, {**item, "markdown": markdown}))
         except Exception as exc:
+            # 额度耗尽时记账并向上抛, 中止整个抓取流程 — 与 api-football
+            # 撞到日额度后"本次任务剩余请求全部快速失败"同一语义。
+            if _note_firecrawl_quota("scrape", exc, api_key):
+                raise
             logger.warning("Firecrawl 详情页抓取失败: url={}, error={}", url, exc)
     return scraped
 
@@ -575,6 +810,19 @@ def scrape_match_analysis(
 
     limit = max(1, min(limit, 3))
 
+    # 与 api-football 对齐的额度闩锁: 已标记耗尽时直接快速失败, 不再发起
+    # search/scrape 反覆冲击没有额度的数据源。Firecrawl 是月度配额 (每月
+    # 1000 次, 重置日见 settings.firecrawl_quota_reset_day), 闩锁会一直撑到
+    # 重置日, 不会每天放行白烧额度;
+    # 也可由控制面板的 api-status reset 接口手动清除。
+    if _firecrawl_quota_latched():
+        logger.info("Firecrawl 额度已耗尽 (api_status 闩锁), 跳过本次情报获取")
+        return (
+            "# 外部比赛情报\n\n"
+            "获取失败，忽略该数据源：Firecrawl 额度已耗尽，跳过抓取"
+            "（详见 api_status 表 provider=firecrawl，月度配额重置后自动放行）。"
+        )
+
     try:
         # firecrawl 4.x exposes the web search API through V1FirecrawlApp;
         # older releases exposed the same method on FirecrawlApp.
@@ -663,6 +911,9 @@ def scrape_match_analysis(
                         scrape_options=scrape_options,
                     )
                 except Exception as exc:
+                    # 额度耗尽时记账并向上抛, 不再试下一个 site/query。
+                    if _note_firecrawl_quota("search", exc, api_key):
+                        raise
                     logger.warning("Firecrawl 搜索失败: site={}, error={}", source_site, exc)
                     continue
                 site_matches = _matching_items(
@@ -683,6 +934,7 @@ def scrape_match_analysis(
                     limit=1,
                     scrape_options=scrape_options,
                     expected_year=year,
+                    api_key=api_key,
                 )
                 # One approved article ends the search. A rejected page is
                 # recorded by _accept_article and the next source is tried.
@@ -715,6 +967,8 @@ def scrape_match_analysis(
                         scrape_options=scrape_options,
                     )
                 except Exception as exc:
+                    if _note_firecrawl_quota("search", exc, api_key):
+                        raise
                     logger.warning("Firecrawl 全网兜底搜索失败: error={}", exc)
                     continue
                 candidates = _fallback_matching_items(
@@ -734,6 +988,7 @@ def scrape_match_analysis(
                     limit=1,
                     scrape_options=scrape_options,
                     expected_year=year,
+                    api_key=api_key,
                 ):
                     if _accept_article(article):
                         break
@@ -764,7 +1019,9 @@ def scrape_match_analysis(
         return final_intelligence
     except Exception as exc:  # noqa: BLE001 - provider failure must not stop prediction
         logger.error("Firecrawl 情报获取初始化/汇总失败: {}", exc)
-        return f"# 外部比赛情报\n\n获取失败，忽略该数据源：{type(exc).__name__}: {exc}"
+        # 脱敏后再回给调用方: 异常文本理论上可能夹带请求头里的 key。
+        message = _redact_key(str(exc), api_key)
+        return f"# 外部比赛情报\n\n获取失败，忽略该数据源：{type(exc).__name__}: {message}"
 
 
 if __name__ == "__main__":

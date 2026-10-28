@@ -232,3 +232,94 @@ def test_provider_key_constant():
     from app.models.api_status import ApiStatus
     assert from_model == "api-football"
     assert ApiStatus.__tablename__ == "api_status"
+
+class _FixedDateRow:
+    """伪装成 DB 结果行: quota_exhausted=True + 指定的 exhausted_date。"""
+
+    def __init__(self, exhausted_date):
+        self.tup = (True, exhausted_date)
+
+    def fetchone(self):
+        return self.tup
+
+
+class _ExhaustedDB:
+    """只认 SELECT 的伪 DB: 永远返回"已耗尽 + 给定日期", 复位 UPDATE 照单全收。"""
+
+    def __init__(self, exhausted_date):
+        self.exhausted_date = exhausted_date
+        self.commits = 0
+
+    def execute(self, sql, params=None):
+        if str(sql).strip().lower().startswith("select"):
+            return _FixedDateRow(self.exhausted_date)
+        return None
+
+    def commit(self):
+        self.commits += 1
+
+    def close(self):
+        pass
+
+
+def _read_firecrawl_with(monkeypatch, exhausted_date, today):
+    """在"DB 报告某日耗尽 + UTC 今天是 today"的设定下读 firecrawl 闩锁。"""
+    monkeypatch.setattr(svc, "_utc_today", lambda: today)
+    monkeypatch.setattr(svc, "SessionLocal", lambda: _ExhaustedDB(exhausted_date))
+    svc.clear_cache_for_tests()
+    return svc.is_quota_exhausted("firecrawl")
+
+
+def test_last_monthly_reset_boundary():
+    """月度重置边界: 当月重置日未到取上月重置日, 已到取当月; 跨年/短月都要对。"""
+    assert svc._last_monthly_reset_boundary(date(2026, 10, 20), 23) == date(2026, 9, 23)
+    assert svc._last_monthly_reset_boundary(date(2026, 10, 23), 23) == date(2026, 10, 23)
+    assert svc._last_monthly_reset_boundary(date(2026, 10, 24), 23) == date(2026, 10, 23)
+    assert svc._last_monthly_reset_boundary(date(2026, 11, 5), 23) == date(2026, 10, 23)
+    # 跨年: 1 月重置日未到时应取上一年 12 月的重置日
+    assert svc._last_monthly_reset_boundary(date(2027, 1, 5), 23) == date(2026, 12, 23)
+    # 重置日 >28 时收敛到月末 (2 月)
+    assert svc._last_monthly_reset_boundary(date(2026, 3, 1), 31) == date(2026, 2, 28)
+
+
+@pytest.mark.parametrize(
+    "exhausted, today, expect_latched",
+    [
+        # 10-10 耗尽, 本月 23 号还没到 -> 一直闩锁, 不能跨天放行
+        (date(2026, 10, 10), date(2026, 10, 11), True),
+        (date(2026, 10, 10), date(2026, 10, 20), True),
+        # 10-24 已过 23 号重置 -> 放行
+        (date(2026, 10, 10), date(2026, 10, 24), False),
+        (date(2026, 10, 10), date(2026, 11, 5), False),
+        # 10-25 (上次重置后) 又耗尽 -> 11 月额度也用光了, 11-23 前保持闩锁
+        (date(2026, 10, 25), date(2026, 11, 5), True),
+        (date(2026, 10, 25), date(2026, 11, 22), True),
+        (date(2026, 10, 25), date(2026, 11, 23), False),
+        # 恰好重置当天耗尽: 这个周期就用光了, 不放行
+        (date(2026, 10, 23), date(2026, 10, 23), True),
+    ],
+)
+def test_firecrawl_monthly_latch_survives_until_reset_day(monkeypatch, exhausted, today, expect_latched):
+    """firecrawl 月度配额: 闩锁必须撑到每月重置日, 而不是每天放行一次。"""
+    # 机制测试与账号真实重置日解耦: 固定按 23 号重置验证日期矩阵
+    # (账号实际是 9 号, 由 settings 默认值表达, 见 test_..._is_configurable)。
+    monkeypatch.setattr(svc.settings, "firecrawl_quota_reset_day", 23)
+    latched = _read_firecrawl_with(monkeypatch, exhausted, today)
+    assert latched is expect_latched
+
+
+def test_firecrawl_reset_day_is_configurable(monkeypatch):
+    """重置日来自 settings.firecrawl_quota_reset_day, 换账号/换套餐不用改代码。"""
+    monkeypatch.setattr(svc.settings, "firecrawl_quota_reset_day", 1)
+    # 重置日=1: 10-10 耗尽, 11-02 (已过 11-01 重置) -> 放行
+    assert _read_firecrawl_with(monkeypatch, date(2026, 10, 10), date(2026, 11, 2)) is False
+    # 10-20 还没到 11-01 -> 仍然闩锁
+    assert _read_firecrawl_with(monkeypatch, date(2026, 10, 10), date(2026, 10, 20)) is True
+
+
+def test_api_football_still_resets_daily(monkeypatch):
+    """回归保护: api-football 保持按 UTC 天放行, 不被月度节奏带偏。"""
+    monkeypatch.setattr(svc, "_utc_today", lambda: date(2026, 10, 20))
+    monkeypatch.setattr(svc, "SessionLocal", lambda: _ExhaustedDB(date(2026, 10, 10)))
+    svc.clear_cache_for_tests()
+    assert svc.is_quota_exhausted("api-football") is False

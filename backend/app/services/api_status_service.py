@@ -1,4 +1,4 @@
-"""外部数据源（api-football 等）的额度状态服务。
+"""外部数据源（api-football / firecrawl 等）的额度状态服务。
 
 设计要点
 --------
@@ -12,26 +12,34 @@
   ``quota_exhausted`` 置 0。比 server local 更稳: 部署机本地时区漂移或开发者
   从 Windows 跑脚本时, 不会因为"看似跨天但 UTC 还没跨"而提前放行, 也不会
   在 UTC 已经跨天后还把请求拦着。
+* **Firecrawl 按月配额**: 托管套餐每月固定调用次数 (当前账号 1000 次/月,
+  每月 9 号重置 — 以 credit-usage 接口的账期为准, 可用
+  settings.firecrawl_quota_reset_day 覆盖), 不是按天。因此 firecrawl 的自动
+  复位按"是否已到过当月
+  重置日"判断, 撑不到重置日就一直闩锁 — 否则每天放行一次只会反复重试到
+  再次耗尽, 白烧剩余额度。
 * 调用约定:
     - ``is_quota_exhausted(provider)`` — 每条 API 请求前调用, 热路径 0 DB 访问。
-    - ``mark_quota_exhausted(provider, reason)`` — 检测到日额度耗尽时调用。
+    - ``mark_quota_exhausted(provider, reason)`` — 检测到额度耗尽时调用 (api-football 是当日, firecrawl 是当月配额周期)。
     - ``reset_provider(provider)`` — 每个调度 tick 开始时调用, 既强制清缓存又
       把 ``quota_exhausted`` 写回 DB。
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.api_status import PROVIDER_API_FOOTBALL
+from app.models.api_status import PROVIDER_API_FOOTBALL, PROVIDER_FIRECRAWL
 
 
-# 跨天复位基于 UTC 自然日 — 与 API-Football 实际重置节奏保持一致,
-# 不依赖 server 本地时区或开发者机器时区.
+# daily 复位基于 UTC 自然日 — 与 API-Football 实际重置节奏保持一致,
+# 不依赖 server 本地时区或开发者机器时区. monthly 的边界计算同样以这个
+# UTC 日期为基准 (见 _quota_reset_since).
 def _utc_today():
     return datetime.now(timezone.utc).date()
 
@@ -39,10 +47,54 @@ def _utc_today():
 # 进程内缓存: provider -> "True=已耗尽 / False=未耗尽". 默认按"未耗尽"处理。
 _cache: dict[str, bool] = {}
 
+# ── 各 provider 的额度重置节奏 ─────────────────────────────────
+# 自动复位不能一律"跨天放行": api-football 免费额度按 UTC 自然日重置,
+# 而 firecrawl 托管套餐是月度配额 (当前账号每月 1000 次, 每月 9 号重置) —
+# 按月放行意味着"标记耗尽以来是否已经到过一个重置日", 撑不到重置日就一直
+# 闩锁, 避免每天放行一次、反复重试到再次耗尽。
+_RESET_CADENCE_DAILY = "daily"
+_RESET_CADENCE_MONTHLY = "monthly"
+_RESET_CADENCE: dict[str, str] = {
+    PROVIDER_API_FOOTBALL: _RESET_CADENCE_DAILY,
+    PROVIDER_FIRECRAWL: _RESET_CADENCE_MONTHLY,
+}
+
+
+def _last_monthly_reset_boundary(today, reset_day: int):
+    """today 之前最近的一次月度重置日 (含今天)。
+
+    reset_day=23 时: today=10-20 -> 09-23 (本月重置还没到);
+    today=10-24 -> 10-23; today=11-05 -> 10-23 (10 月那次重置已发生)。
+    """
+    # 28 以后各月天数不一, 不展开; 账号重置日若 >28 由配置方自行收敛。
+    reset_day = max(1, min(int(reset_day), 28))
+    if today.day >= reset_day:
+        return today.replace(day=reset_day)
+    # 本月重置日还没到, 最近一次重置发生在上个月的同一天。
+    last_of_prev_month = today.replace(day=1) - timedelta(days=1)
+    return last_of_prev_month.replace(day=min(reset_day, last_of_prev_month.day))
+
+
+def _quota_reset_since(provider: str, exhausted_date, today) -> bool:
+    """自 exhausted_date 标记耗尽以来, 该 provider 的额度是否已重置过。
+
+    daily:   exhausted_date < today (UTC 自然日翻页即放行)。
+    monthly: 已经越过当月/上月重置日才放行; exhausted_date 恰好等于
+             重置日时视作"这个周期就用光了", 不放行。
+    """
+    if exhausted_date is None:
+        return False
+    if _RESET_CADENCE.get(provider, _RESET_CADENCE_DAILY) == _RESET_CADENCE_MONTHLY:
+        boundary = _last_monthly_reset_boundary(today, settings.firecrawl_quota_reset_day)
+        return exhausted_date < boundary
+    return exhausted_date < today
+
+
 # 仅允许的 provider 名字典, 避免脚本拼错字符串写入脏行。
 _PROVIDER_ALIASES: dict[str, str] = {
     PROVIDER_API_FOOTBALL: PROVIDER_API_FOOTBALL,
     "api_football": PROVIDER_API_FOOTBALL,
+    PROVIDER_FIRECRAWL: PROVIDER_FIRECRAWL,
 }
 
 # 错误信息最大长度, 防止响应体很大时把表撑爆.
@@ -100,7 +152,7 @@ def _ensure_row(db, provider: str) -> None:
 
 
 def _load_from_db(provider: str) -> bool | None:
-    """从 DB 读 quota_exhausted; 跨天自动复位; 失败返回 None 让调用方走缓存默认.
+    """从 DB 读 quota_exhausted; 按 provider 节奏自动复位; 失败返回 None 让调用方走缓存默认.
 
     返回值含义:
         True  — DB 表示已耗尽
@@ -124,10 +176,11 @@ def _load_from_db(provider: str) -> bool | None:
         exhausted_date = row[1]
         today = _utc_today()
 
-        # 跨天自动复位: yesterday 标记耗尽不算, 今天又重新有额度了.
-        if exhausted and exhausted_date is not None and exhausted_date < today:
+        # 自动复位: 按 provider 的重置节奏判断"标记耗尽以来额度是否已重置"。
+        # api-football 跨 UTC 天即放行; firecrawl 要撑到每月重置日 (默认 9 号)。
+        if exhausted and _quota_reset_since(provider, exhausted_date, today):
             logger.info(
-                f"[API-Football] 额度状态跨天自动复位: exhausted_date={exhausted_date} "
+                f"[{provider}] 额度状态自动复位: exhausted_date={exhausted_date} "
                 f"today={today}"
             )
             db.execute(
@@ -163,7 +216,7 @@ def _load_from_db(provider: str) -> bool | None:
 
 
 def is_quota_exhausted(provider: str = PROVIDER_API_FOOTBALL) -> bool:
-    """返回该 provider 当日额度是否已耗尽。
+    """返回该 provider 额度是否已耗尽 (api-football 按 UTC 日, firecrawl 按月)。
 
     读路径:
     1. 命中进程内缓存 -> 直接返回, 0 次 DB 访问 (热路径)。
@@ -214,7 +267,7 @@ def _persist_exhausted(db, provider: str, reason: str, now: datetime, today) -> 
 def mark_quota_exhausted(
     provider: str = PROVIDER_API_FOOTBALL, reason: str = "",
 ) -> None:
-    """标记该 provider 当日额度已耗尽。
+    """标记该 provider 额度已耗尽 (api-football 为当日, firecrawl 为当个配额周期)。
 
     写路径: 先更缓存再更 DB (best-effort)。
     缓存先更的语义: 即使 DB 写入失败, 当前进程也能立刻看到状态——避免在
@@ -227,12 +280,12 @@ def mark_quota_exhausted(
     now = datetime.now()
     if _persist_exhausted(provider, reason, now, _utc_today()) is True:
         logger.warning(
-            f"[API-Football] 当日额度已耗尽已写入 api_status: provider={provider} "
+            f"[{provider}] 额度已耗尽已写入 api_status: provider={provider} "
             f"reason={reason[:500]!r}"
         )
     else:
         logger.error(
-            f"[API-Football] api_status 写入失败, 进程内已置 1, 跨进程同步待 DB 恢复: "
+            f"[{provider}] api_status 写入失败, 进程内已置 1, 跨进程同步待 DB 恢复: "
             f"provider={provider} reason={reason[:500]!r}"
         )
 
@@ -260,7 +313,7 @@ def reset_provider(provider: str = PROVIDER_API_FOOTBALL) -> None:
     """显式复位: 清缓存 + 把 ``quota_exhausted`` 写回 0。
 
     调用方: 调度器每个 tick 开始时调用, 因为新的一天 API-Football 额度会恢复。
-    与"跨天自动复位"配合: 自动复位只解决"DB 里是昨天的日期"这一种情况, 显式
+    与自动复位配合: 自动复位只解决"自标记耗尽以来额度已重置"这一种情况, 显式
     复位用于"今天日期还没变、但管理员手动把 key 改了 / 套餐升级了"的场景。
     """
     provider = _normalize(provider)
