@@ -942,6 +942,50 @@ def _stat_float(value) -> float | None:
         return None
 
 
+def _fetch_team_tactical_xg(db, team_id: int, before_date=None, n: int = 5) -> str:
+    """近 n 场场均 xG / xGA / passes_final_third，供 prompt 注入。
+
+    数据来自 fixture_statistics（Flashscore 回填）。passes_final_third 是进攻进入
+    最后三分之一区域的传球数，比控球率更能反映真实进攻威胁。缺失标 UNAVAILABLE，
+    不用射门/角球等代理。
+    """
+    if before_date is None:
+        return "UNAVAILABLE（缺少本场日期）"
+    rows = db.execute(text("""
+        SELECT fs.fixture_id, fs.stat_type, fs.stat_value
+          FROM fixture_statistics fs
+          JOIN fixtures f ON fs.fixture_id = f.id
+         WHERE fs.team_id = :tid AND f.date < :dt
+           AND f.status_short IN ('FT','AET','PEN')
+           AND fs.stat_type IN ('expected_goals','expected_goals_against','passes_final_third')
+         ORDER BY f.date DESC LIMIT :lim
+    """), {"tid": team_id, "dt": before_date, "lim": n * 5}).fetchall()
+
+    from collections import defaultdict
+    fstats = defaultdict(dict)
+    order = []
+    for r in rows:
+        if r[0] not in fstats and len(order) >= n:
+            break
+        if r[0] not in fstats:
+            order.append(r[0])
+        fstats[r[0]][r[1]] = r[2]
+
+    xg, xga, pft = [], [], []
+    for fid in order:
+        s = fstats[fid]
+        v = _stat_float(s.get('expected_goals')); xg.append(v) if v is not None else None
+        v = _stat_float(s.get('expected_goals_against')); xga.append(v) if v is not None else None
+        v = _stat_float(s.get('passes_final_third')); pft.append(v) if v is not None else None
+
+    def _fmt(val):
+        return f"{val:.2f}" if val is not None else "UNAVAILABLE"
+    def _avg(lst):
+        return round(sum(lst) / len(lst), 2) if lst else None
+    return (f"场均xG {_fmt(_avg(xg))} / 场均xGA {_fmt(_avg(xga))} / "
+            f"场均末三区传球 {_fmt(_avg(pft))}（样本 {len(order)} 场）")
+
+
 def _recent_field_tilt_gap(db, team_id, kickoff,
                            window: int = FIELD_TILT_WINDOW) -> dict:
     """近 ``window`` 场已完赛比赛的「控球占比 − Field Tilt」均值。
@@ -1146,7 +1190,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       home_standings: str, away_standings: str,
                       lineups_text: str, weather_text: str = "",
                       intelligence_markdown: str = "",
-                      bayes_context: dict | None = None) -> str:
+                      bayes_context: dict | None = None,
+                      home_xg_text: str = "", away_xg_text: str = "") -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -1211,15 +1256,17 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【{fixture['home_name']} 数据】
     积分榜: {home_standings}
     近10场战绩: {home_stats}
+    近5场战术xG: {home_xg_text}
 
     *【{fixture['away_name']} 数据】
     积分榜: {away_standings}
     近10场战绩: {away_stats}
+    近5场战术xG: {away_xg_text}
 
     *【赔率数据】
     {odds_section}
 
-    *【贝叶斯结果】P0/P1 为宿主已计算的输入，原样引用、不得伪造或杜撰盘口；你的 win/win_pct 是独立判断，可与 P1 不同但需说明依据
+    *【贝叶斯结果】P0/P1 为宿主已计算的输入，不得伪造或杜撰盘口；你的 win/win_pct 是独立判断，可与 P1 不同但需说明依据
     P0: {json.dumps(bayes_context.get('p0', {}), ensure_ascii=False)}
     P1: {json.dumps(bayes_context.get('p1', {}), ensure_ascii=False)}
     风险: {json.dumps(bayes_context.get('risks', []), ensure_ascii=False)}
@@ -1236,7 +1283,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     模型最高项:{model_top_text}
 
     # 分析方法（技能）
-    - 请使用 ${skill_name} 技能的宿主路径（路径 B）完成分析：宿主已注入 P0/P1/λ/赔率等数据，只做派生市场、稳健性网格、情报对比与输出，不要重算 P0/P1，可用该技能的 scripts 辅助计算。
+    - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
 
     # output-schema
     输出约束,请严格输出JSON格式:
@@ -1341,6 +1388,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         # 4. 全量数据
         home_stats = _fetch_team_recent_via_db(db, fixture['home_id'], fixture['date'])
         away_stats = _fetch_team_recent_via_db(db, fixture['away_id'], fixture['date'])
+        home_xg_text = _fetch_team_tactical_xg(db, fixture['home_id'], fixture.get('date'))
+        away_xg_text = _fetch_team_tactical_xg(db, fixture['away_id'], fixture.get('date'))
         home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'])
         away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
@@ -1388,7 +1437,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
                                        home_stats, away_stats,
                                        home_standings, away_standings,
                                        lineups_text, weather_text,
-                                       intelligence_markdown, bayes_context)
+                                       intelligence_markdown, bayes_context,
+                                       home_xg_text, away_xg_text)
             llm_result, llm_model = _call_llm(prompt)
         except CodexError:
             # codex 配置/环境错误（如 schema 文件缺失）不是可重试的模型故障，
