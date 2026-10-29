@@ -15,7 +15,7 @@ import json
 import pickle
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -432,35 +432,83 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
 ODDS_BOOKMAKER_WHITELIST = ["Bet365", "Unibet", "SBO", "Pinnacle", "Marathonbet"]
 
 
+def _to_utc_date(match_date) -> str | None:
+    """把比赛时间（datetime/date/字符串；naive 视为本地时间）换算成 UTC 日期。"""
+    if match_date is None:
+        return None
+    dt = None
+    if isinstance(match_date, datetime):
+        dt = match_date
+    elif hasattr(match_date, "strftime"):  # datetime.date
+        dt = datetime(match_date.year, match_date.month, match_date.day)
+    else:
+        text = str(match_date).strip().replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(text[:19], fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive 按本地时区解释
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _odds_date_candidates(match_date) -> list[str]:
+    """赔率查询候选日期：比赛自身 UTC 日期优先，其次今天 UTC。
+
+    API-Football 的 /odds 按比赛开赛的 UTC 日期索引（实测：明天 UTC 开赛的比赛用今天
+    查会返回空 response，只查今天就只能覆盖当天开赛的比赛）。
+    """
+    dates: list[str] = []
+    fixture_date = _to_utc_date(match_date)
+    if fixture_date:
+        dates.append(fixture_date)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if today not in dates:
+        dates.append(today)
+    return dates
+
+
 def _fetch_odds(fixture_id: int, match_date=None,
                 bookmaker_whitelist: list[str] | None = None) -> dict | None:
     """拉取赔率（含 1X2 / 亚盘 / 大小球）。
 
     仅查询 API-Football 当前日期（UTC）；每次调用都会按需请求最新赔率，不做 fixture 级
     缓存或调用次数限制。本地时区凌晨时，API 仍可能处于前一天。
-    这里的 ``date`` 是赔率快照的发布日期，而不是比赛日期；未来比赛的赔率只能通过今天
-    的快照查询。仅保留真正抓到赔率的日期。
+    接口按比赛开赛的 UTC 日期索引赔率，因此候选日期为「比赛自身 UTC 日期 → 今天
+    UTC」，两者都查不到时再不带 date 直查一次（库里开赛时间可能是赛季初的旧值）。
+    仅保留真正抓到赔率的日期。
 
     庄家筛选使用固定白名单（默认 ODDS_BOOKMAKER_WHITELIST，大小写不敏感），只保留
     白名单内的庄家，最终按白名单顺序输出；若某家在窗口内无数据则自动缺失。
     """
     try:
-        from datetime import datetime, timezone
         whitelist = [b.strip() for b in (bookmaker_whitelist or ODDS_BOOKMAKER_WHITELIST) if b.strip()]
         wl_lower = {b.lower(): b for b in whitelist}  # 规范名（按白名单原样）
-        # API-Football 按 UTC 计算赔率快照日期；本地凌晨时仍可能处于 API 的前一天。
+        # API-Football 按 UTC 计算赔率日期；本地凌晨时仍可能处于 API 的前一天。
         api_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        ordered = [api_date]
+        ordered = _odds_date_candidates(match_date)
+        # 候选日期查不到时（库里开赛时间是赛季初旧值、比赛已改期），不带 date 直查一次。
+        # (params, 快照日期) —— 不带 date 时快照日期改用接口返回的开赛时间。
+        requests: list[tuple[dict, str | None]] = [
+            ({"fixture": fixture_id, "date": date_str}, date_str) for date_str in ordered
+        ]
+        requests.append(({"fixture": fixture_id}, None))
         logger.info(
-            f"赔率 API 请求: fixture_id={fixture_id}, dates={ordered}, "
+            f"赔率 API 请求: fixture_id={fixture_id}, dates={ordered}(+无 date 兜底), "
             f"local_now={datetime.now().isoformat()}, utc_date={api_date}"
         )
 
         # 收集所有庄家数据: {bookmaker_name: {date: entry}}
         bookmaker_odds = {}
+        raw_bookmakers: list[str] = []
+        matched_bookmakers: list[str] = []
         first_api_error = None  # 记录首个 API-Football 错误（如当日配额耗尽），用于向上游暴露
-        for date_str in ordered:
-            resp: dict[Any, Any] = _api_get("odds", {"fixture": fixture_id, "date": date_str})
+        for params, date_str in requests:
+            resp: dict[Any, Any] = _api_get("odds", params)
             if isinstance(resp, dict) and resp.get("errors"):
                 if first_api_error is None:
                     first_api_error = resp["errors"]
@@ -477,6 +525,9 @@ def _fetch_odds(fixture_id: int, match_date=None,
                 )
                 continue
 
+            # 不带 date 的请求没有自带日期，按接口返回的开赛时间记快照日期
+            snapshot_date = date_str or _to_utc_date(
+                data[0].get("fixture", {}).get("date")) or api_date
             raw_bookmakers = [bm.get("name", "未知") for bm in data[0].get("bookmakers", [])]
             matched_bookmakers = []
             for bm in data[0].get("bookmakers", []):
@@ -499,10 +550,10 @@ def _fetch_odds(fixture_id: int, match_date=None,
                     elif name == "Goals Over/Under":
                         parsed = _parse_over_under(values)
                     if parsed:
-                        base = bm_dict.get(date_str, {"date": date_str})
+                        base = bm_dict.get(snapshot_date, {"date": snapshot_date})
                         base.update(parsed)
-                        base["date"] = date_str
-                        bm_dict[date_str] = base
+                        base["date"] = snapshot_date
+                        bm_dict[snapshot_date] = base
 
             # 白名单内的庄家全部集满即可停止, 减少无效 API 请求
             if len(bookmaker_odds) >= len(whitelist):
@@ -513,9 +564,9 @@ def _fetch_odds(fixture_id: int, match_date=None,
             if first_api_error is not None:
                 return {"__api_error__": first_api_error}
             logger.warning(
-                f"赔率数据过滤后为空: fixture_id={fixture_id}, date={ordered[0]}, "
-                f"api_bookmakers={raw_bookmakers if 'raw_bookmakers' in locals() else []}, "
-                f"whitelist={whitelist}, matched={matched_bookmakers if 'matched_bookmakers' in locals() else []}"
+                f"赔率数据过滤后为空: fixture_id={fixture_id}, dates={ordered}(+无 date 兜底), "
+                f"api_bookmakers={raw_bookmakers}, "
+                f"whitelist={whitelist}, matched={matched_bookmakers}"
             )
             return None
 
