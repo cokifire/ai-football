@@ -302,7 +302,7 @@ def test_last_monthly_reset_boundary():
 def test_firecrawl_monthly_latch_survives_until_reset_day(monkeypatch, exhausted, today, expect_latched):
     """firecrawl 月度配额: 闩锁必须撑到每月重置日, 而不是每天放行一次。"""
     # 机制测试与账号真实重置日解耦: 固定按 23 号重置验证日期矩阵
-    # (账号实际是 9 号, 由 settings 默认值表达, 见 test_..._is_configurable)。
+    # (账号实际是 22 号, 由 settings 默认值表达, 见 test_..._is_configurable)。
     monkeypatch.setattr(svc.settings, "firecrawl_quota_reset_day", 23)
     latched = _read_firecrawl_with(monkeypatch, exhausted, today)
     assert latched is expect_latched
@@ -323,3 +323,66 @@ def test_api_football_still_resets_daily(monkeypatch):
     monkeypatch.setattr(svc, "SessionLocal", lambda: _ExhaustedDB(date(2026, 10, 10)))
     svc.clear_cache_for_tests()
     assert svc.is_quota_exhausted("api-football") is False
+# ── 缓存 TTL: 别的进程标记 / 跨月重置必须能在本进程生效 ──────
+
+def test_negative_cache_expires_and_picks_up_other_process_mark(monkeypatch):
+    """长驻进程缓存了 False 后, 必须在 TTL 内看到别的进程写入的耗尽标记。
+
+    没有 TTL 时, 调度进程若在额度耗尽前读过一次 False 就永久缓存, 之后整天
+    继续冲击已耗尽的数据源 (api_status.updated_at 会一直被重复的标记推动)。
+    """
+    monkeypatch.setattr(svc, "_CACHE_TTL_SECONDS", 0.0)  # 立刻过期
+    monkeypatch.setattr(svc, "SessionLocal", lambda: _ExhaustedDB(date.today()))
+    svc.clear_cache_for_tests()
+
+    assert svc.is_quota_exhausted("firecrawl") is True  # 首次读 -> DB 说已耗尽
+    # 缓存里现在是 True, 把 DB 换成"未耗尽", 过期的缓存必须重新读 DB
+    monkeypatch.setattr(
+        svc, "SessionLocal", lambda: _FakeDbFactory(False, None).build()
+    )
+    assert svc.is_quota_exhausted("firecrawl") is False
+
+
+class _SimpleRow:
+    """返回固定 (quota_exhausted, exhausted_date) 的结果行。"""
+
+    def __init__(self, tup):
+        self.tup = tup
+
+    def fetchone(self):
+        return self.tup
+
+
+class _FakeDbFactory:
+    """造一个报告固定 (exhausted, exhausted_date) 的伪 DB。"""
+
+    def __init__(self, exhausted, exhausted_date):
+        self.exhausted = exhausted
+        self.exhausted_date = exhausted_date
+
+    def build(self):
+        exhausted, exhausted_date = self.exhausted, self.exhausted_date
+
+        class _Db:
+            def execute(self, sql, params=None):
+                if str(sql).strip().lower().startswith("select"):
+                    return _SimpleRow((exhausted, exhausted_date))
+                return None
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        return _Db()
+
+
+def test_true_cache_also_expires_so_monthly_reset_takes_effect(monkeypatch):
+    """True 缓存同样要过期: 否则跨月重置后长驻进程会一直闩锁到重启。"""
+    monkeypatch.setattr(svc, "_CACHE_TTL_SECONDS", 0.0)
+    svc.mark_quota_exhausted("firecrawl", "exhausted")
+    assert svc.is_quota_exhausted("firecrawl") is True
+
+    monkeypatch.setattr(svc, "SessionLocal", lambda: _FakeDbFactory(False, None).build())
+    assert svc.is_quota_exhausted("firecrawl") is False

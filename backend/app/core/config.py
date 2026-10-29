@@ -25,11 +25,26 @@ class Settings(BaseSettings):
     # Firecrawl 托管套餐按月配额（当前账号每月 1000 次调用），不是按天。
     # 额度在每月该日（1-28）重置；闩锁必须撑到重置日才自动放行，
     # 否则会每天放行一次、反复重试到再次耗尽。
-    # 默认 9：2026-10-28 从 credit-usage 接口读到的真实账期是
-    # 2026-10-09 ~ 2026-11-09（每月 9 号重置）。套餐/账号变更后在
-    # backend/.env 里改 FIRECRAWL_QUOTA_RESET_DAY，或跑
-    # tools/check_firecrawl_quota.py 对账（会打印真实账期）。
-    firecrawl_quota_reset_day: int = 9
+    # 默认 22：2026-10-28 当天从 credit-usage 接口两次读到的账期分别是
+    # 10-09~11-09（9 号重置，remaining=-989）和 10-22~11-22（22 号重置，
+    # remaining=0）—— 账号在当天重置过周期（疑似购买额度），22 号 20:45 UTC
+    # 换算 UTC+8 正是 23 号凌晨。这个日子会随续费/购买变动，拿不准就跑
+    # tools/check_firecrawl_quota.py 看真实账期，再改 backend/.env。
+    firecrawl_quota_reset_day: int = 22
+    # Firecrawl 代理/备用通道: 主额度 (月度配额) 耗尽时, 经这里 + 备用 key
+    # 抓情报, 不影响主 key 的状态记账。三个都留空 = 不启用, 保持原来的快速
+    # 失败行为; 任一非空即启用代理通道, 未填的项沿用主配置。
+    #   firecrawl_proxy        HTTP 代理, 形如 http://username:password@ip:port
+    #                          (SDK 的 requests 调用不接受 proxies 参数, 代理
+    #                           路径改走自带适配器直连 REST 端点)
+    #   firecrawl_proxy_base_url  代理要访问的 firecrawl 端点 (留空=沿用主)
+    #   firecrawl_proxy_api_key   备用 API key (留空=沿用主 key)
+    firecrawl_proxy: str = ""
+    firecrawl_proxy_base_url: str = ""
+    firecrawl_proxy_api_key: str = ""
+    # 备用账号的重置日 (与主账号分开配: 实测主账号 11-22、备用账号 11-09,
+    # 两个账期不同, 共用一个日子会让备用通道白等或早放行)。
+    firecrawl_proxy_quota_reset_day: int = 9
 
     # ── 情报整理 / 主预测 / 备用预测：经 codex CLI 调用的第三方大模型 ──
     # 不再直接 HTTP 调 /chat/completions；这三个字段的用途变为：

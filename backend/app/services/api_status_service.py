@@ -13,7 +13,8 @@
   从 Windows 跑脚本时, 不会因为"看似跨天但 UTC 还没跨"而提前放行, 也不会
   在 UTC 已经跨天后还把请求拦着。
 * **Firecrawl 按月配额**: 托管套餐每月固定调用次数 (当前账号 1000 次/月,
-  每月 9 号重置 — 以 credit-usage 接口的账期为准, 可用
+  每月 22 号重置 (2026-10-28 实测, 会随续费变动) — 以 credit-usage 接口的
+  账期为准, 可用
   settings.firecrawl_quota_reset_day 覆盖), 不是按天。因此 firecrawl 的自动
   复位按"是否已到过当月
   重置日"判断, 撑不到重置日就一直闩锁 — 否则每天放行一次只会反复重试到
@@ -27,6 +28,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import time
 
 from loguru import logger
 from sqlalchemy import text
@@ -34,7 +36,11 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.api_status import PROVIDER_API_FOOTBALL, PROVIDER_FIRECRAWL
+from app.models.api_status import (
+    PROVIDER_API_FOOTBALL,
+    PROVIDER_FIRECRAWL,
+    PROVIDER_FIRECRAWL_PROXY,
+)
 
 
 # daily 复位基于 UTC 自然日 — 与 API-Football 实际重置节奏保持一致,
@@ -46,10 +52,19 @@ def _utc_today():
 
 # 进程内缓存: provider -> "True=已耗尽 / False=未耗尽". 默认按"未耗尽"处理。
 _cache: dict[str, bool] = {}
+# 缓存写入时刻 (monotonic), 用于过期复查。
+_cache_at: dict[str, float] = {}
+# 缓存有效期(秒)。进程内缓存只是热路径优化, 不是真理: 过期后重新读一次 DB,
+# 于是"别的进程标记耗尽"和"跨月重置"都能在 TTL 内被本进程看到。缓存 False
+# 时尤其关键 — 长驻进程(调度器)若在额度耗尽前读过一次 False 并永久缓存,
+# 之后一整天都会继续冲击已耗尽的数据源。True 同样要过期, 否则跨月重置后本
+# 进程仍会一直闩锁到重启。api-football 10 次/分钟的热路径下, 5 分钟一次 DB
+# 读可以忽略。
+_CACHE_TTL_SECONDS = 300.0
 
 # ── 各 provider 的额度重置节奏 ─────────────────────────────────
 # 自动复位不能一律"跨天放行": api-football 免费额度按 UTC 自然日重置,
-# 而 firecrawl 托管套餐是月度配额 (当前账号每月 1000 次, 每月 9 号重置) —
+# 而 firecrawl 托管套餐是月度配额 (当前账号每月 1000 次, 每月 22 号重置) —
 # 按月放行意味着"标记耗尽以来是否已经到过一个重置日", 撑不到重置日就一直
 # 闩锁, 避免每天放行一次、反复重试到再次耗尽。
 _RESET_CADENCE_DAILY = "daily"
@@ -57,7 +72,16 @@ _RESET_CADENCE_MONTHLY = "monthly"
 _RESET_CADENCE: dict[str, str] = {
     PROVIDER_API_FOOTBALL: _RESET_CADENCE_DAILY,
     PROVIDER_FIRECRAWL: _RESET_CADENCE_MONTHLY,
+    # 备用账号同样是月度配额, 但重置日可能与主账号不同 (见 _reset_day_for)。
+    PROVIDER_FIRECRAWL_PROXY: _RESET_CADENCE_MONTHLY,
 }
+
+
+def _reset_day_for(provider: str) -> int:
+    """该 provider 的月度重置日: 主/备用账号各配各的 (账期可能不同)。"""
+    if provider == PROVIDER_FIRECRAWL_PROXY:
+        return settings.firecrawl_proxy_quota_reset_day
+    return settings.firecrawl_quota_reset_day
 
 
 def _last_monthly_reset_boundary(today, reset_day: int):
@@ -85,7 +109,7 @@ def _quota_reset_since(provider: str, exhausted_date, today) -> bool:
     if exhausted_date is None:
         return False
     if _RESET_CADENCE.get(provider, _RESET_CADENCE_DAILY) == _RESET_CADENCE_MONTHLY:
-        boundary = _last_monthly_reset_boundary(today, settings.firecrawl_quota_reset_day)
+        boundary = _last_monthly_reset_boundary(today, _reset_day_for(provider))
         return exhausted_date < boundary
     return exhausted_date < today
 
@@ -95,6 +119,7 @@ _PROVIDER_ALIASES: dict[str, str] = {
     PROVIDER_API_FOOTBALL: PROVIDER_API_FOOTBALL,
     "api_football": PROVIDER_API_FOOTBALL,
     PROVIDER_FIRECRAWL: PROVIDER_FIRECRAWL,
+    PROVIDER_FIRECRAWL_PROXY: PROVIDER_FIRECRAWL_PROXY,
 }
 
 # 错误信息最大长度, 防止响应体很大时把表撑爆.
@@ -177,7 +202,7 @@ def _load_from_db(provider: str) -> bool | None:
         today = _utc_today()
 
         # 自动复位: 按 provider 的重置节奏判断"标记耗尽以来额度是否已重置"。
-        # api-football 跨 UTC 天即放行; firecrawl 要撑到每月重置日 (默认 9 号)。
+        # api-football 跨 UTC 天即放行; firecrawl 要撑到每月重置日 (默认 22 号)。
         if exhausted and _quota_reset_since(provider, exhausted_date, today):
             logger.info(
                 f"[{provider}] 额度状态自动复位: exhausted_date={exhausted_date} "
@@ -219,7 +244,7 @@ def is_quota_exhausted(provider: str = PROVIDER_API_FOOTBALL) -> bool:
     """返回该 provider 额度是否已耗尽 (api-football 按 UTC 日, firecrawl 按月)。
 
     读路径:
-    1. 命中进程内缓存 -> 直接返回, 0 次 DB 访问 (热路径)。
+    1. 命中进程内缓存且未过期 -> 直接返回, 0 次 DB 访问 (热路径)。
     2. 缓存失效 (进程刚启动 / 被 ``reset_provider`` 显式清掉) -> DB 查一次
        回填到缓存; 同时把 ``last_check_at`` 刷到 DB。
     3. DB 不可用时, 退化为"按现有缓存默认 False", 不让 quota 状态把热路径拖崩。
@@ -228,7 +253,7 @@ def is_quota_exhausted(provider: str = PROVIDER_API_FOOTBALL) -> bool:
 
     # 进程内缓存命中——这是热路径, 每条 API 请求都会走这里.
     cached = _cache.get(provider)
-    if cached is not None:
+    if cached is not None and not _cache_expired(provider):
         return cached
 
     loaded = _load_from_db(provider)
@@ -238,10 +263,17 @@ def is_quota_exhausted(provider: str = PROVIDER_API_FOOTBALL) -> bool:
         # 自然; 上游即便拿到 429 也有短时限流分支兜底。万一是真耗尽, 下次
         # 响应体里能再次识别并标记。
         _cache[provider] = False
+        _cache_at[provider] = time.monotonic()
         return False
 
     _cache[provider] = loaded
+    _cache_at[provider] = time.monotonic()
     return loaded
+
+
+def _cache_expired(provider: str) -> bool:
+    """缓存是否已过期 (见 _CACHE_TTL_SECONDS 的说明)。"""
+    return time.monotonic() - _cache_at.get(provider, 0.0) >= _CACHE_TTL_SECONDS
 
 
 @_safe_db
@@ -275,7 +307,10 @@ def mark_quota_exhausted(
     """
     provider = _normalize(provider)
     reason = (reason or "")[:_LAST_ERROR_MAX_LEN]
+    # 缓存与时间戳必须同时写: 只写值不写时刻会被 TTL 判为已过期, 下一次读取
+    # 又去查 DB (DB 抖动时反而把刚标记的状态冲掉)。
     _cache[provider] = True
+    _cache_at[provider] = time.monotonic()
 
     now = datetime.now()
     if _persist_exhausted(provider, reason, now, _utc_today()) is True:
@@ -360,5 +395,9 @@ def get_status(provider: str = PROVIDER_API_FOOTBALL) -> dict:
 
 
 def clear_cache_for_tests() -> None:
-    """仅供测试使用: 清空进程内缓存, 让 ``is_quota_exhausted`` 走 DB. """
+    """仅供测试使用: 清空进程内缓存与其时间戳, 让后续读取走 DB. """
     _cache.clear()
+    _cache_at.clear()
+
+
+

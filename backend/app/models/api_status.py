@@ -10,8 +10,9 @@
   重启后也立刻能识别"今天额度是新的一天"，且不会因为 server 本地时区漂移
   在 UTC 跨日前提早放行。
 * Firecrawl 的额度语义与 API-Football 不同：托管套餐是月度配额
-  （当前账号每月 1000 次调用，每月 9 号重置 — 以 credit-usage 账期为准，
-  可用 settings.firecrawl_quota_reset_day 覆盖），不是 UTC 自然日。因此
+  （当前账号每月 1000 次调用，每月 22 号重置 — 2026-10-28 实测，会随续费
+  变动；以 credit-usage 账期为准，可用 settings.firecrawl_quota_reset_day
+  覆盖），不是 UTC 自然日。因此
   quota_exhausted 的自动复位按 provider 的重置节奏判断（见
   api_status_service._quota_reset_since）：API-Football 跨 UTC 天放行，
   Firecrawl 要撑到当月重置日才放行，否则每天放行一次只会反复重试到再次
@@ -27,6 +28,10 @@ from app.db.base import Base
 PROVIDER_API_FOOTBALL = "api-football"
 # 外部比赛情报抓取 (Firecrawl search/scrape) 的额度状态主键。
 PROVIDER_FIRECRAWL = "firecrawl"
+# 代理通道 (备用 key / 代理端点) 的额度状态主键。与主 key 分两行记: 两个账号的
+# 额度与重置日互不相干, 代理通道耗尽也要单独闩锁, 否则每场预测都会再打一次
+# 402、反复写库。
+PROVIDER_FIRECRAWL_PROXY = "firecrawl-proxy"
 
 
 class ApiStatus(Base):

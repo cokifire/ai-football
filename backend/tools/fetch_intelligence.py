@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
+import requests
 from loguru import logger
 
 
@@ -42,7 +43,8 @@ FINAL_INTELLIGENCE_MAX_CHARS = 1800
 # mark_quota_exhausted("firecrawl", reason) 写 api_status 表 (跨进程可见),
 # 之后的情报抓取直接快速失败, 不再反覆冲击一个已经没有额度的数据源。
 # 注意 Firecrawl 是月度配额 (每月 1000 次, 重置日以 credit-usage 账期为准,
-# 当前账号为每月 9 号, 见 settings.firecrawl_quota_reset_day), 因此闩锁的
+# 当前账号 2026-10-28 实测为 22 号, 见 settings.firecrawl_quota_reset_day),
+# 因此闩锁的
 # 自动复位按"是否已到过当月重置日"判断, 不是跨天放行。
 #
 # 判定口径刻意照搬 api-football 的 _is_daily_quota_exhausted: 单看状态码
@@ -70,14 +72,20 @@ FIRECRAWL_QUOTA_MARKERS = (
 
 # 写入 api_status 的诊断信息里出现 api_key 时的掩码。
 _REDACTED_KEY = "***"
+# api_status 里 firecrawl 主/备用通道的 provider 主键: 主额度耗尽后走备用通道,
+# 备用通道也耗尽时两个闩锁都在, 才彻底停手 (不再每场都打一次 402)。
+PROVIDER_FIRECRAWL = "firecrawl"
+PROVIDER_FIRECRAWL_PROXY = "firecrawl-proxy"
+# URL 里内联的账号密码 (http://user:pass@ip:port 形状, 代理配置就长这样)。
+_URL_CREDENTIALS = re.compile(r"(?<=://)[^/@\s]+:[^/@\s]+@")
 
 
-def _redact_key(text: str, api_key: str) -> str:
-    """把文本里出现的 api_key 抹掉, 防止凭证写进 api_status.last_error。"""
+def _redact_secrets(text: str, api_key: str = "") -> str:
+    """抹掉文本里的 api_key 与 URL 内联凭证, 防止写进 api_status.last_error。"""
     key = (api_key or "").strip()
     if key and key in text:
-        return text.replace(key, _REDACTED_KEY)
-    return text
+        text = text.replace(key, _REDACTED_KEY)
+    return _URL_CREDENTIALS.sub(f"{_REDACTED_KEY}:{_REDACTED_KEY}@", text)
 
 
 def _exception_status_code(exc: BaseException) -> int | None:
@@ -119,12 +127,21 @@ def is_firecrawl_quota_exhausted(exc: BaseException) -> bool:
 
 def _firecrawl_quota_reason(action: str, exc: BaseException, api_key: str) -> str:
     """生成写入 api_status 的脱敏诊断信息 (截断 + 抹 api_key)。"""
-    message = _redact_key(" ".join(str(exc).split())[:500], api_key)
+    message = _redact_secrets(" ".join(str(exc).split())[:500], api_key)
     return f"firecrawl {action} status={_exception_status_code(exc)}; {message}"
 
 
-def _note_firecrawl_quota(action: str, exc: BaseException, api_key: str) -> bool:
-    """识别额度耗尽并写入 api_status (provider=firecrawl); 返回是否已标记。
+def _note_firecrawl_quota(
+    action: str,
+    exc: BaseException,
+    api_key: str,
+    provider: str = PROVIDER_FIRECRAWL,
+) -> bool:
+    """识别额度耗尽并写入 api_status (provider 默认 firecrawl); 返回是否已标记。
+
+    代理通道传 provider=firecrawl-proxy: 主/备用账号的额度与重置日互不相干,
+    分两行记才能"主耗尽走备用 / 备用也耗尽就完全停手", 且各自的月度重置日
+    独立生效。
 
     与 api-football 的日额度闩锁同一套 service: 先更进程缓存再 best-effort
     写 DB, 同进程和其它进程后续的情报抓取都会快速失败。DB 不可用或本工具被
@@ -137,23 +154,233 @@ def _note_firecrawl_quota(action: str, exc: BaseException, api_key: str) -> bool
     try:
         # 懒导入: 与 Firecrawl SDK / codex 同理, 环境缺失不得阻断预测服务启动,
         # 也让本文件被直接运行时不必先挂上 app 包。
-        from app.services.api_status_service import PROVIDER_FIRECRAWL, mark_quota_exhausted
+        from app.services.api_status_service import mark_quota_exhausted
 
-        mark_quota_exhausted(PROVIDER_FIRECRAWL, reason)
+        mark_quota_exhausted(provider, reason)
     except Exception as import_exc:  # noqa: BLE001 - 记账失败不得炸掉抓取流程
         logger.warning("Firecrawl 额度耗尽标记失败 (api_status 不可用): {}", import_exc)
-    logger.error("Firecrawl 额度已耗尽, 已记入 api_status (provider=firecrawl): {}", reason)
+    logger.error("Firecrawl 额度已耗尽, 已记入 api_status (provider={}): {}", provider, reason)
     return True
 
 
-def _firecrawl_quota_latched() -> bool:
-    """api_status 里 firecrawl 额度是否已置为耗尽 (跨进程共享, 月度重置日自动放行)。"""
+def _firecrawl_quota_latched(provider: str = PROVIDER_FIRECRAWL) -> bool:
+    """api_status 里该 provider 额度是否已置为耗尽 (跨进程共享, 月度重置日自动放行)。"""
     try:
-        from app.services.api_status_service import PROVIDER_FIRECRAWL, is_quota_exhausted
+        from app.services.api_status_service import is_quota_exhausted
 
-        return bool(is_quota_exhausted(PROVIDER_FIRECRAWL))
+        return bool(is_quota_exhausted(provider))
     except Exception:  # noqa: BLE001 - 读闩锁失败按"未耗尽"放行, 由上游响应兜底
         return False
+
+class _FirecrawlQuotaExceeded(Exception):
+    """主 Firecrawl 额度已耗尽 (已记账), 需要交给外层决定是否切代理端点。"""
+
+
+def _firecrawl_quota_exhausted_markdown() -> str:
+    """额度耗尽时返回给调用方的占位 Markdown。
+
+    必须带 "获取失败，忽略该数据源" 标记 —— predict.py 靠这个串把 club_news
+    来源记成 UNAVAILABLE, 不标记会被当成"有情报"写进来源账本。
+    """
+    return (
+        "# 外部比赛情报\n\n"
+        "获取失败，忽略该数据源：Firecrawl 额度已耗尽，跳过抓取"
+        "（详见 api_status 表 provider=firecrawl，月度配额重置后自动放行）。"
+    )
+
+
+def _firecrawl_proxy_config() -> dict | None:
+    """读代理通道配置; 三项全空返回 None 表示不启用。
+
+    返回 {"http_proxy", "base_url", "api_key"}: 后两项为空串表示沿用主配置
+    (代理+备用 key、代理+主 key、备用 key 不走代理等组合都支持)。配置来自
+    backend/.env: FIRECRAWL_PROXY / FIRECRAWL_PROXY_BASE_URL /
+    FIRECRAWL_PROXY_API_KEY。
+    """
+    try:
+        from app.core.config import settings
+
+        config = {
+            "http_proxy": (settings.firecrawl_proxy or "").strip(),
+            "base_url": (settings.firecrawl_proxy_base_url or "").strip().rstrip("/"),
+            "api_key": (settings.firecrawl_proxy_api_key or "").strip(),
+        }
+        if not any(config.values()):
+            return None
+        return config
+    except Exception:  # noqa: BLE001 - 读不到配置按"未启用"处理
+        return None
+
+def _normalize_proxy_url(proxy_url: str) -> str:
+    """把代理 URL 里的账号密码做百分号编码, 兼容含 # + & ( ! ~ 等特殊字符的凭证。
+
+    RFC 3986 规定 userinfo 里不允许出现 # (它是 fragment 起始符): requests 解析
+    http://nuD#Z+0-a(&8Y0X:pw@ip:port 时会把 netloc 截断成 "nuD", 于是把 "nud"
+    当目标主机去解析 DNS ( ProxyError -> NameResolutionError('nud') )。因此不能
+    指望 urlsplit 之类的标准解析 (它们同样按 RFC 截断), 这里    按 "scheme://
+    userinfo@hostport" 手工切分: 以最后一个 @ 分界 (密码允许含 @), 用户名取
+    第一个 : 之前 (密码允许含 :), 两侧先 unquote 再 quote — 对"已经写了编码
+    凭证"的配置是幂等的, 不会二次编码。
+    """
+    text = (proxy_url or "").strip()
+    if "@" not in text or "://" not in text:
+        return text
+    scheme, _, rest = text.partition("://")
+    userinfo, sep, hostport = rest.rpartition("@")
+    if not sep or ":" not in userinfo:
+        # 没有账号密码 (或只有用户名): 原样返回, 无需编码
+        return text
+    user, _, password = userinfo.partition(":")
+    encoded_user = quote(unquote(user), safe="")
+    encoded_password = quote(unquote(password), safe="")
+    return f"{scheme}://{encoded_user}:{encoded_password}@{hostport}"
+
+
+def _mask_proxy_url(proxy_url: str) -> str:
+    """把代理 URL 里的账号密码抹成 ***, 防止凭证进日志 / api_status.last_error。"""
+    text = (proxy_url or "").strip()
+    if not text or "@" not in text:
+        return text
+    scheme, _, rest = text.partition("://")
+    if not _:
+        return text
+    userinfo, sep, host = rest.rpartition("@")
+    if not sep:
+        return text
+    user = userinfo.split(":", 1)[0]
+    return f"{scheme}://{user}:***@{host}" if user else f"{scheme}://***:***@{host}"
+
+
+class _ProxiedFirecrawlClient:
+    """Duck-type 兼容 firecrawl v1 SDK 的代理客户端 (search / scrape_url)。
+
+    为什么不用 SDK: SDK 的 search/scrape 走 requests.post 但不接受 proxies
+    参数, 只能靠 HTTP_PROXY/HTTPS_PROXY 环境变量生效 — 改进程环境变量会
+    波及并发线程里其它请求 (httpx/requests 都读 env), 不能这么干。于是代理
+    路径自己发请求, 接口形状与 SDK 保持一致, 采集流程无需区分两端点。
+
+    请求形状照抄 SDK (v1): POST {base}/v1/search 与 /v1/scrape,
+    Authorization: Bearer <key>, 错误语义一致 — 非 2xx 抛带 .response 的
+    HTTPError (额度识别要读状态码), 200 但 body 带 error 抛普通 Exception。
+    """
+
+    def __init__(self, *, api_key: str, base_url: str, http_proxy: str):
+        self.api_key = (api_key or "").strip()
+        self.base_url = (base_url or "").strip().rstrip("/")
+        # 凭证先编码再交给 requests: 含 # 等特殊字符时原样会被解析成 fragment,
+        # 主机名整个错掉 (见 _normalize_proxy_url)。
+        self.http_proxy = _normalize_proxy_url(http_proxy)
+        self._proxies = (
+            {"http": self.http_proxy, "https": self.http_proxy} if self.http_proxy else None
+        )
+
+    def _headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _post(self, path: str, payload: dict, timeout: float, action: str):
+        response = requests.post(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            json=payload,
+            timeout=timeout,
+            proxies=self._proxies,
+        )
+        if response.status_code >= 400:
+            # 与 SDK 的 _handle_error 对齐: 保留 response 供状态码识别 (402 等),
+            # 消息里带代理信息时必须是脱敏后的。
+            body = " ".join((response.text or "").split())[:300]
+            message = _mask_proxy_url(
+                f"Failed to {action}. Error: status={response.status_code}, body={body}"
+            )
+            raise requests.exceptions.HTTPError(message, response=response)
+        try:
+            payload_out = response.json()
+        except ValueError as exc:
+            raise Exception(f"Failed to parse Firecrawl response as JSON: {exc}") from exc
+        if isinstance(payload_out, dict) and payload_out.get("error"):
+            raise Exception(f"Failed to {action}. Error: {payload_out['error']}")
+        return payload_out
+
+    @staticmethod
+    def _scrape_options_dict(scrape_options: Any) -> dict | None:
+        """把 V1ScrapeOptions (pydantic / shim / dict) 序列化成 JSON body。"""
+        if scrape_options is None:
+            return None
+        if isinstance(scrape_options, dict):
+            return scrape_options
+        # 优先 model_dump (pydantic v2); dict 是 v1/兼容路径, 会触发弃用告警。
+        for method in ("model_dump", "dict"):
+            fn = getattr(scrape_options, method, None)
+            if callable(fn):
+                try:
+                    return fn(by_alias=True, exclude_none=True)
+                except TypeError:
+                    return fn()
+        return None
+
+    def credit_usage(self) -> Any:
+        """GET /v1/team/credit-usage (与 SDK 的 get_credit_usage 同形状)。"""
+        response = requests.get(
+            f"{self.base_url}/v1/team/credit-usage",
+            headers=self._headers(),
+            timeout=30.0,
+            proxies=self._proxies,
+        )
+        if response.status_code >= 400:
+            body = " ".join((response.text or "").split())[:300]
+            raise requests.exceptions.HTTPError(
+                _mask_proxy_url(f"Failed to get credit usage. Error: status={response.status_code}, body={body}"),
+                response=response,
+            )
+        return response.json()
+
+    def search(self, *, query: str, limit: int = 5, scrape_options: Any = None, **_) -> Any:
+        payload: dict[str, Any] = {"query": query, "limit": limit, "timeout": 30000}
+        options = self._scrape_options_dict(scrape_options)
+        if options:
+            payload["scrapeOptions"] = options
+        data = self._post("/v1/search", payload, timeout=70.0, action="search")
+        # 与 SDK 一致: 返回带 .data 的形状, _result_items 认 dict 也认 pydantic。
+        return {"success": True, "data": (data or {}).get("data") or []}
+
+    def scrape_url(
+        self,
+        url: str,
+        *,
+        formats: list[str] | None = None,
+        only_main_content: bool | None = None,
+        remove_base64_images: bool | None = None,
+        block_ads: bool | None = None,
+        **_,
+    ) -> Any:
+        payload: dict[str, Any] = {"url": url}
+        if formats is not None:
+            payload["formats"] = formats
+        if only_main_content is not None:
+            payload["onlyMainContent"] = only_main_content
+        if remove_base64_images is not None:
+            payload["removeBase64Images"] = remove_base64_images
+        if block_ads is not None:
+            payload["blockAds"] = block_ads
+        data = self._post("/v1/scrape", payload, timeout=95.0, action="scrape URL")
+        # SDK 返回的是内层 data; _scrape_article_pages 会再解一层, 两种都认。
+        return (data or {}).get("data") or {}
+
+
+
+def _raise_if_quota(
+    action: str,
+    exc: BaseException,
+    api_key: str,
+    provider: str = PROVIDER_FIRECRAWL,
+) -> None:
+    """额度耗尽 -> 记账并抛 _FirecrawlQuotaExceeded, 让外层 wrapper 切代理通道。"""
+    if _note_firecrawl_quota(action, exc, api_key, provider):
+        raise _FirecrawlQuotaExceeded(str(exc)) from exc
+
 
 def _credit_usage_fields(response: Any) -> dict:
     """从 SDK 响应里取 credit-usage 字段, 兼容 pydantic 对象与裸 dict 两种形状。"""
@@ -179,6 +406,8 @@ def refresh_firecrawl_quota_status(
     *,
     api_key: str,
     firecrawl_base_url: str = "http://127.0.0.1:3002",
+    http_proxy: str = "",
+    provider: str = PROVIDER_FIRECRAWL,
 ) -> dict:
     """主动查询 Firecrawl 剩余点数, 并把 api_status 表同步成真实状态。
 
@@ -192,6 +421,9 @@ def refresh_firecrawl_quota_status(
       (额度恢复/套餐升级后不必等每月重置日);
     - 接口不可用 (自托管实例没有该端点 / 网络故障) -> 不动闩锁, 返回 unknown,
       被动识别继续兜底, 已有的闩锁状态保持原样。
+
+    主/备用账号分开查: 主账号传默认参数, 备用账号传 http_proxy + 备用 key +
+    provider=firecrawl-proxy — 两个账号额度与重置日互不相干, 分别记账。
 
     返回 {"status": "exhausted"|"available"|"unknown", "remaining_credits":
     int|None, "plan_credits": int|None, "billing_period_start"/"_end",
@@ -208,15 +440,21 @@ def refresh_firecrawl_quota_status(
     }
 
     try:
-        try:
-            from firecrawl import V1FirecrawlApp as FirecrawlClient
-        except ImportError:
-            from firecrawl import FirecrawlApp as FirecrawlClient
+        if http_proxy:
+            app = _ProxiedFirecrawlClient(
+                api_key=api_key, base_url=firecrawl_base_url, http_proxy=http_proxy,
+            )
+            fields = _credit_usage_fields(app.credit_usage())
+        else:
+            try:
+                from firecrawl import V1FirecrawlApp as FirecrawlClient
+            except ImportError:
+                from firecrawl import FirecrawlApp as FirecrawlClient
 
-        app = FirecrawlClient(api_key=api_key or None, api_url=firecrawl_base_url)
-        fields = _credit_usage_fields(app.get_credit_usage())
+            app = FirecrawlClient(api_key=api_key or None, api_url=firecrawl_base_url)
+            fields = _credit_usage_fields(app.get_credit_usage())
     except Exception as exc:  # noqa: BLE001 - 查询失败不得影响调用方, 闩锁保持原样
-        result["error"] = _redact_key(" ".join(str(exc).split())[:500], api_key)
+        result["error"] = _redact_secrets(" ".join(str(exc).split())[:500], api_key)
         logger.warning("Firecrawl 额度查询失败, 保持 api_status 原状: {}", result["error"])
         return result
 
@@ -246,9 +484,9 @@ def refresh_firecrawl_quota_status(
     if remaining <= 0:
         reason = f"credit-usage: remaining={remaining}/{plan}, {period}"
         try:
-            from app.services.api_status_service import PROVIDER_FIRECRAWL, mark_quota_exhausted
+            from app.services.api_status_service import mark_quota_exhausted
 
-            mark_quota_exhausted(PROVIDER_FIRECRAWL, reason)
+            mark_quota_exhausted(provider, reason)
         except Exception as import_exc:  # noqa: BLE001 - 记账失败只记日志
             logger.warning("Firecrawl 额度耗尽标记失败 (api_status 不可用): {}", import_exc)
         result["status"] = "exhausted"
@@ -256,9 +494,9 @@ def refresh_firecrawl_quota_status(
         return result
 
     try:
-        from app.services.api_status_service import PROVIDER_FIRECRAWL, reset_provider
+        from app.services.api_status_service import reset_provider
 
-        reset_provider(PROVIDER_FIRECRAWL)
+        reset_provider(provider)
     except Exception as import_exc:  # noqa: BLE001 - 复位失败只记日志
         logger.warning("Firecrawl 额度复位失败 (api_status 不可用): {}", import_exc)
     result["status"] = "available"
@@ -499,6 +737,7 @@ def _scrape_article_pages(
     scrape_options: Any,
     expected_year: int | str,
     api_key: str = "",
+    quota_provider: str = PROVIDER_FIRECRAWL,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Replace search snippets with Markdown scraped from article detail URLs."""
     scraped = []
@@ -536,10 +775,10 @@ def _scrape_article_pages(
                 continue
             scraped.append((source, {**item, "markdown": markdown}))
         except Exception as exc:
-            # 额度耗尽时记账并向上抛, 中止整个抓取流程 — 与 api-football
-            # 撞到日额度后"本次任务剩余请求全部快速失败"同一语义。
-            if _note_firecrawl_quota("scrape", exc, api_key):
-                raise
+            # 额度耗尽时记账并抛信号异常, 中止整个抓取流程 — 与 api-football
+            # 撞到日额度后"本次任务剩余请求全部快速失败"同一语义; 外层据此
+            # 决定是否切代理端点。
+            _raise_if_quota("scrape", exc, api_key, quota_provider)
             logger.warning("Firecrawl 详情页抓取失败: url={}, error={}", url, exc)
     return scraped
 
@@ -797,6 +1036,134 @@ def scrape_match_analysis(
 ) -> str:
     """Search and scrape match intelligence, returning Markdown text.
 
+    主 Firecrawl 额度 (月度配额) 耗尽时, 若 backend/.env 里配了代理端点
+    (FIRECRAWL_PROXY_BASE_URL / FIRECRAWL_PROXY_API_KEY), 自动改经代理 +
+    备用 key 重抓; 没配代理则返回占位 Markdown, 不阻断预测流程。
+
+    其余行为 (收集策略、审核、失败降级) 见 _collect_match_intelligence。
+    """
+    proxy = _firecrawl_proxy_config()
+    latched = _firecrawl_quota_latched()
+
+    if proxy is not None:
+        effective_base = (proxy["base_url"] or firecrawl_base_url).rstrip("/")
+        effective_key = proxy["api_key"] or api_key
+        if effective_base == firecrawl_base_url.rstrip("/") and effective_key == api_key:
+            # 只换了网络出口、端点和 key 都没变: Firecrawl 配额是账号级的,
+            # 换个出口 IP 救不了耗尽的账号。继续走只会每次撞 402、反复写
+            # api_status (updated_at 一直动, 看起来像"一直在调旧 api")。
+            logger.warning(
+                "代理通道未改端点也未换备用 key (只换了网络出口), 对账号级额度耗尽无效 — "
+                "按未配置处理。请在 backend/.env 补上 FIRECRAWL_PROXY_API_KEY "
+                "或 FIRECRAWL_PROXY_BASE_URL"
+            )
+            proxy = None
+        elif not proxy["api_key"] and proxy["base_url"]:
+            logger.info(
+                "代理通道未配置备用 key, 沿用主 key 访问备用端点: {}",
+                proxy["base_url"],
+            )
+
+    # 代理通道自己也已耗尽 (独立闩锁): 主备都没额度, 彻底停手。没有这个判断,
+    # 每场预测都会经代理再打一次 402 并重新写库 (api_status.updated_at 一直动)。
+    proxy_latched = _firecrawl_quota_latched(PROVIDER_FIRECRAWL_PROXY) if proxy else False
+
+    # 闩锁已置位 = 主额度耗尽。有可用代理就走代理, 不再探主端点; 没代理
+    # (或代理也耗尽) 才快速失败。
+    if latched and (proxy is None or proxy_latched):
+        logger.info(
+            "Firecrawl 额度已耗尽: 主 key{} — 跳过本次情报获取",
+            " 与代理通道都已耗尽" if proxy_latched else " 已耗尽且无可用代理",
+        )
+        return _firecrawl_quota_exhausted_markdown()
+
+    try:
+        if latched:
+            logger.info(
+                "主 Firecrawl 额度已耗尽 (api_status 闩锁), 本次直接走代理通道: proxy={}, base_url={}",
+                _mask_proxy_url(proxy["http_proxy"]) or "(不走代理)",
+                proxy["base_url"] or "(沿用主端点)",
+            )
+            return _collect_match_intelligence(
+                home_team=home_team,
+                away_team=away_team,
+                competition=competition,
+                year=year,
+                api_key=proxy["api_key"] or api_key,
+                firecrawl_base_url=proxy["base_url"] or firecrawl_base_url,
+                http_proxy=proxy["http_proxy"],
+                intelligence_llm_api_key=intelligence_llm_api_key,
+                intelligence_llm_base_url=intelligence_llm_base_url,
+                intelligence_llm_model=intelligence_llm_model,
+                site=site,
+                limit=limit,
+                ignore_quota_latch=True,
+                quota_provider=PROVIDER_FIRECRAWL_PROXY,
+            )
+        return _collect_match_intelligence(
+            home_team=home_team,
+            away_team=away_team,
+            competition=competition,
+            year=year,
+            api_key=api_key,
+            firecrawl_base_url=firecrawl_base_url,
+            intelligence_llm_api_key=intelligence_llm_api_key,
+            intelligence_llm_base_url=intelligence_llm_base_url,
+            intelligence_llm_model=intelligence_llm_model,
+            site=site,
+            limit=limit,
+        )
+    except _FirecrawlQuotaExceeded:
+        # 主端点抓取中途撞到额度耗尽 (已记账)。切代理通道重试一次; 代理也耗尽
+        # 或没配代理 -> 占位 Markdown, 不递归。
+        if latched or proxy is None:
+            return _firecrawl_quota_exhausted_markdown()
+        logger.warning(
+            "主 Firecrawl 额度已耗尽, 切换代理通道重试: proxy={}, base_url={}",
+            _mask_proxy_url(proxy["http_proxy"]) or "(不走代理)",
+            proxy["base_url"] or "(沿用主端点)",
+        )
+        try:
+            return _collect_match_intelligence(
+                home_team=home_team,
+                away_team=away_team,
+                competition=competition,
+                year=year,
+                api_key=proxy["api_key"] or api_key,
+                firecrawl_base_url=proxy["base_url"] or firecrawl_base_url,
+                http_proxy=proxy["http_proxy"],
+                intelligence_llm_api_key=intelligence_llm_api_key,
+                intelligence_llm_base_url=intelligence_llm_base_url,
+                intelligence_llm_model=intelligence_llm_model,
+                site=site,
+                limit=limit,
+                ignore_quota_latch=True,
+                quota_provider=PROVIDER_FIRECRAWL_PROXY,
+            )
+        except _FirecrawlQuotaExceeded:
+            logger.error("代理通道 Firecrawl 额度也已耗尽, 放弃本次情报获取")
+            return _firecrawl_quota_exhausted_markdown()
+
+
+def _collect_match_intelligence(
+    *,
+    home_team: str,
+    away_team: str,
+    competition: str,
+    year: int | str,
+    api_key: str,
+    firecrawl_base_url: str = "http://127.0.0.1:3002",
+    intelligence_llm_api_key: str = "",
+    intelligence_llm_base_url: str = "",
+    intelligence_llm_model: str = "",
+    site: str | list[str] | tuple[str, ...] | None = None,
+    limit: int = 3,
+    ignore_quota_latch: bool = False,
+    http_proxy: str = "",
+    quota_provider: str = PROVIDER_FIRECRAWL,
+) -> str:
+    """Search and scrape match intelligence, returning Markdown text.
+
     Collection stops at the first article that passes review: the remaining
     sources and the unscoped fallback are then skipped, keeping the Firecrawl
     quota at roughly one search plus one scrape per fixture. A page rejected by
@@ -805,40 +1172,60 @@ def scrape_match_analysis(
 
     Failures are returned as a short Markdown status so callers can include it
     in a prompt without making external intelligence a hard prediction error.
+    额度耗尽不在此函数内降级 —— 抛 _FirecrawlQuotaExceeded 交给外层决定
+    是否切代理端点, 因此本函数体内不得出现通用的 "except Exception" 之外
+    的吞异常路径 (见函数末尾的重新抛出)。
     """
     firecrawl_base_url = (firecrawl_base_url or "http://127.0.0.1:3002").strip().rstrip("/")
 
     limit = max(1, min(limit, 3))
 
-    # 与 api-football 对齐的额度闩锁: 已标记耗尽时直接快速失败, 不再发起
-    # search/scrape 反覆冲击没有额度的数据源。Firecrawl 是月度配额 (每月
-    # 1000 次, 重置日见 settings.firecrawl_quota_reset_day), 闩锁会一直撑到
-    # 重置日, 不会每天放行白烧额度;
-    # 也可由控制面板的 api-status reset 接口手动清除。
-    if _firecrawl_quota_latched():
+    # 与 api-football 对齐的额度闩锁: 已标记耗尽时不再发起 search/scrape
+    # 反覆冲击没有额度的数据源。Firecrawl 是月度配额 (每月 1000 次, 重置日
+    # 见 settings.firecrawl_quota_reset_day), 闩锁会一直撑到重置日, 不会
+    # 每天放行白烧额度; 也可由控制面板的 api-status reset 接口手动清除。
+    # 走代理端点时跳过本检查 — 闩锁记录的是主 key 的额度, 与代理无关。
+    if not ignore_quota_latch and _firecrawl_quota_latched(quota_provider):
         logger.info("Firecrawl 额度已耗尽 (api_status 闩锁), 跳过本次情报获取")
-        return (
-            "# 外部比赛情报\n\n"
-            "获取失败，忽略该数据源：Firecrawl 额度已耗尽，跳过抓取"
-            "（详见 api_status 表 provider=firecrawl，月度配额重置后自动放行）。"
-        )
+        return _firecrawl_quota_exhausted_markdown()
 
     try:
-        # firecrawl 4.x exposes the web search API through V1FirecrawlApp;
-        # older releases exposed the same method on FirecrawlApp.
-        try:
-            from firecrawl import V1FirecrawlApp as FirecrawlClient
-        except ImportError:
-            from firecrawl import FirecrawlApp as FirecrawlClient
-        from firecrawl.v1.client import V1ScrapeOptions
+        # 代理通道走自带适配器 (SDK 的 requests 调用不接 proxies, 只能靠
+        # HTTP_PROXY 环境变量, 会污染并发线程); 非代理路径仍用 SDK。
+        if http_proxy:
+            app = _ProxiedFirecrawlClient(
+                api_key=api_key,
+                base_url=firecrawl_base_url,
+                http_proxy=http_proxy,
+            )
+        else:
+            # firecrawl 4.x exposes the web search API through V1FirecrawlApp;
+            # older releases exposed the same method on FirecrawlApp.
+            try:
+                from firecrawl import V1FirecrawlApp as FirecrawlClient
+            except ImportError:
+                from firecrawl import FirecrawlApp as FirecrawlClient
+            # Self-hosted Firecrawl is normally exposed on port 3002. The API
+            # key is optional for local deployments, while api_url makes sure
+            # the SDK never falls back to the hosted Firecrawl service.
+            app = FirecrawlClient(
+                api_key=api_key or None,
+                api_url=firecrawl_base_url,
+            )
 
-        # Self-hosted Firecrawl is normally exposed on port 3002. The API key
-        # is optional for local deployments, while api_url makes sure the SDK
-        # never falls back to the hosted Firecrawl service.
-        app = FirecrawlClient(
-            api_key=api_key or None,
-            api_url=firecrawl_base_url,
-        )
+        try:
+            from firecrawl.v1.client import V1ScrapeOptions
+        except ImportError:
+            # SDK 缺失时给代理通道一个最小 shim (dict 序列化形状与 pydantic 一致)。
+            class V1ScrapeOptions:  # type: ignore[no-redef]
+                def __init__(self, **kwargs):
+                    self._fields = kwargs
+
+                def dict(self, by_alias=True, exclude_none=True):
+                    return dict(self._fields)
+
+                def model_dump(self, **kwargs):
+                    return dict(self._fields)
         sites = [site] if isinstance(site, str) and site else list(site or INTELLIGENCE_SITES)
         sites = [item.strip().rstrip("/") for item in sites if item and item.strip()]
         if not sites:
@@ -911,9 +1298,8 @@ def scrape_match_analysis(
                         scrape_options=scrape_options,
                     )
                 except Exception as exc:
-                    # 额度耗尽时记账并向上抛, 不再试下一个 site/query。
-                    if _note_firecrawl_quota("search", exc, api_key):
-                        raise
+                    # 额度耗尽时记账并抛信号异常, 不再试下一个 site/query。
+                    _raise_if_quota("search", exc, api_key, quota_provider)
                     logger.warning("Firecrawl 搜索失败: site={}, error={}", source_site, exc)
                     continue
                 site_matches = _matching_items(
@@ -935,6 +1321,7 @@ def scrape_match_analysis(
                     scrape_options=scrape_options,
                     expected_year=year,
                     api_key=api_key,
+                    quota_provider=quota_provider,
                 )
                 # One approved article ends the search. A rejected page is
                 # recorded by _accept_article and the next source is tried.
@@ -967,8 +1354,7 @@ def scrape_match_analysis(
                         scrape_options=scrape_options,
                     )
                 except Exception as exc:
-                    if _note_firecrawl_quota("search", exc, api_key):
-                        raise
+                    _raise_if_quota("search", exc, api_key, quota_provider)
                     logger.warning("Firecrawl 全网兜底搜索失败: error={}", exc)
                     continue
                 candidates = _fallback_matching_items(
@@ -989,6 +1375,7 @@ def scrape_match_analysis(
                     scrape_options=scrape_options,
                     expected_year=year,
                     api_key=api_key,
+                    quota_provider=quota_provider,
                 ):
                     if _accept_article(article):
                         break
@@ -1017,10 +1404,13 @@ def scrape_match_analysis(
                 len(intelligence), len(final_intelligence),
             )
         return final_intelligence
+    except _FirecrawlQuotaExceeded:
+        # 额度耗尽不在此降级: 抛给外层 wrapper 决定是否切代理端点。
+        raise
     except Exception as exc:  # noqa: BLE001 - provider failure must not stop prediction
         logger.error("Firecrawl 情报获取初始化/汇总失败: {}", exc)
-        # 脱敏后再回给调用方: 异常文本理论上可能夹带请求头里的 key。
-        message = _redact_key(str(exc), api_key)
+        # 脱敏后再回给调用方: 异常文本理论上可能夹带请求头里的 key/代理凭证。
+        message = _redact_secrets(str(exc), api_key)
         return f"# 外部比赛情报\n\n获取失败，忽略该数据源：{type(exc).__name__}: {message}"
 
 
