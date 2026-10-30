@@ -113,14 +113,13 @@ def test_scrape_pages_raises_and_marks_on_quota(no_db):
     matches = [("web", {"url": "https://example.com/a", "title": "A vs B preview"})]
 
     with pytest.raises(fetch._FirecrawlQuotaExceeded) as excinfo:
-        fetch._scrape_article_pages(
-            _BoomApp(),
-            matches,
-            limit=1,
-            scrape_options=None,
-            expected_year=2026,
-            api_key="k",
-        )
+            fetch._scrape_article_pages(
+                _BoomApp(),
+                matches,
+                limit=1,
+                expected_year=2026,
+                api_key="k",
+            )
 
     # 原始异常挂在 __cause__ 上, 外层 wrapper 靠它判断"已记账, 可切代理"
     assert isinstance(excinfo.value.__cause__, requests.exceptions.HTTPError)
@@ -566,6 +565,32 @@ def test_http_proxy_channel_used_end_to_end(monkeypatch, no_db):
     assert all(c["proxies"]["http"] == _PROXY_HTTP for c in calls)
     assert all(c["headers"]["Authorization"] == "Bearer sk-proxy" for c in calls)
     assert result == _NO_RESULT
+def test_search_requests_omit_scrape_options(monkeypatch, no_db):
+    """search 请求体不得带 scrapeOptions。
+
+    带了之后 Firecrawl 会把每条结果都刮一遍并按 1 credit/页收费, 而这里只用
+    URL/标题挑候选, 正文还要用 scrape_url 单独付一次 —— 等于同一批页面买两遍。
+    """
+    _setup_proxy(monkeypatch, http_proxy=_PROXY_HTTP)
+    calls = _capture_post(monkeypatch, _FakeResponse(200, {"success": True, "data": []}))
+
+    fetch.scrape_match_analysis(
+        home_team="Villarreal",
+        away_team="Espanyol",
+        competition="La Liga",
+        year=2026,
+        api_key="sk-main",
+        firecrawl_base_url=_MAIN_URL,
+    )
+
+    searches = [c for c in calls if c["url"].endswith("/v1/search")]
+    assert searches, "未发出任何搜索请求"
+    for call in searches:
+        assert "scrapeOptions" not in (call.get("json") or {}), call["json"]
+        # 结果条数仍需限制: 搜索按 2 credits/10 条计费, 条数越多越贵
+        assert isinstance((call.get("json") or {}).get("limit"), int)
+
+
 # ── 代理 URL 凭证编码 (# + & ( 等特殊字符) ─────────────────────
 
 def test_normalize_proxy_url_encodes_special_characters():

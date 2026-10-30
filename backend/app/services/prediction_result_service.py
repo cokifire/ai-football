@@ -28,13 +28,16 @@ UNPLAYABLE = {"CANC", "ABD", "PST", "SUSP", "INT", "TBD"}
 VERIFY_WINDOW_DAYS = 7
 
 
-def backfill_results(db=None):
+# window_days 覆盖默认的 VERIFY_WINDOW_DAYS：仅用于一次性补跑超出轮询窗口的
+# 历史遗留记录，正常轮询不应长期放宽，否则会持续消耗 API-Football 配额。
+def backfill_results(db=None, *, window_days: int | None = None):
     own_db = db is None
     if own_db:
         db = SessionLocal()
 
     try:
-        cutoff = datetime.now() - timedelta(days=VERIFY_WINDOW_DAYS)
+        days = VERIFY_WINDOW_DAYS if window_days is None else window_days
+        cutoff = datetime.now() - timedelta(days=days)
 
         # 超出时间窗的历史遗留记录：扫描 SQL 已用 match_date < cutoff 排除，
         # 这里仅做日志统计，不修改任何数据
@@ -207,11 +210,13 @@ def _backfill_one(db, fid: int) -> bool:
             handicap_correct = 1 if home_covers else 0
 
     # Top3 比分（基于 llm_score）
+    # 查询字段顺序为：llm_win, llm_handicap_num, llm_handicap_team,
+    # llm_score, over25_prob, llm_ou_type, llm_ou_line；比分是 pred[3]。
     actual_score = f"{gh}-{ga}"
     score_in_top3 = 0
-    if pred[5]:
+    if pred[3]:
         try:
-            llm_scores = (pred[5] or '').split(',')
+            llm_scores = (pred[3] or '').split(',')
             for s in llm_scores:
                 s = s.strip().replace(':', '-').replace('：', '-')
                 if s == actual_score:

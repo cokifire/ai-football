@@ -344,7 +344,12 @@ class _ProxiedFirecrawlClient:
             payload["scrapeOptions"] = options
         data = self._post("/v1/search", payload, timeout=70.0, action="search")
         # 与 SDK 一致: 返回带 .data 的形状, _result_items 认 dict 也认 pydantic。
-        return {"success": True, "data": (data or {}).get("data") or []}
+        # creditsUsed 跟着原样带上, 便于调用方记账 (SDK 的响应同理带该字段)。
+        return {
+            "success": True,
+            "data": (data or {}).get("data") or [],
+            **({"creditsUsed": data["creditsUsed"]} if isinstance(data, dict) and "creditsUsed" in data else {}),
+        }
 
     def scrape_url(
         self,
@@ -367,7 +372,11 @@ class _ProxiedFirecrawlClient:
             payload["blockAds"] = block_ads
         data = self._post("/v1/scrape", payload, timeout=95.0, action="scrape URL")
         # SDK 返回的是内层 data; _scrape_article_pages 会再解一层, 两种都认。
-        return (data or {}).get("data") or {}
+        # creditsUsed 原样带上, 供调用方累计本次情报抓取的账单。
+        inner = (data or {}).get("data") or {}
+        if isinstance(inner, dict) and isinstance(data, dict) and "creditsUsed" in data:
+            inner = {**inner, "creditsUsed": data["creditsUsed"]}
+        return inner
 
 
 
@@ -729,15 +738,119 @@ def _matching_items(result: Any, *, home_team: str, away_team: str, source_site:
     return matches
 
 
+def _credits_used(response: Any) -> int | None:
+    """Read the credits billed for one Firecrawl call, or None when unreported.
+
+    2026-10-30 实测: hosted v1 的 /v1/search、/v1/scrape 都不返回该字段
+    (SDK 的 V1SearchResponse / V1ScrapeResponse 模型里也没有), 代理适配器虽
+    然原样透传, 拿到的仍然是 None。此时靠账号额度差值 (_remaining_credits)
+    才是准的, 所以这里必须返回 None 而不是当成 0。
+    """
+    for key in ("creditsUsed", "credits_used"):
+        value: Any = None
+        if isinstance(response, dict):
+            value = response.get(key)
+            if value is None and isinstance(response.get("data"), dict):
+                value = response["data"].get(key)
+        elif response is not None:
+            value = getattr(response, key, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return int(value)
+    return None
+
+
+def _record_usage(
+    sink: dict[str, int] | None,
+    action: str,
+    response: Any,
+    *,
+    target: str = "",
+) -> None:
+    """Count one Firecrawl request and log the credits it reports.
+
+    Requests are always counted because they are what the dashboard charges for
+    on the free plan; credits are only added when the response carries them.
+    """
+    if sink is None:
+        return
+    used = _credits_used(response)
+    key = "search" if action == "search" else "scrape"
+    sink[key] = sink.get(key, 0) + 1
+    if used is not None:
+        sink["credits"] = sink.get("credits", 0) + used
+    logger.info(
+        "Firecrawl 调用计费: action={}, target={}, creditsUsed={}, 本次累计 search={}, scrape={}, credits={}",
+        action,
+        target or "-",
+        "未返回" if used is None else used,
+        sink.get("search", 0),
+        sink.get("scrape", 0),
+        sink.get("credits", 0),
+    )
+
+
+def _remaining_credits(app: Any) -> int | None:
+    """Sample remaining credits through the free team endpoint.
+
+    v1 search/scrape responses do not report creditsUsed (the SDK models never
+    had the field), so the reliable per-fixture number is the account-level
+    delta from GET /v1/team/credit-usage, which is itself not billed.
+    """
+    for method_name in ("credit_usage", "get_credit_usage"):
+        fn = getattr(app, method_name, None)
+        if not callable(fn):
+            continue
+        try:
+            response = fn()
+        except Exception:
+            continue
+        data = response if isinstance(response, dict) else _to_jsonable(response)
+        if not isinstance(data, dict):
+            continue
+        container = data.get("data") if isinstance(data.get("data"), dict) else data
+        for key in ("remaining_credits", "remainingCredits"):
+            value = container.get(key) if isinstance(container, dict) else None
+            if isinstance(value, int):
+                return value
+    return None
+
+
+def _log_credit_spend(app: Any, sink: dict[str, int], *, credits_before: int | None) -> None:
+    """Log the credits this fixture actually consumed, by account delta.
+
+    并发预测多个 fixture 时该差值是账号级的（会混入其它场次），此时看
+    search/scrape 的调用计数更准，因此两者都记。
+    """
+    credits_after = _remaining_credits(app)
+    if credits_before is None or credits_after is None:
+        logger.info("Firecrawl 本场额度消耗: 未取到额度快照, 参考调用计数 {}", _usage_summary(sink))
+        return
+    logger.info(
+        "Firecrawl 本场额度消耗: credits={} (remaining {} -> {}), {}",
+        credits_before - credits_after, credits_before, credits_after, _usage_summary(sink),
+    )
+
+
+def _usage_summary(sink: dict[str, int]) -> str:
+    """Render the per-fixture usage counter for the closing summary log."""
+    return (
+        f"requests={sink.get('search', 0) + sink.get('scrape', 0)}"
+        f"(search={sink.get('search', 0)}, scrape={sink.get('scrape', 0)}), "
+        f"creditsUsed={sink.get('credits', 0)}"
+    )
+
+
 def _scrape_article_pages(
     app: Any,
     matches: list[tuple[str, dict[str, Any]]],
     *,
     limit: int,
-    scrape_options: Any,
     expected_year: int | str,
     api_key: str = "",
     quota_provider: str = PROVIDER_FIRECRAWL,
+    usage_sink: dict[str, int] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Replace search snippets with Markdown scraped from article detail URLs."""
     scraped = []
@@ -751,6 +864,7 @@ def _scrape_article_pages(
                 remove_base64_images=True,
                 block_ads=True,
             )
+            _record_usage(usage_sink, "scrape", response, target=url)
             data = _to_jsonable(response)
             if isinstance(data, dict) and isinstance(data.get("data"), dict):
                 data = data["data"]
@@ -1213,19 +1327,6 @@ def _collect_match_intelligence(
                 api_url=firecrawl_base_url,
             )
 
-        try:
-            from firecrawl.v1.client import V1ScrapeOptions
-        except ImportError:
-            # SDK 缺失时给代理通道一个最小 shim (dict 序列化形状与 pydantic 一致)。
-            class V1ScrapeOptions:  # type: ignore[no-redef]
-                def __init__(self, **kwargs):
-                    self._fields = kwargs
-
-                def dict(self, by_alias=True, exclude_none=True):
-                    return dict(self._fields)
-
-                def model_dump(self, **kwargs):
-                    return dict(self._fields)
         sites = [site] if isinstance(site, str) and site else list(site or INTELLIGENCE_SITES)
         sites = [item.strip().rstrip("/") for item in sites if item and item.strip()]
         if not sites:
@@ -1238,13 +1339,10 @@ def _collect_match_intelligence(
         relevant: list[tuple[str, dict[str, Any]]] = []
         used_urls: set[str] = set()
         query_list: list[str] = []
-        scrape_options = V1ScrapeOptions(
-            formats=["markdown"],
-            onlyMainContent=True,
-            removeBase64Images=True,
-            blockAds=True,
-        )
         per_site_limit = 3
+        usage_counter: dict[str, int] = {}
+        # 第一个请求之前采样一次额度，收尾时再采一次，差值即本场真实扣费
+        credits_before = _remaining_credits(app)
 
         def _accept_article(article: tuple[str, dict[str, Any]]) -> bool:
             """Review one scraped article and keep it only when approved.
@@ -1292,16 +1390,19 @@ def _collect_match_intelligence(
             for query in queries:
                 query_list.append(query)
                 try:
+                    # 不带 scrape_options: 付费规则是 2 credits/10 条结果,
+                    # 带上抓取选项后每条结果还要再收一次全文抓取的钱, 而这里
+                    # 只需要 URL/标题去挑候选, 正文由下面 scrape_url 单独付费。
                     result = app.search(
                         query=query,
                         limit=per_site_limit,
-                        scrape_options=scrape_options,
                     )
                 except Exception as exc:
                     # 额度耗尽时记账并抛信号异常, 不再试下一个 site/query。
                     _raise_if_quota("search", exc, api_key, quota_provider)
                     logger.warning("Firecrawl 搜索失败: site={}, error={}", source_site, exc)
                     continue
+                _record_usage(usage_counter, "search", result, target=source_site)
                 site_matches = _matching_items(
                     result,
                     home_team=home_team,
@@ -1318,10 +1419,10 @@ def _collect_match_intelligence(
                     app,
                     site_matches,
                     limit=1,
-                    scrape_options=scrape_options,
                     expected_year=year,
                     api_key=api_key,
                     quota_provider=quota_provider,
+                    usage_sink=usage_counter,
                 )
                 # One approved article ends the search. A rejected page is
                 # recorded by _accept_article and the next source is tried.
@@ -1351,12 +1452,12 @@ def _collect_match_intelligence(
                     result = app.search(
                         query=query,
                         limit=8,
-                        scrape_options=scrape_options,
                     )
                 except Exception as exc:
                     _raise_if_quota("search", exc, api_key, quota_provider)
                     logger.warning("Firecrawl 全网兜底搜索失败: error={}", exc)
                     continue
+                _record_usage(usage_counter, "search", result, target="fallback")
                 candidates = _fallback_matching_items(
                     result,
                     home_team=home_team,
@@ -1372,10 +1473,10 @@ def _collect_match_intelligence(
                     app,
                     candidates,
                     limit=1,
-                    scrape_options=scrape_options,
                     expected_year=year,
                     api_key=api_key,
                     quota_provider=quota_provider,
+                    usage_sink=usage_counter,
                 ):
                     if _accept_article(article):
                         break
@@ -1385,9 +1486,10 @@ def _collect_match_intelligence(
             query="\n".join(query_list),
             limit=limit,
         )
+        _log_credit_spend(app, usage_counter, credits_before=credits_before)
         logger.info(
-            "Firecrawl 汇总完成: queried_sites={}, relevant_results={}, markdown_chars={}",
-            len(query_list), len(relevant), len(raw_markdown),
+            "Firecrawl 汇总完成: queried_sites={}, relevant_results={}, markdown_chars={}, {}",
+            len(query_list), len(relevant), len(raw_markdown), _usage_summary(usage_counter),
         )
         intelligence = _organize_with_agnes(
             raw_markdown,
