@@ -750,6 +750,9 @@ def _fetch_weather_text(city_name: str, kickoff_ts: int | None = None) -> str:
 
 # scrape_match_analysis 会把异常吞成一段占位 Markdown，靠这个标记串识别失败。
 _INTELLIGENCE_FAILURE_MARK = "获取失败，忽略该数据源"
+# 搜遍可用来源仍未拿到可用情报时的占位文案（与「获取失败」不同：是查了但没查到）。
+# 同样没有可注入的外部情报，账本 club_news 应记 UNAVAILABLE 而非 AVAILABLE。
+_INTELLIGENCE_EMPTY_MARK = "未获取到可用的外部情报"
 
 
 def _fetch_intelligence_markdown(fixture: dict) -> tuple[str, str]:
@@ -780,7 +783,7 @@ def _fetch_intelligence_markdown(fixture: dict) -> tuple[str, str]:
         )
         text = result or ""
         logger.info("情报获取结束: fixture={}, output_chars={}", fixture.get("id"), len(text))
-        if not text.strip() or _INTELLIGENCE_FAILURE_MARK in text:
+        if not text.strip() or _INTELLIGENCE_FAILURE_MARK in text or _INTELLIGENCE_EMPTY_MARK in text:
             return text, "UNAVAILABLE"
         return text, "AVAILABLE"
     except Exception as exc:

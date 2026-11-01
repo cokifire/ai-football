@@ -22,19 +22,6 @@ INTELLIGENCE_SITES = (
     "livescore.com/en/news/predictions",
 )
 
-# 无 site: 限制的兜底搜索只接受这些编辑型足球网站。它扩大了覆盖面，
-# 但不会把比分页、聚合站或任意博彩落地页带入预测提示词。
-TRUSTED_FALLBACK_DOMAINS = (
-    "soccernews.com",
-    "footballpredictions.com",
-    "livescore.com",
-    "sportsmole.co.uk",
-    "90min.com",
-    "goal.com",
-    "onefootball.com",
-    "football365.com",
-)
-
 # 最终注入主预测 LLM 的情报上限；原始文章可较长，但最终只保留关键观点。
 FINAL_INTELLIGENCE_MAX_CHARS = 1800
 
@@ -634,18 +621,6 @@ def _team_in_text(team: str, text: str) -> bool:
     return any(re.search(rf"\b{re.escape(token)}\b", normalized_text) for token in significant)
 
 
-def _short_team_name(team: str) -> str:
-    """Return a search-friendly name used by prediction sites."""
-    tokens = re.findall(r"[\w]+", team, flags=re.UNICODE)
-    suffixes = {"aif", "afc", "fc", "fk", "cf", "sc", "sk", "calcio"}
-    tokens = [token for token in tokens if token.casefold() not in suffixes]
-    if not tokens:
-        return team.strip()
-    # The final meaningful token is usually the name used in article slugs:
-    # "Mjallby AIF" -> "Mjallby", "Red Bull Salzburg" -> "Salzburg".
-    return tokens[-1]
-
-
 def _is_usable_article(item: dict[str, Any]) -> bool:
     """Reject live-score, home, category and aggregation pages."""
     title = str(item.get("title") or item.get("name") or "").casefold()
@@ -681,17 +656,6 @@ def _same_source_domain(url: str, source_site: str) -> bool:
     host = urlparse(url).netloc.casefold().removeprefix("www.")
     expected = source_site.split("/", 1)[0].casefold().removeprefix("www.")
     return bool(host and expected and (host == expected or host.endswith("." + expected)))
-
-
-def _result_domain(url: str) -> str:
-    """Return a canonical result host without a leading www."""
-    return urlparse(url).netloc.casefold().removeprefix("www.")
-
-
-def _is_trusted_fallback_domain(url: str) -> bool:
-    """Accept only whitelisted editorial sources in unscoped web search."""
-    host = _result_domain(url)
-    return any(host == domain or host.endswith("." + domain) for domain in TRUSTED_FALLBACK_DOMAINS)
 
 
 def _article_score(item: dict[str, Any], *, home_team: str, away_team: str) -> int:
@@ -895,31 +859,6 @@ def _scrape_article_pages(
             _raise_if_quota("scrape", exc, api_key, quota_provider)
             logger.warning("Firecrawl 详情页抓取失败: url={}, error={}", url, exc)
     return scraped
-
-
-def _fallback_matching_items(result: Any, *, home_team: str, away_team: str) -> list[tuple[str, dict[str, Any]]]:
-    """Select high-confidence articles from the unscoped trusted-source fallback."""
-    matches = []
-    for source, item in _result_items(result):
-        url = str(item.get("url") or item.get("link") or "")
-        if not _is_trusted_fallback_domain(url) or not _is_usable_article(item):
-            continue
-        title = str(item.get("title") or item.get("name") or "")
-        identity = f"{title} {url} {item.get('description') or ''}"
-        if not (_team_in_text(home_team, identity) and _team_in_text(away_team, identity)):
-            continue
-        score = _article_score(item, home_team=home_team, away_team=away_team)
-        if score < 6:
-            continue
-        matches.append((source, {
-            **item,
-            "source_site": _result_domain(url),
-            "home_team": home_team,
-            "away_team": away_team,
-            "article_score": score,
-        }))
-    matches.sort(key=lambda pair: pair[1].get("article_score", 0), reverse=True)
-    return matches
 
 
 def _article_title(item: dict[str, Any]) -> str:
@@ -1379,12 +1318,6 @@ def _collect_match_intelligence(
                 year=year,
                 site=source_site,
             )]
-            fallback_query = (
-                f"site:{source_site} {_short_team_name(home_team)} "
-                f"{_short_team_name(away_team)} prediction"
-            )
-            if fallback_query not in queries:
-                queries.append(fallback_query)
 
             site_matches = []
             for query in queries:
@@ -1427,57 +1360,6 @@ def _collect_match_intelligence(
                 # One approved article ends the search. A rejected page is
                 # recorded by _accept_article and the next source is tried.
                 for article in scraped_matches:
-                    if _accept_article(article):
-                        break
-
-        # Reached when no approved source covered the fixture, or when the only
-        # candidate was rejected by review. Discovery is broadened without
-        # trusting the entire web: domains, result identity, article type and
-        # scraped body are all checked before acceptance, one page at a time.
-        if not relevant:
-            fallback_queries = [
-                build_query(
-                    home_team=home_team,
-                    away_team=away_team,
-                    competition=competition,
-                    year=year,
-                ),
-                f'"{_short_team_name(home_team)}" "{_short_team_name(away_team)}" football preview prediction',
-            ]
-            for query in dict.fromkeys(fallback_queries):
-                if relevant:
-                    break
-                query_list.append(query)
-                try:
-                    result = app.search(
-                        query=query,
-                        limit=8,
-                    )
-                except Exception as exc:
-                    _raise_if_quota("search", exc, api_key, quota_provider)
-                    logger.warning("Firecrawl 全网兜底搜索失败: error={}", exc)
-                    continue
-                _record_usage(usage_counter, "search", result, target="fallback")
-                candidates = _fallback_matching_items(
-                    result,
-                    home_team=home_team,
-                    away_team=away_team,
-                )
-                candidates = [
-                    pair for pair in candidates
-                    if str(pair[1].get("url") or pair[1].get("link") or "") not in used_urls
-                ]
-                # Scrape a single page per query: the first one that passes
-                # review ends the fallback and later queries are skipped.
-                for article in _scrape_article_pages(
-                    app,
-                    candidates,
-                    limit=1,
-                    expected_year=year,
-                    api_key=api_key,
-                    quota_provider=quota_provider,
-                    usage_sink=usage_counter,
-                ):
                     if _accept_article(article):
                         break
 
