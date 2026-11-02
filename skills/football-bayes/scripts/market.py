@@ -4,7 +4,7 @@
 依赖：core.py 同目录
 """
 from math import exp, factorial
-exec(open('core.py').read())
+exec(open('core.py', encoding='utf-8').read())
 
 RHO = -0.03
 

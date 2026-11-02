@@ -1,5 +1,17 @@
 # 变更记录
 
+## v2.8（2026-11-02）
+
+对抗性审查整改（消除让球方向口径残留、Windows 编码崩溃、单锚降级路径缺失、文档与脚本脱节）：
+
+- 让球方向口径收口到 `handicap_num`（正=客让）：`analyze.py` 亚盘表头与数值由「客队受让为正」改为「客队让为正」（`1-ah(r,L)`=客让覆盖、`home_giving(r,L)`=主让覆盖），校验行改为 `客覆盖=客胜`/`主覆盖=主胜`；`report-template.md` §5.2 同步。
+- Windows 编码崩溃修复：`analyze.py`/`market.py` 的 `open('core.py')` 加 `encoding='utf-8'`，`SKILL.md`「用脚本」示例同步（中文 Windows 默认 GBK 会抛 `UnicodeDecodeError`）。
+- 补齐单锚降级网格分支：`analyze.py` 新增 `single_anchor` 配置 + `build()` 单锚分支（跳过 xG 桥接，λ 由 Elo 份额 + `T_override` 反解）+ `HFA(3)×T(6)×似然(2)=36` 网格，`grid.T_delta` 为 6 档偏移；`pipeline.md` S6 补 T 扫描值说明。
+- `we` 扫描区间对齐 `analyze.py`：`pipeline.md` S2 由 `{0,0.4,0.6,0.8,1}`（5 值）改为 `{0.4,0.6,0.8}`（3 值），与 S6 表格「Elo权重(3)」一致。
+- 输出契约补全：`SKILL.md` 步骤 7 列全 schema 的 10 字段（补 `win_pct`、`score`，并显式命名 `handicap_pct`/`ou_pct`），消除缺字段触发 schema 校验失败。
+- `formulas.md` §7「等效 Elo 差」符号修正：`400·log10((1−share)/share)` → `400·log10(share/(1−share))`（与 `market.py` 代码一致，原公式把热门/冷门符号写反）。
+- `win` 职责厘清（修复 skill 与宿主矛盾）：`SKILL.md` 步骤 2 拆开——`win`/`win_pct`/`score` 是 skill 独立结论（不与 P1 argmax 对齐、不同须说明依据）；`handicap_pct`/`ou_pct` 用宿主 P1 + λ 泊松派生、不凭空重写。对齐宿主 `predict.py`「win/win_pct 独立判断」口径。
+
 ## v2.7（2026-10-27）
 
 修复 deep_report 机械复读问题（只解读宿主数据，无独立判断）：

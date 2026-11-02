@@ -11,7 +11,7 @@
 """
 import statistics as st
 from math import exp, factorial, log10
-exec(open('core.py').read())
+exec(open('core.py', encoding='utf-8').read())
 
 RHO = -0.03
 
@@ -46,6 +46,7 @@ CONFIG = {
 
     # --- 总进球（仅在 xG 锚不可得时才需要显式指定）---
     'T_override': None,
+    'single_anchor': False,   # True = xG 缺失，走单 Elo 锚 + T_override + 扫 T
 
     # --- 似然净修正（pp）---
     'NET': (0.0, 0.0, 0.0),
@@ -53,7 +54,8 @@ CONFIG = {
     # --- 稳健性网格 ---
     'grid': dict(hfa=(70, 85, 100), w=(0.5, 0.75, 1.0),
                  we=(0.4, 0.6, 0.8), alpha=(0.0, 0.25, 0.5),
-                 upd=(True, False)),
+                 upd=(True, False),
+                 T_delta=(-0.5, -0.3, -0.1, 0.1, 0.3, 0.5)),
 }
 # <<< END CONFIG >>>
 
@@ -67,6 +69,14 @@ def _shrink(season, split, alpha):
 
 def build(c):
     """返回 (lh, la, T, rx_model, elo_share, elo_model)"""
+    if c.get('single_anchor'):
+        # 单锚（xG 缺失）：跳过 xG 桥接，λ 完全由 Elo 份额 + T_override 反解
+        T = c['T_override']
+        if not T:
+            raise ValueError('single_anchor 模式必须提供 T_override')
+        share = two_way(c['elo_h'] + c['hfa'] - c['elo_a'])
+        lh, la, re_ = solve_lambda(share, T, RHO)
+        return lh, la, T, re_, share, re_, 1.0, 1.0
     # ---- 转化率因子
     def f(g, xgt, conv):
         if g is None:
@@ -116,11 +126,15 @@ def run_full(c=None, verbose=True):
     P = lambda x: f"{100*x:.1f}%"
     print("=" * 78)
     print(f"【P0 先验】 {c['home']} vs {c['away']}")
-    print(f"  xG 锚   λ {lh:.3f}/{la:.3f}  T {T:.3f}  → "
+    anchor_label = '单锚(Elo)' if c.get('single_anchor') else 'xG 锚'
+    print(f"  {anchor_label} λ {lh:.3f}/{la:.3f}  T {T:.3f}  → "
           f"{P(rx['h'])} / {P(rx['d'])} / {P(rx['a'])}")
     print(f"  Elo 锚  份额 {share:.4f} (差 {c['elo_h']+c['hfa']-c['elo_a']:+d})  → "
           f"{P(re_['h'])} / {P(re_['d'])} / {P(re_['a'])}")
-    print(f"  两锚分歧(客队侧) {abs(rx['a']-re_['a'])*100:.1f}pp")
+    if c.get('single_anchor'):
+        print("  单锚模式：无 xG 锚，无两锚分歧（仅 Elo + T_override）")
+    else:
+        print(f"  两锚分歧(客队侧) {abs(rx['a']-re_['a'])*100:.1f}pp")
     print(f"  P0 → {P(p0[0])} / {P(p0[1])} / {P(p0[2])}")
     print(f"  NET {NET[0]:+.1f}/{NET[1]:+.1f}/{NET[2]:+.1f}  "
           f"P1 → {P(p1[0])} / {P(p1[1])} / {P(p1[2])}")
@@ -132,12 +146,12 @@ def run_full(c=None, verbose=True):
         P(r['ou'][1.5]), P(r['ou'][2.5]), P(r['ou'][3.5]),
         P(r['ou'][4.5]), P(r['btts']), P(1 - r['ou'][2.5])))
 
-    print("\n【亚洲盘：客队受让为正】")
+    print("\n【亚洲盘：handicap_num 口径（正=客让，负=主让）】")
     for L in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5):
-        print(f"   {c['away']} +{L:<5} 覆盖 {P(away_receiving(r, L))}"
-              f"   （{c['home']} -{L} 覆盖 {P(home_giving(r, L))}）")
-    print(f"   校验 +0.50 = X2 = {P(r['d']+r['a'])} | "
-          f"{c['home']} -0.50 = 主队独胜 = {P(r['h'])}")
+        print(f"   客让 +{L:<5} 客覆盖 {P(1 - ah(r, L))}"
+              f"   |   主让 -{L:<5} 主覆盖 {P(home_giving(r, L))}")
+    print(f"   校验 +0.50(客让) 客覆盖=客胜={P(r['a'])} | "
+          f"-0.50(主让) 主覆盖=主胜={P(r['h'])}")
     print(f"   1X {P(r['h']+r['d'])} | X2 {P(r['d']+r['a'])} | 12 {P(r['h']+r['a'])}"
           f" | DNB主 {P(ah(r,0))} 客 {P(1-ah(r,0))}")
 
@@ -167,11 +181,22 @@ def run_full(c=None, verbose=True):
           f" || BTTS-Y {1/r['btts']:.2f} N {1/(1-r['btts']):.2f}")
 
     # ---- 稳健性网格
+    # 单锚（xG 缺失）：扫 HFA × T（相对 T_override 偏移）× 似然
     # 同联赛：扫 HFA × 桥接 w × Elo 权重 × α × 似然
     # 跨联赛：扫 HFA × LG_ref × Elo 权重 × 似然（α 与 w 在跨联赛模式下不生效）
     g = c['grid']
     res = []
-    if c['cross']:
+    if c.get('single_anchor'):
+        T0 = c['T_override']
+        for hfa in g['hfa']:
+            for dT in g.get('T_delta', (-0.5, -0.3, -0.1, 0.1, 0.3, 0.5)):
+                for upd in g['upd']:
+                    cc = dict(c, hfa=hfa, T_override=T0 + dT,
+                              NET=NET if upd else (0, 0, 0))
+                    o = run_full(cc, verbose=False)
+                    res.append((o['r']['h'], o['r']['d'],
+                                o['r']['a'], o['r']['T']))
+    elif c['cross']:
         lgs = g.get('LG_ref', (1.40, 1.50, 1.65, 1.80, 1.90))
         for hfa in g['hfa']:
             for lg in lgs:
