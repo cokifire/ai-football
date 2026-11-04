@@ -551,12 +551,22 @@ export default function PredictionsPage() {
                         <span className="text-gray-500">小2.5球概率(模型)</span>
                         <span className="font-medium">{fmtPct(selectedPred.xgb.over25.under)}</span>
                       </div>
-                      {selectedPred.llm?.ou_line != null && selectedPred.llm?.ou_type && (
+                      {selectedPred.llm?.ou_line != null && (
                         <div className="flex justify-between">
-                          <span className="text-gray-500">推荐</span>
-                          <span className="font-medium">
-                            {`${toText(selectedPred.llm.ou_line)} ${toText(selectedPred.llm.ou_type)} (${fmtPct(selectedPred.llm.ou_pct)})`}
-                          </span>
+                          <span className="text-gray-500">盘口</span>
+                          <span className="font-medium">{toText(selectedPred.llm.ou_line)}</span>
+                        </div>
+                      )}
+                      {selectedPred.llm?.ou_type && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">方向</span>
+                          <span className="font-medium">{toText(selectedPred.llm.ou_type)}</span>
+                        </div>
+                      )}
+                      {selectedPred.llm?.ou_pct != null && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">概率</span>
+                          <span className="font-medium">{fmtPct(selectedPred.llm.ou_pct)}</span>
                         </div>
                       )}
                     </div>
@@ -608,17 +618,27 @@ export default function PredictionsPage() {
             )}
 
             {/* 让球推荐（LLM） */}
-            {(selectedPred.llm?.handicap_team && selectedPred.llm?.handicap_num != null) && (
+            {selectedPred.llm?.handicap_num != null && (
               <div>
                 <h4 className="font-semibold mb-2">让球 (LLM)</h4>
                 <div className="border border-gray-100 rounded-lg p-3">
                   <div className="text-sm space-y-1">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">推荐</span>
-                      <span className="font-medium">
-                        {`${toText(selectedPred.llm.handicap_team)} ${toText(selectedPred.llm.handicap_num)} (${fmtPct(selectedPred.llm.handicap_pct)})`}
-                      </span>
+                      <span className="text-gray-500">盘口</span>
+                      <span className="font-medium">{toText(selectedPred.llm.handicap_num)}</span>
                     </div>
+                    {selectedPred.llm?.handicap_team && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">方向</span>
+                        <span className="font-medium">{toText(selectedPred.llm.handicap_team)}</span>
+                      </div>
+                    )}
+                    {selectedPred.llm?.handicap_pct != null && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">概率</span>
+                        <span className="font-medium">{fmtPct(selectedPred.llm.handicap_pct)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -690,7 +710,7 @@ export default function PredictionsPage() {
                       </span>
                     </div>
                     <div className="p-3 rounded-lg bg-gray-50">
-                      <div className="text-xs text-gray-500">大小球{selectedPred.llm?.ou_line ?? 2.5}</div>
+                      <div className="text-xs text-gray-500">大小球 {selectedPred.llm?.ou_line ?? 2.5}</div>
                       <span
                         className={selectedPred.result.over25_correct != null
                           ? (selectedPred.result.over25_correct ? 'badge-green' : 'badge-red')
@@ -705,7 +725,7 @@ export default function PredictionsPage() {
                       </span>
                     </div>
                     <div className="p-3 rounded-lg bg-gray-50">
-                      <div className="text-xs text-gray-500">盘口{selectedPred.llm?.handicap_num ?? ''}</div>
+                      <div className="text-xs text-gray-500">盘口 {selectedPred.llm?.handicap_num ?? ''}</div>
                       <span
                         className={selectedPred.result.handicap_correct != null
                           ? (selectedPred.result.handicap_correct ? 'badge-green' : 'badge-red')
