@@ -224,37 +224,49 @@ def _call_codex_provider(
 ) -> dict | None:
     """经 codex exec 完成一次预测推理，并校验其结构化输出。
 
-    失败仅对 codex 自身重试（run_codex 内部按 codex_retries 重试），
-    不回退 HTTP。输出由 --output-schema 强约束为 10 字段 JSON，这里仍做
-    解析/归一/必填二次校验，防 schema 之外的脏数据进库。
+    失败对 codex 重试 codex_retries 次（覆盖执行失败、解析失败、缺字段、
+    让球方向矛盾四类不合规输出），不回退 HTTP。输出由 --output-schema 强约束
+    为 10 字段 JSON，这里仍做解析/归一/必填/方向一致性二次校验，
+    防 schema 之外的脏数据进库。
     """
-    content = run_codex(
-        prompt,
-        schema_path=PREDICTION_SCHEMA_PATH,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
-        sandbox=settings.codex_sandbox,
-        timeout=float(settings.codex_timeout_predict),
-        retries=settings.codex_retries,
-        label=provider_name,
-    )
-    if content is None:
-        return None
-    # codex 在 exec 完成前不返回中间/流式数据；这里把最终返回的原始内容落日志，
-    # 便于排查前端误判为失败时后端实际收到了什么。
-    logger.info("{} 返回原始内容(长度={}): {!r}", provider_name, len(content), content[:2000])
-    parsed = _parse_llm_json(content)
-    if not parsed:
-        logger.warning("{} 返回内容中未找到 JSON，preview={!r}", provider_name, content[:500])
-        return None
-    # 先规整再校验：schema 已限定 win/handicap_team/ou_type 取值，这里再兜底
-    # 归一一次，防止上游契约放宽后出现 home/draw/away 这类别名写法。
-    parsed = _normalize_llm_fields(parsed)
-    if not _has_required_llm_fields(parsed):
-        logger.warning("{} 返回缺少必要预测字段，keys={}", provider_name, sorted(parsed.keys()))
-        return None
-    return parsed
+    deadline = time.monotonic() + float(settings.codex_timeout_predict)
+    attempts = max(settings.codex_retries, 0) + 1
+    for attempt in range(1, attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("{} 超出总超时预算，停止重试", provider_name)
+            return None
+        content = run_codex(
+            prompt,
+            schema_path=PREDICTION_SCHEMA_PATH,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            sandbox=settings.codex_sandbox,
+            timeout=remaining,
+            retries=0,
+            label=provider_name,
+        )
+        if content is None:
+            return None
+        # codex 在 exec 完成前不返回中间/流式数据；这里把最终返回的原始内容落日志，
+        # 便于排查前端误判为失败时后端实际收到了什么。
+        logger.info("{} 返回原始内容(长度={}): {!r}", provider_name, len(content), content[:2000])
+        parsed = _parse_llm_json(content)
+        if not parsed:
+            logger.warning("{} 返回内容中未找到 JSON，preview={!r}", provider_name, content[:500])
+            continue
+        # 先规整再校验：schema 已限定 win/handicap_team/ou_type 取值，这里再兜底
+        # 归一一次，防止上游契约放宽后出现 home/draw/away 这类别名写法。
+        parsed = _normalize_llm_fields(parsed)
+        if not _has_required_llm_fields(parsed):
+            logger.warning("{} 返回缺少必要预测字段，keys={}", provider_name, sorted(parsed.keys()))
+            continue
+        if not _check_handicap_consistency(parsed):
+            logger.warning("{} 让球方向与胜平负结论矛盾，重试(第 {} 次)", provider_name, attempt)
+            continue
+        return parsed
+    return None
 
 
 def _call_llm(prompt: str) -> tuple[dict | None, str | None]:
@@ -344,6 +356,55 @@ def _has_required_llm_fields(data: dict) -> bool:
     for k in required:
         v = data.get(k)
         if v is None or str(v).strip() == "":
+            return False
+    return True
+
+
+def _llm_pct(v) -> float | None:
+    """把 '60%' / 0.6 / 60 统一转成 0-1 概率；解析失败返回 None。"""
+    if v is None:
+        return None
+    s = str(v).strip().replace("%", "").replace("％", "")
+    try:
+        f = float(s)
+    except (ValueError, TypeError):
+        return None
+    return f / 100.0 if f > 1 else f
+
+
+def _check_handicap_consistency(data: dict) -> bool:
+    """半球盘下 win 与 handicap 方向一致性硬校验。
+
+    只判能由 win/win_pct 直接确定方向的两种（其余组合跳过，避免误杀）：
+      - 客让半（handicap_num>0 且为 x.5）& win=客胜：客队赢盘=P(客胜)=win_pct，主队赢盘=1-win_pct
+      - 主让半（handicap_num<0 且为 x.5）& win=主胜：主队赢盘=P(主胜)=win_pct，客队赢盘=1-win_pct
+    返回 False 表示自相矛盾（如 win=客胜60% 却在客让0.5 下注主队且 pct≈59%）。
+    """
+    win = str(data.get("win") or "").strip()
+    hteam = str(data.get("handicap_team") or "").strip()
+    if win not in ("主胜", "客胜") or hteam not in ("主队", "客队"):
+        return True
+    win_pct = _llm_pct(data.get("win_pct"))
+    hpct = _llm_pct(data.get("handicap_pct"))
+    try:
+        hc = float(str(data.get("handicap_num") or "").strip().lstrip("+"))
+    except (ValueError, TypeError):
+        return True
+    if win_pct is None or hpct is None:
+        return True
+    # 只判半球盘（x.5）：abs(hc)*2 为奇数
+    hc2 = abs(hc) * 2
+    if abs(hc2 - round(hc2)) > 1e-9 or round(hc2) % 2 == 0:
+        return True
+
+    tol = 0.03  # 3pp 舍入容差
+    if win == "客胜" and hc > 0:
+        # 客让半：主队赢盘应为 1 - P(客胜)
+        if hteam == "主队" and hpct > (1.0 - win_pct) + tol:
+            return False
+    elif win == "主胜" and hc < 0:
+        # 主让半：客队赢盘应为 1 - P(主胜)
+        if hteam == "客队" and hpct > (1.0 - win_pct) + tol:
             return False
     return True
 
@@ -1331,7 +1392,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     *【机器模型数据】XGBoost 原始输出（先验与参数，未经贝叶斯修正），仅供校准参考
     胜平负先验: {xgb_win_text}
-    预期进球λ: {lambda_text}（用于泊松派生市场）
+    参考 λ（回归器原始输出，仅参考）: {lambda_text}（让球/大小球必须从你自己的最终 1X2 分布派生，不要直接用该 λ）
     大小球参考:{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
     模型最高项:{model_top_text}
@@ -1340,6 +1401,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
 
     # output-schema
+    一致性硬约束：win/handicap/ou 必须来自同一份最终 1X2 分布。半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
     输出约束,请严格输出JSON格式:
     {{"win":"主胜|平局|客胜",
     "win_pct":"win 所选项的概率（win=主胜则主胜概率），如85%",

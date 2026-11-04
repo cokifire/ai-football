@@ -31,7 +31,7 @@ def _consensus(snaps):
 
     1X2: {home, draw, away}
     ou:  {line: {over, under}}
-    ah:  {mline: {home_side, away_side}}  mline 为主队视角让球数（负=主让）
+    ah:  {line: {home_side, away_side}}  line 为让球盘口线（正=客让/负=主让，与 llm_handicap_num 同向）
     """
     h_raw, d_raw, a_raw = [], [], []
     ou, ah = {}, {}
@@ -57,12 +57,12 @@ def _consensus(snaps):
 
                 if e.get("ah_line") is not None and (e.get("ah_home_raw") or e.get("ah_away_raw")):
                     ln = float(e["ah_line"])
-                    mline = -ln  # 统一到主队视角让球数（负=主让）
-                    g = ah.setdefault(mline, {"home_side": [], "away_side": []})
-                    if ln >= 0:  # API "Home X"：主队侧=home_raw
-                        hs, as_ = e.get("ah_home_raw"), e.get("ah_away_raw")
-                    else:       # API "Away X"：主队侧=away_raw
-                        hs, as_ = e.get("ah_away_raw"), e.get("ah_home_raw")
+                    # ah_line 与 llm_handicap_num 同口径（正=客让、负=主让），直接当 key，
+                    # 不要取反（否则与下方 compute_value_bets 的 cons["ah"].get(hc) 符号对不上，
+                    # 导致让球盘 value-bet 市场永远 available:False）。
+                    g = ah.setdefault(ln, {"home_side": [], "away_side": []})
+                    # ah_home_raw/ah_away_raw 已是主/客两侧各自的价格，无需按符号交换。
+                    hs, as_ = e.get("ah_home_raw"), e.get("ah_away_raw")
                     if hs:
                         g["home_side"].append(float(hs))
                     if as_:
