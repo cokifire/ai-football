@@ -1,84 +1,146 @@
 {
   "params": {
     "1x2_home": {
-      "a": 0.14228960630129223,
-      "b": -0.25597951912125
+      "method": "platt",
+      "a": 0.3361166562647716,
+      "b": -0.3945070497179933
     },
     "1x2_draw": {
-      "a": -0.09211851674410874,
-      "b": -1.1480327442114753
+      "method": "platt",
+      "a": 0.09425719006496265,
+      "b": -0.8492915245178341
     },
     "1x2_away": {
-      "a": 0.3075487085282912,
-      "b": -0.6148012168320353
+      "method": "platt",
+      "a": 0.49805448849486345,
+      "b": -0.25836332207623014
     },
     "ou": {
-      "a": -0.4408550093056103,
-      "b": -0.12820291895626645
+      "method": "platt",
+      "a": 0.20147132345764684,
+      "b": 0.05444834309420649
     },
     "ou25": {
-      "a": -0.23681151099954365,
-      "b": 0.05538536301525538
+      "method": "platt",
+      "a": 0.14382915800345986,
+      "b": -0.06746655199159522
     },
     "ah": {
-      "a": 0.3241150490807028,
-      "b": -0.6939011134515484
+      "method": "platt",
+      "a": 0.45528746554616323,
+      "b": -0.39798490837477885
+    },
+    "llm_win": {
+      "method": "platt",
+      "a": 0.842269785185364,
+      "b": -0.583278051701381
     }
   },
   "diagnostics": {
     "1x2_home": {
-      "n": 214,
+      "n": 931,
       "fitted": true,
-      "a": 0.1423,
-      "b": -0.256,
-      "base_rate": 0.4486,
-      "brier_raw": 0.2877,
-      "brier_cal": 0.2458
+      "method": "platt",
+      "a": 0.3361,
+      "b": -0.3945,
+      "knots": 28,
+      "base_rate": 0.4189,
+      "brier_raw": 0.2686,
+      "brier_cal": 0.2341,
+      "ece_raw": 0.1584,
+      "ece_cal": 0.0224,
+      "brier_cv_platt": 0.2349,
+      "brier_cv_isotonic": 0.2382
     },
     "1x2_draw": {
-      "n": 214,
+      "n": 931,
       "fitted": true,
-      "a": -0.0921,
-      "b": -1.148,
-      "base_rate": 0.2757,
-      "brier_raw": 0.2278,
-      "brier_cal": 0.1993
+      "method": "platt",
+      "a": 0.0943,
+      "b": -0.8493,
+      "knots": 12,
+      "base_rate": 0.2653,
+      "brier_raw": 0.2164,
+      "brier_cal": 0.1946,
+      "ece_raw": 0.1282,
+      "ece_cal": 0.0084,
+      "brier_cv_platt": 0.1952,
+      "brier_cv_isotonic": 0.1984
     },
     "1x2_away": {
-      "n": 214,
+      "n": 931,
       "fitted": true,
-      "a": 0.3075,
-      "b": -0.6148,
-      "base_rate": 0.2757,
-      "brier_raw": 0.2112,
-      "brier_cal": 0.1951
+      "method": "platt",
+      "a": 0.4981,
+      "b": -0.2584,
+      "knots": 37,
+      "base_rate": 0.3158,
+      "brier_raw": 0.2082,
+      "brier_cal": 0.2006,
+      "ece_raw": 0.0746,
+      "ece_cal": 0.0085,
+      "brier_cv_platt": 0.2018,
+      "brier_cv_isotonic": 0.2029
     },
     "ou": {
-      "n": 202,
+      "n": 891,
       "fitted": true,
-      "a": -0.4409,
-      "b": -0.1282,
-      "base_rate": 0.4257,
-      "brier_raw": 0.2815,
-      "brier_cal": 0.2434
+      "method": "platt",
+      "a": 0.2015,
+      "b": 0.0544,
+      "knots": 8,
+      "base_rate": 0.5331,
+      "brier_raw": 0.2542,
+      "brier_cal": 0.2488,
+      "ece_raw": 0.0611,
+      "ece_cal": 0.0,
+      "brier_cv_platt": 0.2507,
+      "brier_cv_isotonic": 0.253
     },
     "ou25": {
-      "n": 168,
+      "n": 340,
       "fitted": true,
-      "a": -0.2368,
-      "b": 0.0554,
-      "base_rate": 0.494,
-      "brier_raw": 0.318,
-      "brier_cal": 0.2467
+      "method": "platt",
+      "a": 0.1438,
+      "b": -0.0675,
+      "knots": 16,
+      "base_rate": 0.4941,
+      "brier_raw": 0.2853,
+      "brier_cal": 0.2485,
+      "ece_raw": 0.1541,
+      "ece_cal": 0.0186,
+      "brier_cv_platt": 0.2506,
+      "brier_cv_isotonic": 0.2559
     },
     "ah": {
-      "n": 187,
+      "n": 853,
       "fitted": true,
-      "a": 0.3241,
-      "b": -0.6939,
-      "base_rate": 0.3529,
-      "brier_raw": 0.2754,
-      "brier_cal": 0.2279
+      "method": "platt",
+      "a": 0.4553,
+      "b": -0.398,
+      "knots": 13,
+      "base_rate": 0.4396,
+      "brier_raw": 0.2669,
+      "brier_cal": 0.2454,
+      "ece_raw": 0.1427,
+      "ece_cal": 0.0075,
+      "brier_cv_platt": 0.2472,
+      "brier_cv_isotonic": 0.2499
+    },
+    "llm_win": {
+      "n": 931,
+      "fitted": true,
+      "method": "platt",
+      "a": 0.8423,
+      "b": -0.5833,
+      "knots": 33,
+      "base_rate": 0.4694,
+      "brier_raw": 0.2586,
+      "brier_cal": 0.2346,
+      "ece_raw": 0.153,
+      "ece_cal": 0.0245,
+      "brier_cv_platt": 0.2356,
+      "brier_cv_isotonic": 0.2382
     }
   }
 }

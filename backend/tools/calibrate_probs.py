@@ -40,17 +40,17 @@ def main():
 
 
 def _print_report(diag):
-    print(f"{'市场':<10}{'n':>5}{'基准率':>8}{'Brier_raw':>11}{'Brier_cal':>11}{'改善':>8}  参数(a,b)")
-    print("-" * 78)
+    print(f"{'市场':<10}{'n':>5}{'基准率':>8}{'Brier_raw':>11}{'Brier_cal':>11}{'改善':>8}{'方法':>10}{'ECE_raw':>9}{'ECE_cal':>9}")
+    print("-" * 92)
     for key, d in diag.items():
         if not d.get("fitted"):
-            print(f"{key:<10}{d.get('n',0):>5}{'':>8}{'':>11}{'':>11}{'':>8}  {d.get('reason','')}")
+            print(f"{key:<10}{d.get('n',0):>5}{'':>8}{'':>11}{'':>11}{'':>8}{'':>10}{'':>9}  {d.get('reason','')}")
             continue
         raw = d["brier_raw"]
         cal = d["brier_cal"]
         imp = (raw - cal) / raw * 100 if raw else 0
-        print(f"{key:<10}{d['n']:>5}{d['base_rate']:>8.3f}{raw:>11.4f}{cal:>11.4f}{imp:>7.1f}%  "
-              f"a={d['a']}, b={d['b']}")
+        print(f"{key:<10}{d['n']:>5}{d['base_rate']:>8.3f}{raw:>11.4f}{cal:>11.4f}{imp:>7.1f}%"
+              f"{d.get('method',''):>10}{d.get('ece_raw',0):>9.4f}{d.get('ece_cal',0):>9.4f}")
 
 
 if __name__ == "__main__":

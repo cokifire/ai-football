@@ -142,23 +142,36 @@ def compute_value_bets(db, fixture_id, refresh=False, margin=0.03):
                  "draw": float(p.get("win_draw") or 0),
                  "away": float(p.get("win_away") or 0)}
         sels, best = [], None
-        for side, odd in mkt.items():
-            raw = probs[side]
-            if raw <= 0 or odd <= 1:
-                continue
-            mp = apply_calibration("1x2_" + side, raw)
+
+        def _add_sel(side, label, raw, source, cal_key):
+            nonlocal best
+            odd = mkt.get(side)
+            if odd is None or odd <= 1 or raw is None or raw <= 0:
+                return
+            mp = apply_calibration(cal_key, raw)
             implied = 1 / odd
             edge = mp - implied
-            sel = {"side": side, "label": _side_label(side),
+            sel = {"side": side, "label": label, "source": source,
                    "model_p": round(mp, 4), "raw_model_p": round(raw, 4),
                    "market_implied": round(implied, 4),
                    "edge": round(edge, 4), "kelly": round(_kelly(mp, odd), 4), "odds": odd}
             sels.append(sel)
             if edge > margin and (best is None or edge > best["edge"]):
                 best = sel
+
+        for side, label in (("home", "主胜"), ("draw", "平局"), ("away", "客胜")):
+            _add_sel(side, label, probs[side], "model", "1x2_" + side)
+
+        # LLM 自己的胜负判断作为独立信源纳入同一 1X2 市场：不覆盖宿主结论，
+        # 只同台比较，edge 最高者胜出（recommendation_source 标明来源）。
+        llm_side = {"主胜": "home", "平局": "draw", "客胜": "away"}.get((p.get("llm_win") or "").strip())
+        if llm_side:
+            _add_sel(llm_side, _side_label(llm_side), _parse_pct(p.get("llm_win_pct")), "llm", "llm_win")
+
         markets["1x2"] = {
             "available": True,
             "recommendation": best["label"] if best else "无价值（观望）",
+            "recommendation_source": best["source"] if best else None,
             "best_edge": round(best["edge"], 4) if best else None,
             "selections": sels,
         }

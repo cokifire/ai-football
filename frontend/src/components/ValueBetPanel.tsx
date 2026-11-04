@@ -4,6 +4,7 @@ import apiClient from '../api/client'
 interface Selection {
   side: string
   label: string
+  source?: string
   model_p: number
   raw_model_p?: number
   market_implied: number
@@ -17,6 +18,7 @@ interface Selection {
 interface Market {
   available: boolean
   recommendation?: string
+  recommendation_source?: string | null
   best_edge?: number | null
   selections?: Selection[]
   line?: number
@@ -83,7 +85,10 @@ export default function ValueBetPanel({ fixtureId }: { fixtureId: number }) {
             {MARKET_LABELS[key]}
             {m.line != null ? `（盘口 ${m.line}）` : ''}
           </span>
-          <span className={hasValue ? 'badge-green' : 'badge-gray'}>{m.recommendation}</span>
+          <span className={hasValue ? 'badge-green' : 'badge-gray'}>
+            {m.recommendation}
+            {m.recommendation_source === 'llm' ? '（LLM）' : ''}
+          </span>
         </div>
         <div className="table-container">
           <table>
@@ -101,7 +106,10 @@ export default function ValueBetPanel({ fixtureId }: { fixtureId: number }) {
               <tbody>
                 {(m.selections || []).map((s, i) => (
                   <tr key={i}>
-                    <td className="font-medium">{s.label}</td>
+                    <td className="font-medium">
+                      {s.label}
+                      {s.source === 'llm' ? <span className="badge-blue ml-1">LLM</span> : null}
+                    </td>
                     <td className="text-primary-700 font-semibold">{fmtPct(s.model_p)}</td>
                     <td className="text-gray-400 text-xs">
                       {s.raw_model_p != null ? fmtPct(s.raw_model_p) : '-'}
