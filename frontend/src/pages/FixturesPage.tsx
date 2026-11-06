@@ -43,6 +43,16 @@ interface LeagueOption {
   name_zh?: string
 }
 
+// 批量预测后台任务逐场进度（对应 background_jobs.result）
+interface BatchProgress {
+  total: number
+  done: number
+  current_fixture_id: number | null
+  succeeded: number[]
+  failed: { fixture_id: number; error: string }[]
+  skipped: number[]
+}
+
 interface FixtureDetail extends Fixture {
   events?: FixtureAPIEvent[]
   lineups?: FixtureAPILineup[]
@@ -176,6 +186,13 @@ function StatusBadge({ status }: { status: string }) {
 
 const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN'])
 
+// 刷新页面后仍能续接正在跑的批量任务
+const BATCH_JOB_KEY = 'fixtures_batch_job_id'
+
+// 只有「未预测且未完赛」的比赛才能纳入批量预测
+const isPredictable = (f: Fixture): boolean =>
+  !f.predicted && !FINISHED_STATUSES.has(f.status_short)
+
 // 返回北京时间当天的日期字符串 (YYYY-MM-DD)，与后端 date 参数约定一致
 function getBeijingToday(): string {
   const now = new Date()
@@ -213,6 +230,14 @@ export default function FixturesPage() {
   const [oddsData, setOddsData] = useState<OddsData | null>(null)
   const [oddsError, setOddsError] = useState<string | null>(null)
   const [fetchingOddsIds, setFetchingOddsIds] = useState<Set<number>>(new Set())
+  // 批量预测：勾选集合、后台任务 id、逐场进度、提示信息
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [batchJobId, setBatchJobId] = useState<string | null>(() => {
+    try { return localStorage.getItem(BATCH_JOB_KEY) } catch { return null }
+  })
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null)
+  const [batchMsg, setBatchMsg] = useState<string | null>(null)
+  const [batchStarting, setBatchStarting] = useState(false)
   const pageSize = 20
 
   useEffect(() => {
@@ -427,6 +452,8 @@ export default function FixturesPage() {
   }
 
   const handlePredict = async (fixture: Fixture) => {
+    // 批量任务运行期间不并发跑单场，避免同时打爆 LLM 额度
+    if (batchJobId) return
     setPredictingIds((prev) => new Set(prev).add(fixture.id))
     setPredictMsg(null)
     try {
@@ -457,6 +484,115 @@ export default function FixturesPage() {
       })
     }
   }
+
+  // ──── 批量预测 ────
+  const predictableIds = fixtures.filter(isPredictable).map((f) => f.id)
+  const selectedPredictableIds = fixtures
+    .filter((f) => isPredictable(f) && selectedIds.has(f.id))
+    .map((f) => f.id)
+  const allSelected = predictableIds.length > 0 && predictableIds.every((id) => selectedIds.has(id))
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allSelected) predictableIds.forEach((id) => next.delete(id))
+      else predictableIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
+  const handleBatchPredict = async () => {
+    if (selectedPredictableIds.length === 0 || batchJobId || batchStarting) return
+    setBatchStarting(true)
+    setBatchMsg(null)
+    setPredictMsg(null)
+    try {
+      const res = await apiClient.post(
+        '/predict/batch',
+        { fixture_ids: selectedPredictableIds },
+        { timeout: 30000 },
+      )
+      const jobId = res.data?.job_id
+      if (!jobId) {
+        setBatchMsg('创建批量预测任务失败，请稍后重试')
+        return
+      }
+      try { localStorage.setItem(BATCH_JOB_KEY, jobId) } catch { /* ignore */ }
+      setSelectedIds(new Set())
+      setBatchProgress(null)
+      setBatchJobId(jobId)
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail
+      setBatchMsg(
+        `批量预测失败: ${typeof detail === 'string' ? detail : (err?.message || '网络请求异常')}`,
+      )
+    } finally {
+      setBatchStarting(false)
+    }
+  }
+
+  // 轮询批量任务；关闭或刷新页面后凭 localStorage 里的 job_id 续接。
+  useEffect(() => {
+    if (!batchJobId) return
+    let cancelled = false
+    const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+    const clearJob = () => {
+      try { localStorage.removeItem(BATCH_JOB_KEY) } catch { /* ignore */ }
+    }
+    const poll = async () => {
+      while (!cancelled) {
+        try {
+          const res = await apiClient.get(`/predict/jobs/${batchJobId}`, { timeout: 10000 })
+          const job = res.data?.job
+          if (job && !cancelled) {
+            const progress: BatchProgress | null = job.result || null
+            setBatchProgress(progress)
+            if (progress?.succeeded?.length) {
+              const okIds = new Set(progress.succeeded)
+              setFixtures((prev) => prev.map((f) => (
+                okIds.has(f.id) && !f.predicted ? { ...f, predicted: true } : f
+              )))
+            }
+            if (job.status === 'done' || job.status === 'failed') {
+              clearJob()
+              if (job.status === 'failed') {
+                setBatchMsg(`批量预测任务失败: ${job.error || '未知错误'}`)
+              } else if (progress) {
+                setBatchMsg(
+                  `批量预测完成：成功 ${progress.succeeded?.length ?? 0} / 失败 ${progress.failed?.length ?? 0} / 跳过 ${progress.skipped?.length ?? 0}`,
+                )
+              } else {
+                setBatchMsg('批量预测完成')
+              }
+              setBatchJobId(null)
+              fetchFixtures()
+              return
+            }
+          }
+        } catch (err: any) {
+          if (err?.response?.status === 404) {
+            clearJob()
+            setBatchMsg('批量预测任务状态丢失，请重新发起')
+            setBatchJobId(null)
+            return
+          }
+          // 其它轮询失败不中断任务，继续下一次
+        }
+        await sleep(3000)
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [batchJobId])
 
   const openTeamDetail = (teamId: number) => {
     if (!teamId) return
@@ -498,6 +634,44 @@ export default function FixturesPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">比赛中心</h1>
+
+      {batchJobId && (
+        <div className="mb-4 px-4 py-3 rounded text-sm bg-indigo-50 text-indigo-700 border border-indigo-200">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">
+              批量预测进行中 {batchProgress ? `${batchProgress.done ?? 0}/${batchProgress.total ?? 0}` : '准备中…'}
+            </span>
+            <span className="text-xs text-indigo-600">
+              {batchProgress?.current_fixture_id != null
+                ? (() => {
+                    const cur = fixtures.find((f) => f.id === batchProgress.current_fixture_id)
+                    return `当前：${cur ? `${cur.home_name || ''} vs ${cur.away_name || ''}` : `#${batchProgress.current_fixture_id}`}`
+                  })()
+                : '等待下一场…'}
+            </span>
+          </div>
+          {batchProgress && (
+            <div className="mt-2 h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-indigo-500 transition-all"
+                style={{ width: `${batchProgress.total ? ((batchProgress.done ?? 0) / batchProgress.total) * 100 : 0}%` }}
+              />
+            </div>
+          )}
+          {batchProgress && (
+            <p className="mt-1 text-xs text-indigo-600">
+              成功 {batchProgress.succeeded?.length ?? 0} · 失败 {batchProgress.failed?.length ?? 0} · 跳过 {batchProgress.skipped?.length ?? 0}
+            </p>
+          )}
+        </div>
+      )}
+
+      {batchMsg && (
+        <div className="mb-4 px-4 py-2 rounded text-sm bg-blue-50 text-blue-700 border border-blue-200">
+          {batchMsg}
+          <button className="ml-3 text-blue-500 hover:underline" onClick={() => setBatchMsg(null)}>关闭</button>
+        </div>
+      )}
 
       {predictMsg && (
         <div className="mb-4 px-4 py-2 rounded text-sm bg-blue-50 text-blue-700 border border-blue-200">
@@ -565,6 +739,35 @@ export default function FixturesPage() {
         </div>
       </div>
 
+      {/* 批量预测工具条 */}
+      <div className="card mb-4">
+        <div className="card-body flex flex-wrap items-center gap-3">
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={!!batchJobId || predictableIds.length === 0}
+            onClick={toggleSelectAll}
+          >
+            {allSelected ? '取消全选' : '全选本页可预测'}
+          </button>
+          <span className="text-sm text-gray-500">
+            已选 {selectedPredictableIds.length} / 可预测 {predictableIds.length}
+          </span>
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={batchStarting || !!batchJobId || selectedPredictableIds.length === 0}
+            onClick={handleBatchPredict}
+          >
+            {batchStarting ? '创建中...' : `批量预测选中(${selectedPredictableIds.length})`}
+          </button>
+          {selectedPredictableIds.length > 0 && !batchJobId && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setSelectedIds(new Set())}>
+              清空选择
+            </button>
+          )}
+          <span className="text-xs text-gray-400">串行执行，上一场结束后立即开始下一场</span>
+        </div>
+      </div>
+
       {loading ? (
         <Loading />
       ) : (
@@ -574,6 +777,16 @@ export default function FixturesPage() {
             <table>
               <thead>
                 <tr>
+                  <th className="w-8">
+                    <input
+                      type="checkbox"
+                      className="align-middle"
+                      disabled={!!batchJobId || predictableIds.length === 0}
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      title="全选本页可预测"
+                    />
+                  </th>
                   <th>ID</th>
                   <th>联赛</th>
                   <th>主队</th>
@@ -587,6 +800,16 @@ export default function FixturesPage() {
               <tbody>
                 {fixtures.map((f) => (
                   <tr key={f.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        className="align-middle"
+                        disabled={!!batchJobId || !isPredictable(f)}
+                        checked={selectedIds.has(f.id)}
+                        onChange={() => toggleSelect(f.id)}
+                        title={isPredictable(f) ? '选择加入批量预测' : '已预测或已完赛，不可批量预测'}
+                      />
+                    </td>
                     <td className="text-gray-400 text-xs">{f.id}</td>
                     <td className="text-xs text-gray-500">
                     {f.league_id ? (
@@ -645,7 +868,7 @@ export default function FixturesPage() {
                         ) : (
                           <button
                             className="btn btn-primary btn-xs"
-                            disabled={FINISHED_STATUSES.has(f.status_short) || predictingIds.has(f.id)}
+                            disabled={FINISHED_STATUSES.has(f.status_short) || predictingIds.has(f.id) || !!batchJobId}
                             onClick={() => handlePredict(f)}
                           >
                             {predictingIds.has(f.id) ? '预测中...' : '预测'}
@@ -657,7 +880,7 @@ export default function FixturesPage() {
                 ))}
                 {fixtures.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="text-center text-gray-400 py-8">
+                    <td colSpan={9} className="text-center text-gray-400 py-8">
                       暂无比赛数据，请先同步赛程
                     </td>
                   </tr>
@@ -681,6 +904,10 @@ export default function FixturesPage() {
                 predicting={predictingIds.has(f.id)}
                 viewing={viewingPredictId === f.id}
                 finished={FINISHED_STATUSES.has(f.status_short)}
+                selectable={isPredictable(f)}
+                selected={selectedIds.has(f.id)}
+                batchRunning={!!batchJobId}
+                onToggleSelect={toggleSelect}
               />
             ))}
             {fixtures.length === 0 && (
@@ -1024,7 +1251,8 @@ export default function FixturesPage() {
               <button
                 className="btn btn-primary btn-sm"
                 disabled={predictingIds.has(predictResult.fixture.id)
-                  || FINISHED_STATUSES.has(predictResult.fixture.status_short)}
+                  || FINISHED_STATUSES.has(predictResult.fixture.status_short)
+                  || !!batchJobId}
                 onClick={() => handlePredict(predictResult.fixture)}
               >
                 {predictingIds.has(predictResult.fixture.id) ? '预测中...' : '重新预测'}
@@ -1326,6 +1554,10 @@ function FixtureCard({
   predicting,
   viewing,
   finished,
+  selectable,
+  selected,
+  batchRunning,
+  onToggleSelect,
 }: {
   fixture: Fixture
   onViewDetail: (f: Fixture) => void
@@ -1337,21 +1569,35 @@ function FixtureCard({
   predicting: boolean
   viewing: boolean
   finished: boolean
+  selectable: boolean
+  selected: boolean
+  batchRunning: boolean
+  onToggleSelect: (id: number) => void
 }) {
   const f = fixture
   return (
     <div className="p-4">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-gray-500 truncate">
-          {f.league_id ? (
-            <Link className="text-primary-600 hover:underline" to={`/standings?league=${f.league_id}`}>
-              {f.league_name || f.league_id}
-            </Link>
-          ) : (
-            f.league_name || f.league_id
-          )}
-          {' '}· #{f.id}
-        </span>
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <input
+            type="checkbox"
+            className="shrink-0"
+            disabled={batchRunning || !selectable}
+            checked={selected}
+            onChange={() => onToggleSelect(f.id)}
+            title={selectable ? '选择加入批量预测' : '已预测或已完赛，不可批量预测'}
+          />
+          <span className="text-xs text-gray-500 truncate">
+            {f.league_id ? (
+              <Link className="text-primary-600 hover:underline" to={`/standings?league=${f.league_id}`}>
+                {f.league_name || f.league_id}
+              </Link>
+            ) : (
+              f.league_name || f.league_id
+            )}
+            {' '}· #{f.id}
+          </span>
+        </div>
         <StatusBadge status={f.status_short} />
       </div>
 
@@ -1397,7 +1643,7 @@ function FixtureCard({
         ) : (
           <button
             className="btn btn-primary btn-xs flex-1"
-            disabled={finished || predicting}
+            disabled={finished || predicting || batchRunning}
             onClick={() => onPredict(f)}
           >
             {predicting ? '预测中...' : '预测'}

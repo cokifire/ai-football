@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -14,10 +15,19 @@ from app.services.prediction_job_service import (
     create_job,
     get_job as get_prediction_job,
     run_prediction_job,
+    create_batch_job,
+    run_batch_prediction_job,
 )
 from app.core.security import AdminAuth
 
 router = APIRouter()
+
+# 单次批量预测上限：避免一次提交过多任务把 LLM / 情报抓取额度打爆。
+MAX_BATCH_SIZE = 50
+
+
+class BatchPredictRequest(BaseModel):
+    fixture_ids: list[int]
 
 
 def _date_to_utc_range(date_str: str) -> tuple[str, str]:
@@ -26,6 +36,45 @@ def _date_to_utc_range(date_str: str) -> tuple[str, str]:
     start = d + timedelta(hours=10, minutes=10)
     end   = d + timedelta(hours=34, minutes=10)
     return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@router.post("/predict/batch")
+async def predict_batch(
+    req: BatchPredictRequest,
+    background_tasks: BackgroundTasks,
+    _: AdminAuth,
+):
+    """批量预测（串行执行，上一场结束后立即开始下一场，不插入额外等待）。
+
+    创建后台任务后立即返回 job_id，前端通过 ``GET /predict/jobs/{job_id}``
+    轮询；逐场进度写在 job.result 里（succeeded / failed / skipped / 当前场次）。
+
+    注意：本路由必须注册在 ``/predict/{fixture_id}`` 之前，否则 ``batch``
+    会被当成 fixture_id 命中参数路由并触发 int 校验失败。
+    """
+    # 去重保序 + 限量
+    fixture_ids: list[int] = []
+    seen: set[int] = set()
+    for fid in req.fixture_ids:
+        if fid in seen:
+            continue
+        seen.add(fid)
+        fixture_ids.append(fid)
+
+    if not fixture_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一场比赛")
+    if len(fixture_ids) > MAX_BATCH_SIZE:
+        raise HTTPException(status_code=400, detail=f"单次批量预测最多 {MAX_BATCH_SIZE} 场")
+
+    logger.info(f"收到批量预测请求: {len(fixture_ids)} 场 fixture_ids={fixture_ids}")
+    job_id = create_batch_job(fixture_ids)
+    background_tasks.add_task(run_batch_prediction_job, job_id, fixture_ids)
+    return {
+        "status": "ok",
+        "job_id": job_id,
+        "total": len(fixture_ids),
+        "message": "批量预测任务已创建，请轮询 /predict/jobs/{job_id}",
+    }
 
 
 @router.post("/predict/{fixture_id}")

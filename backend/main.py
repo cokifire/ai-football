@@ -14,6 +14,7 @@ from app.api.scheduler import router as scheduler_router
 from app.api.predictions import router as predictions_router
 from app.api.logs import router as logs_router
 from app.services.scheduler import init_scheduler, shutdown_scheduler
+from app.services.prediction_job_service import recover_stale_jobs
 from app.db.schema_compat import (
     ensure_prediction_intelligence_column,
     ensure_prediction_llm_model_column,
@@ -33,6 +34,10 @@ async def lifespan(app: FastAPI):
     # predictions 表由 raw SQL 维护，补上代码依赖但可能尚未迁移的列
     ensure_prediction_intelligence_column()
     ensure_prediction_llm_model_column()
+
+    # 进程重启后后台预测任务不可能再完成，复位残留的 pending/running 任务，
+    # 避免前端一直轮询一个永远不会结束的 job。
+    recover_stale_jobs()
 
     logger.info("正在注册定时任务...")
     init_scheduler()
