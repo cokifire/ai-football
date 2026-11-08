@@ -268,30 +268,27 @@ def collect_samples(db):
         ou_type = (m["llm_ou_type"] or "").strip()
         ou_line = m["llm_ou_line"]
         ou_pct = pf(m["llm_ou_pct"])
-        if ou_type and ou_line is not None:
-            try:
-                line = float(ou_line)
-                is_over = "大" in ou_type
-                # 走水（total==line）排除，不参与二值校准
-                if total != line and ou_pct is not None:
-                    actual_over = total > line
-                    won = actual_over if is_over else (not actual_over)
-                    samples["ou"]["raw"].append(ou_pct)
-                    samples["ou"]["x"].append(_logit(ou_pct))
-                    samples["ou"]["y"].append(1 if won else 0)
-            except (ValueError, TypeError):
-                pass
+        # 无赔率时 skill 契约把盘口线写成 "-"，统一解析一次供两处复用，
+        # 不能在 fallback 分支里再对原字符串做 float()。
+        try:
+            line = float(ou_line) if ou_line is not None else None
+        except (ValueError, TypeError):
+            line = None
+        if ou_type and line is not None:
+            is_over = "大" in ou_type
+            # 走水（total==line）排除，不参与二值校准
+            if total != line and ou_pct is not None:
+                actual_over = total > line
+                won = actual_over if is_over else (not actual_over)
+                samples["ou"]["raw"].append(ou_pct)
+                samples["ou"]["x"].append(_logit(ou_pct))
+                samples["ou"]["y"].append(1 if won else 0)
 
         # 大小球 2.5 专用（fallback 路径）
         o25 = m["over25_prob"]
-        if o25 is not None and ou_line is not None:
-            # ou_line 可能是 "-"（无赔率时 LLM 的占位），不能直接 float()
-            try:
-                is_25 = float(ou_line) == 2.5
-            except (ValueError, TypeError):
-                is_25 = False
-            if is_25:
-                o25 = float(o25)
+        if o25 is not None and line == 2.5:
+            o25 = float(o25)
+            if total != 2.5:  # 2.5 无走水
                 samples["ou25"]["raw"].append(o25)
                 samples["ou25"]["x"].append(_logit(o25))
                 samples["ou25"]["y"].append(1 if total > 2.5 else 0)
@@ -381,22 +378,27 @@ def fit_and_save(db, path=CALIBRATION_PATH):
 
 
 # ───────────────────────────── 加载 + 应用 ─────────────────────────────
-_cache = None
+# 按文件路径 + mtime 缓存：重跑 tools/calibrate_probs.py 后无需重启服务即可生效。
+_cache = {}
 
 
 def load_calibration(path=CALIBRATION_PATH):
-    global _cache
-    if _cache is not None:
-        return _cache
-    if not os.path.exists(path):
-        _cache = {"params": {}, "diagnostics": {}}
-        return _cache
+    p = str(path)
+    empty = {"params": {}, "diagnostics": {}}
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            _cache = json.load(f)
+        mtime = os.path.getmtime(p)
+    except OSError:
+        return empty
+    hit = _cache.get(p)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            payload = json.load(f)
     except Exception:
-        _cache = {"params": {}, "diagnostics": {}}
-    return _cache
+        payload = empty
+    _cache[p] = (mtime, payload)
+    return payload
 
 
 def apply_calibration(key, raw_p, path=CALIBRATION_PATH):
@@ -415,3 +417,138 @@ def apply_calibration(key, raw_p, path=CALIBRATION_PATH):
 
 def get_diagnostics(path=CALIBRATION_PATH):
     return load_calibration(path).get("diagnostics", {})
+
+
+# ─────────────────────── 方向对称校验（只读，不改落库） ───────────────────────
+def _unavailable(key, selected_side, reason):
+    return {
+        "status": "UNAVAILABLE",
+        "reason": reason,
+        "key": key,
+        "selected_side": selected_side,
+        "raw_p": None,
+        "calibrated_p": None,
+        "push_p": None,
+        "sides": {},
+        "margin": None,
+        "market_consensus_side": None,
+        "suggested_side": None,
+    }
+
+
+def calibrated_sides(key, raw_p, selected_side, odds_a, odds_b, line,
+                     path=CALIBRATION_PATH, margin=0.03):
+    """把「所选方向」的 Platt 校准概率展开成两侧 edge，给出对称方向建议。
+
+    key="ou" 时两侧为 over/under，odds_a 是大球赔率；
+    key="ah" 时两侧为 home/away，odds_a 是主队侧赔率。
+
+    现有 Platt 曲线拟合的是「LLM 所选方向是否命中」这一单侧二值量，
+    因此另一侧概率只能由守恒式 p_other = 1 - p_cal - p_push 得到。
+    p_push 只取市场两侧赔率隐含概率的缺口（整数线，属下界估计），
+    quarter line 无整场走水记 0；缺赔率/缺参数一律 UNAVAILABLE，不造代理指标。
+
+    判据是两侧 edge（概率 - 赔率隐含概率）之差，不是「赢盘概率是否过五成」；
+    两侧 edge 差小于 margin 时回落到市场共识侧，避免只朝受让方/小球一侧偏。
+    本函数只返回参考建议，绝不改写 llm_ou_type / llm_handicap_team 的落库值。
+    """
+    names = {"ou": ("over", "under"), "ah": ("home", "away")}.get(key)
+    if names is None:
+        return _unavailable(key, selected_side, "不支持的市场类型")
+    if selected_side not in names:
+        return _unavailable(key, selected_side, "所选方向不在该市场的两侧中")
+
+    try:
+        raw_p = float(raw_p)
+        odds_a = float(odds_a)
+        odds_b = float(odds_b)
+        line_val = float(line) if line is not None else None
+    except (TypeError, ValueError):
+        return _unavailable(key, selected_side, "概率/赔率/盘口线不是有效数值")
+    if not (0.0 < raw_p < 1.0) or odds_a <= 1.0 or odds_b <= 1.0:
+        return _unavailable(key, selected_side, "概率或两侧赔率取值无效")
+
+    coef = load_calibration(path).get("params", {}).get(key)
+    if not coef:
+        return _unavailable(key, selected_side, "该市场尚无 Platt 校准参数")
+
+    p_sel = apply_calibration(key, raw_p, path)
+    implied_a, implied_b = 1.0 / odds_a, 1.0 / odds_b
+    is_integer_line = line_val is not None and abs(line_val - round(line_val)) < 1e-9
+    push = min(max(0.0, 1.0 - implied_a - implied_b), 0.5) if is_integer_line else 0.0
+    p_other = max(0.0, 1.0 - p_sel - push)
+
+    pa, pb = (p_sel, p_other) if selected_side == names[0] else (p_other, p_sel)
+    sides = {
+        names[0]: {"p": pa, "implied": implied_a, "odds": odds_a, "edge": pa - implied_a},
+        names[1]: {"p": pb, "implied": implied_b, "odds": odds_b, "edge": pb - implied_b},
+    }
+    consensus_side = names[0] if implied_a >= implied_b else names[1]
+    edge_a, edge_b = sides[names[0]]["edge"], sides[names[1]]["edge"]
+    suggested = (consensus_side if abs(edge_a - edge_b) < margin
+                 else (names[0] if edge_a > edge_b else names[1]))
+
+    return {
+        "status": "AVAILABLE",
+        "reason": None,
+        "key": key,
+        "selected_side": selected_side,
+        "raw_p": raw_p,
+        "calibrated_p": p_sel,
+        "push_p": push,
+        "push_is_lower_bound": True,
+        "sides": sides,
+        "margin": margin,
+        "market_consensus_side": consensus_side,
+        "suggested_side": suggested,
+    }
+
+
+def direction_calibration_hint(cons, path=CALIBRATION_PATH):
+    """生成注入预测 prompt 的「校准方向参考」文本。
+
+    预测时 llm_*_pct 尚未产出，无法直接调用 calibrated_sides；这里给 LLM 的是
+    历史校准偏差、本场两侧市场隐含概率基线，以及两侧等价的 edge 判据，
+    让它在生成方向时自行做对称校验。只作参考，不强制服从，也不改落库字段。
+    """
+    payload = load_calibration(path)
+    params = payload.get("params", {})
+    diag = payload.get("diagnostics", {})
+    lines = ["【校准方向参考（历史统计，仅供对称校验，不强制服从）】"]
+
+    for key, label in (("ou", "大小球"), ("ah", "让球盘")):
+        d = diag.get(key) or {}
+        if not params.get(key):
+            lines.append(f"{label}：UNAVAILABLE（该市场尚无 Platt 校准参数），两侧仍需按对称规则比较。")
+            continue
+        declared = 0.54
+        calibrated = apply_calibration(key, declared, path)
+        stats = (
+            f"（基准命中率 {d.get('base_rate', 0):.1%}，n={d.get('n')}，"
+            f"Brier {d.get('brier_raw')}→{d.get('brier_cal')}）"
+            if d.get("fitted") else "（诊断信息暂无）"
+        )
+        lines.append(
+            f"{label}：历史上声明 {declared:.0%} 时实际命中约 {calibrated:.1%}{stats}。"
+        )
+
+    ou_lines, ah_lines = [], []
+    for ln, sides in sorted(((cons or {}).get("ou") or {}).items())[:3]:
+        if sides.get("over") and sides.get("under"):
+            ou_lines.append(f"{ln} 大{1 / sides['over']:.3f}/小{1 / sides['under']:.3f}")
+    for ln, sides in sorted(((cons or {}).get("ah") or {}).items())[:3]:
+        if sides.get("home_side") and sides.get("away_side"):
+            ah_lines.append(f"{ln} 主{1 / sides['home_side']:.3f}/客{1 / sides['away_side']:.3f}")
+    lines.append(
+        "本场市场两侧隐含概率（1/赔率，未去水）：大小球 "
+        + ("、".join(ou_lines) if ou_lines else "暂无")
+        + "；亚盘 " + ("、".join(ah_lines) if ah_lines else "暂无") + "。"
+    )
+    lines.append(
+        "方向规则：两侧都算 edge（校准后概率 − 赔率隐含概率），判据只用 edge，"
+        "禁止用概率过半当阈值；两侧 edge 差小于 0.03 时取市场共识侧/让方，"
+        "不得默认受让方或小球；模型与市场分歧>15pp、名义EV≥100%、未确认首发、"
+        "短休、xG样本<5、密集赛程等降权条件对两侧等价，不得只压让方/强队侧；"
+        "整数盘走水使两侧概率之和小于 1 属正常，不是错误数据。"
+    )
+    return "\n".join(lines)

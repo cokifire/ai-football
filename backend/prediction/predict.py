@@ -35,6 +35,8 @@ from prediction.bayes import (
     BAYES_VERSION, apply_updates, blend_prior, market_divergence, team_elo_prior,
 )
 from prediction.training.model import fill_na_with_medians, load_feature_medians
+from app.services.calibration_service import direction_calibration_hint
+from app.services.market_odds import consensus
 
 import pandas as pd
 
@@ -1306,7 +1308,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       lineups_text: str, weather_text: str = "",
                       intelligence_markdown: str = "",
                       bayes_context: dict | None = None,
-                      home_xg_text: str = "", away_xg_text: str = "") -> str:
+                      home_xg_text: str = "", away_xg_text: str = "",
+                      calibration_hint: str = "") -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -1397,8 +1400,12 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     Top3比分参考: {top3_str}
     模型最高项:{model_top_text}
 
+    *【校准方向参考】（历史统计，仅供对称校验，不强制服从）
+    {calibration_hint}
+
     # 分析方法（技能）
     - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
+    - handicap_team / ou_type 必须遵守【校准方向参考】的两侧对称规则：两侧都算 edge，降权条件两侧等价；deep_report 写出两侧 edge 的比较依据。
 
     # output-schema
     一致性硬约束：win/handicap/ou 必须来自同一份最终 1X2 分布。半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
@@ -1407,7 +1414,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     "win_pct":"win 所选项的概率（win=主胜则主胜概率），如85%",
     "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
     "handicap_num":"让球盘口线，负数=主队让，正数=客队让，如-1=主让1球（必须取已提供赔率中的盘口）",
-    "handicap_team":"建议下注的一方：主队或客队, 填你判断有赢盘价值的一方",
+    "handicap_team":"建议下注的一方：主队或客队, 填两侧 edge 比较后有赢盘价值的一方（不得只因强队让深盘就默认受让方）",
     "handicap_pct":"handicap_team 这一方的赢盘概率，如65%",
     "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
     "ou_type":"大或小","ou_pct":"ou_type 所选项的概率（大=大球概率，小=小球概率），如60%",
@@ -1549,12 +1556,20 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         llm_result = None
         llm_model = None
         try:
+            # 校准方向参考只作对称校验输入；生成失败不阻断预测。
+            # 赔率已在第 2 步落库，此处用同一份结构化快照取两侧市场基线。
+            try:
+                calibration_hint = direction_calibration_hint(consensus([odds["odds_data"]]))
+            except Exception as e:
+                logger.warning("校准方向参考生成失败 fixture={}: {}", fixture_id, e)
+                calibration_hint = ""
             prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
                                        lineups_text, weather_text,
                                        intelligence_markdown, bayes_context,
-                                       home_xg_text, away_xg_text)
+                                       home_xg_text, away_xg_text,
+                                       calibration_hint=calibration_hint)
             llm_result, llm_model = _call_llm(prompt)
         except CodexError:
             # codex 配置/环境错误（如 schema 文件缺失）不是可重试的模型故障，

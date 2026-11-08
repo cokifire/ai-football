@@ -7,78 +7,81 @@
 覆盖市场：胜负平(1X2)、大小球(Over/Under)、让球盘(Asian Handicap)。
 """
 import json
-from statistics import median
 
 from sqlalchemy import text
 
-from app.services.calibration_service import apply_calibration
+from app.services.calibration_service import (
+    CALIBRATION_PATH, apply_calibration, calibrated_sides,
+)
+from app.services.market_odds import consensus as shared_consensus, parse_pct as shared_parse_pct
 
 
 def _parse_pct(v):
-    """兼容 '53%' / 0.53 / None，统一返回 0-1 概率。"""
-    if v is None:
-        return None
-    s = str(v).strip().replace("%", "").replace("％", "")
-    try:
-        f = float(s)
-    except (ValueError, TypeError):
-        return None
-    return f / 100.0 if f > 1 else f
+    return shared_parse_pct(v)
 
 
 def _consensus(snaps):
-    """合并一个 fixture 的全部赔率快照，返回各市场共识（原始 decimal 赔率中位数）。
+    return shared_consensus(snaps)
 
-    1X2: {home, draw, away}
-    ou:  {line: {over, under}}
-    ah:  {line: {home_side, away_side}}  line 为让球盘口线（正=客让/负=主让，与 llm_handicap_num 同向）
-    """
-    h_raw, d_raw, a_raw = [], [], []
-    ou, ah = {}, {}
 
-    for snap in snaps:
-        data = snap.get("odds_data") if isinstance(snap, dict) else snap
-        if isinstance(data, dict):
-            data = data.get("odds_data", [])
-        for bm in data:
-            for e in bm.get("entries", []):
-                if e.get("home_raw"):
-                    h_raw.append(float(e["home_raw"]))
-                if e.get("draw_raw"):
-                    d_raw.append(float(e["draw_raw"]))
-                if e.get("away_raw"):
-                    a_raw.append(float(e["away_raw"]))
-
-                if e.get("ou_line") is not None and e.get("ou_over_raw") and e.get("ou_under_raw"):
-                    ln = float(e["ou_line"])
-                    g = ou.setdefault(ln, {"over": [], "under": []})
-                    g["over"].append(float(e["ou_over_raw"]))
-                    g["under"].append(float(e["ou_under_raw"]))
-
-                if e.get("ah_line") is not None and (e.get("ah_home_raw") or e.get("ah_away_raw")):
-                    ln = float(e["ah_line"])
-                    # ah_line 与 llm_handicap_num 同口径（正=客让、负=主让），直接当 key，
-                    # 不要取反（否则与下方 compute_value_bets 的 cons["ah"].get(hc) 符号对不上，
-                    # 导致让球盘 value-bet 市场永远 available:False）。
-                    g = ah.setdefault(ln, {"home_side": [], "away_side": []})
-                    # ah_home_raw/ah_away_raw 已是主/客两侧各自的价格，无需按符号交换。
-                    hs, as_ = e.get("ah_home_raw"), e.get("ah_away_raw")
-                    if hs:
-                        g["home_side"].append(float(hs))
-                    if as_:
-                        g["away_side"].append(float(as_))
-
-    def med(v):
-        return median(v) if v else None
-
+def _unavailable_comparison(key, side, reason):
     return {
-        "1x2": ({o: med(v) for o, v in (("home", h_raw), ("draw", d_raw), ("away", a_raw))}
-                if (h_raw and d_raw and a_raw) else None),
-        "ou": {ln: {"over": med(v["over"]), "under": med(v["under"])}
-               for ln, v in ou.items() if v["over"] and v["under"]},
-        "ah": {ln: {"home_side": med(v["home_side"]), "away_side": med(v["away_side"])}
-               for ln, v in ah.items() if v["home_side"] and v["away_side"]},
+        "status": "UNAVAILABLE",
+        "reason": reason,
+        "key": key,
+        "selected_side": side,
+        "llm_side": side,
+        "sides": {},
+        "suggested_side": None,
+        "market_consensus_side": None,
     }
+
+
+def calibrated_comparison(p, cons, margin=0.03, path=CALIBRATION_PATH):
+    """生成 ou / ah 的双侧校准对照，供 LLM 原方向与校准建议方向并排展示。
+
+    只读取已有预测与赔率共识，不写库、不覆盖 llm_ou_type / llm_handicap_team。
+    判据是两侧 edge，缺赔率/缺 pct/缺校准参数一律标 UNAVAILABLE。
+    """
+    out = {}
+
+    ou_type = (p.get("llm_ou_type") or "").strip()
+    ou_line = p.get("llm_ou_line")
+    if ou_type and ou_line is not None:
+        try:
+            ln = float(ou_line)
+        except (TypeError, ValueError):
+            ln = None
+        mkt = (cons.get("ou") or {}).get(ln) if ln is not None else None
+        raw = _parse_pct(p.get("llm_ou_pct"))
+        side = "over" if "大" in ou_type else "under"
+        if mkt and raw is not None:
+            r = calibrated_sides("ou", raw, side, mkt["over"], mkt["under"], ln,
+                                 path=path, margin=margin)
+        else:
+            r = _unavailable_comparison("ou", side, "缺少该盘口线的两侧赔率或所选方向概率")
+        r["llm_side"] = side
+        out["ou"] = r
+
+    hc = p.get("llm_handicap_num")
+    team = (p.get("llm_handicap_team") or "").strip()
+    if hc is not None and team:
+        try:
+            hcv = float(hc)
+        except (TypeError, ValueError):
+            hcv = None
+        mkt = (cons.get("ah") or {}).get(hcv) if hcv is not None else None
+        raw = _parse_pct(p.get("llm_handicap_pct"))
+        side = "away" if team == "客队" else "home"
+        if mkt and raw is not None:
+            r = calibrated_sides("ah", raw, side, mkt["home_side"], mkt["away_side"], hcv,
+                                 path=path, margin=margin)
+        else:
+            r = _unavailable_comparison("ah", side, "缺少该盘口线的两侧赔率或所选方向概率")
+        r["llm_side"] = side
+        out["ah"] = r
+
+    return out
 
 
 def _kelly(model_p, odds):
@@ -178,6 +181,9 @@ def compute_value_bets(db, fixture_id, refresh=False, margin=0.03):
     else:
         markets["1x2"] = {"available": False}
 
+    # 双侧校准对照：LLM 原方向与校准建议方向并排返回，不改任何落库字段。
+    comparison = calibrated_comparison(p, cons, margin=margin)
+
     # ── 大小球 ──
     ou_type = (p.get("llm_ou_type") or "").strip()
     line = p.get("llm_ou_line")
@@ -206,6 +212,22 @@ def compute_value_bets(db, fixture_id, refresh=False, margin=0.03):
                 "recommendation": (sel["label"] + f" (盘口{line})") if edge > margin else "无价值（观望）",
                 "best_edge": round(edge, 4), "selections": [sel],
             }
+            cmp_ou = comparison.get("ou")
+            if cmp_ou and cmp_ou["status"] == "AVAILABLE":
+                other = "under" if side == "over" else "over"
+                s_other = cmp_ou["sides"][other]
+                o_odd = mkt_ou[other]
+                markets["ou"]["selections"].append({
+                    "side": other, "label": ("小球" if other == "under" else "大球"),
+                    "model_p": round(s_other["p"], 4),
+                    "raw_model_p": None,  # 另一侧无 LLM 声明概率，不造代理指标
+                    "market_implied": round(s_other["implied"], 4),
+                    "edge": round(s_other["edge"], 4),
+                    "kelly": round(_kelly(s_other["p"], o_odd), 4), "odds": o_odd,
+                })
+            markets["ou"]["llm_side"] = side
+            markets["ou"]["calibrated_suggestion"] = (cmp_ou or {}).get("suggested_side")
+            markets["ou"]["calibration"] = cmp_ou
         else:
             markets["ou"] = {"available": False}
     else:
@@ -238,6 +260,25 @@ def compute_value_bets(db, fixture_id, refresh=False, margin=0.03):
                 "recommendation": (f"{side_label}赢盘 (盘口{hc})") if edge > margin else "无价值（观望）",
                 "best_edge": round(edge, 4), "selections": [sel],
             }
+            cmp_ah = comparison.get("ah")
+            if cmp_ah and cmp_ah["status"] == "AVAILABLE":
+                other = "away" if cmp_ah["llm_side"] == "home" else "home"
+                s_other = cmp_ah["sides"][other]
+                other_label = "客队" if other == "away" else "主队"
+                o_odd = mkt_ah[f"{other}_side"]
+                markets["ah"]["selections"].append({
+                    "side": other_label,
+                    "label": f"{other_label}赢盘",
+                    "model_p": round(s_other["p"], 4),
+                    "raw_model_p": None,
+                    "market_implied": round(s_other["implied"], 4),
+                    "edge": round(s_other["edge"], 4),
+                    "kelly": round(_kelly(s_other["p"], o_odd), 4), "odds": o_odd,
+                    "handicap_num": hc, "handicap_team": team,
+                })
+            markets["ah"]["llm_side"] = (cmp_ah or {}).get("llm_side")
+            markets["ah"]["calibrated_suggestion"] = (cmp_ah or {}).get("suggested_side")
+            markets["ah"]["calibration"] = cmp_ah
         else:
             markets["ah"] = {"available": False}
     else:
