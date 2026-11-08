@@ -13,7 +13,7 @@ from app.services.standing_service import sync_standings
 from app.services.fixture_service import sync_fixtures, sync_live_fixtures
 from app.services.prediction_result_service import backfill_results
 from app.services.auto_predict_service import auto_predict
-from app.services.elo_service import update_finished_elos
+from app.services.elo_service import run_daily_elo_update
 
 LIVE_INTERVAL_SECONDS = 2 * 60
 
@@ -28,7 +28,8 @@ _DEFAULT_TASKS = {
                        "interval_seconds": LIVE_INTERVAL_SECONDS, "enabled": 0},
     "backfill_pred":  {"name": "预测结果回填",   "start_hour": 9,   "fn": backfill_results,
                        "interval_seconds": None, "enabled": 0},
-    "elo_update":     {"name": "球队 Elo 更新",  "start_hour": 9.5, "fn": update_finished_elos,
+    # Elo 更新 + Flashscore xG 补缺共用同一入口（不新增调度项）
+    "elo_update":     {"name": "球队 Elo 更新",  "start_hour": 9.5, "fn": run_daily_elo_update,
                        "interval_seconds": None, "enabled": 1},
     "auto_predict":   {"name": "赛前自动预测",   "start_hour": 12,  "fn": auto_predict,
                        "interval_seconds": None, "enabled": 0},
