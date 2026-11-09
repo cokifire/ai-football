@@ -7,6 +7,12 @@
 
 作为 API-Football `/odds` 拉取失败时的兜底数据源。
 
+2026-10 Flashscore 赛前赔率页改版：盘口改为客户端 tab（点完 URL 不变），
+赛前菜单只剩 1X2 / OVER/UNDER / BTTS / DOUBLE CHANCE，**不再提供亚盘**；
+大小球的盘口线数值也只出现在 ope2 GraphQL 响应里，DOM 表不显示。因此
+1X2 仍走 DOM 解析，大小球改从 ope2 响应取数，亚盘直接记空（旧 URL 会跳回
+比赛概览页，再重试也只是白等）。
+
 URL 规律
 --------
     https://www.flashscore.com/match/football/
@@ -82,7 +88,8 @@ ODDS_URL_TMPL = (
     "{home_slug}-{home_hash}/{away_slug}-{away_hash}/odds/{market}/full-time/"
 )
 
-# Flashscore 的 market 路径片段
+# 旧版 market 路径片段。改版后只有 1x2 仍用于拼初始赔率页 URL；其余盘口
+# 靠点击页面 tab 切换，不再 goto 这些路径（见 _CLICK_ODDS_TAB_JS）。
 MARKET_PATH = {
     "1x2": "1x2-odds",
     "asian_handicap": "asian-handicap",
@@ -346,6 +353,24 @@ _ROWS_JS = """
 })
 """
 
+# Flashscore 2026-10 改版后，盘口切换是客户端 <button data-testid="wcl-tab">，
+# 点完 URL 不变（仍是 /odds/1x2-odds/full-time/），旧版靠 /odds/<market>/...
+# 路由跳转的写法已失效。OVER/UNDER 的数据甚至只在切 tab 后发出的 ope2
+# GraphQL 请求里，DOM 表头不放盘口线数值，所以必须从响应里取（见
+# _parse_ou_payloads）。
+_CLICK_ODDS_TAB_JS = """
+(target) => {
+    const want = (target || '').toUpperCase();
+    const tabs = Array.from(document.querySelectorAll('[data-testid="wcl-tab"]'));
+    const t = tabs.find(e => (e.innerText || '').trim().toUpperCase() === want);
+    if (t) { t.click(); return true; }
+    return false;
+}
+"""
+
+# 点击盘口 tab 后等待 ope2 响应的最长等待（毫秒）
+OU_TAB_WAIT_MS = 8000
+
 # 面包屑里的联赛链接（形如 /football/sweden/allsvenskan/，文本含 "- ROUND 19"）
 _LEAGUE_JS = """
 () => {
@@ -607,6 +632,42 @@ def _parse_market(rows: list[dict], kind: str) -> list[dict]:
     return out
 
 
+def _item_odd(item) -> float | None:
+    """从 EventOddsOverviewItem 取有效赔率；停售(active=False)或占位值返回 None。"""
+    if not isinstance(item, dict) or item.get("active") is False:
+        return None
+    return _to_float(item.get("value"))
+
+
+def _parse_ou_payloads(payloads: list) -> list[dict]:
+    """把 ope2 的 findPrematchOddsForBookmaker 响应解析成 over_under 行。
+
+    改版后 OVER/UNDER 表的 DOM 只放赔率、不放盘口线数值（表头仅 "TOTAL
+    OVER UNDER" 文字），盘口线只在 GraphQL 响应的 opportunities[].handicap
+    里，因此大小球改从这里取数。输出与 _parse_market(..., 'over_under') 同构，
+    可直接喂给 _build_entry。
+    """
+    out = []
+    for d in payloads:
+        if not isinstance(d, dict) or d.get("type") != "OVER_UNDER":
+            continue
+        bookmaker = str(d.get("bookmakerId") or "")
+        for opp in d.get("opportunities") or []:
+            if not isinstance(opp, dict):
+                continue
+            handicap = opp.get("handicap")
+            line = _parse_line(handicap.get("value")) if isinstance(handicap, dict) else None
+            over = _item_odd(opp.get("over"))
+            under = _item_odd(opp.get("under"))
+            if line is None or over is None or under is None:
+                continue
+            out.append({
+                "bookmaker": bookmaker, "line": line,
+                "over": over, "under": under,
+            })
+    return out
+
+
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
@@ -724,6 +785,9 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
         # 每次打开赔率页时记录 Flashscore 赔率后端的实际响应。页面 DOM 没有
         # 赔率行时，仅看 DOM 无法区分“无盘口”和“被风控/异步请求失败”。
         current_odds_api = {}
+        # ope2 响应里的各庄家赛前赔率。改版后 OVER/UNDER 的盘口线数值只在
+        # 这里，DOM 表不显示，故收集响应体供 _parse_ou_payloads 解析。
+        odds_payloads: list[dict] = []
 
         def _route_odds_menu(route):
             """为赔率菜单请求指定部署地区，避免出口 IP 的错误地理识别。
@@ -749,6 +813,18 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
 
         def _track_odds_response(response):
             if ODDS_API_PATH not in response.url:
+                return
+            # 具体庄家赔率（切 tab 时逐个请求）：留着给大小球取数
+            if "_hash=ope2" in response.url:
+                try:
+                    payload = response.json()
+                    odds = ((payload or {}).get("data") or {}).get(
+                        "findPrematchOddsForBookmaker"
+                    )
+                    if isinstance(odds, dict):
+                        odds_payloads.append(odds)
+                except Exception:
+                    pass
                 return
             record = {
                 "status": response.status,
@@ -857,6 +933,29 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
                 f"Flashscore 连续 {GOTO_RETRY} 次没能加载 {url} 的赔率区"
             )
 
+        def _fetch_over_under() -> list[dict]:
+            """切到 OVER/UNDER tab，从 ope2 响应里解析各盘口线。"""
+            before = len(odds_payloads)
+            try:
+                clicked = bool(page.evaluate(_CLICK_ODDS_TAB_JS, "OVER/UNDER"))
+            except Exception:
+                clicked = False
+            if not clicked:
+                logger.warning("Flashscore 未找到 OVER/UNDER 盘口 tab，大小球留空")
+                return []
+            deadline = time.monotonic() + OU_TAB_WAIT_MS / 1000
+            while time.monotonic() < deadline:
+                if any(isinstance(p, dict) and p.get("type") == "OVER_UNDER"
+                       for p in odds_payloads[before:]):
+                    break
+                page.wait_for_timeout(300)
+            # 同批其余庄家的响应通常紧随其后，留一点时间收齐
+            page.wait_for_timeout(700)
+            rows = _parse_ou_payloads(odds_payloads[before:])
+            if not rows:
+                logger.warning("Flashscore OVER/UNDER 响应为空，大小球留空")
+            return rows
+
         try:
             mid = None
             url = _odds_url(home_slug, home_hash, away_slug, away_hash, "1x2")
@@ -884,8 +983,7 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
             result["page_away"] = info["away"]
 
             # 赔率后端明确返回 null 时，说明当前事件/地区没有赛前盘口。
-            # 1X2、亚盘和大小球共用同一个赔率菜单，继续逐个等待只会重复
-            # 同样的请求并浪费 2 * ODDS_WAIT_MS。
+            # 所有盘口共用同一个菜单，菜单都为空就没必要再读 DOM 或切 tab。
             if (result.get("odds_api") or {}).get("empty_menu"):
                 result["raw"] = {market: [] for market in markets}
                 result["error"] = (
@@ -898,11 +996,21 @@ def scrape_match_odds(home_hash: str, away_hash: str, hash_to_name: dict,
                 )
                 return result
 
+            # 1X2 仍从 DOM 读（已验证可用），且必须在切 tab 之前读：切到
+            # OVER/UNDER 后整张表换成 OU 行，再读 1X2 会得到空。
+            if "1x2" in markets:
+                result["raw"]["1x2"] = _parse_market(_read_rows(page), "1x2")
+
             for market in markets:
-                if market != "1x2":
-                    goto_odds(_odds_url(home_slug, home_hash, away_slug,
-                                        away_hash, market, mid))
-                result["raw"][market] = _parse_market(_read_rows(page), market)
+                if market == "1x2":
+                    continue
+                if market == "over_under":
+                    result["raw"][market] = _fetch_over_under()
+                else:
+                    # 赛前菜单自 2026-10 改版后不再含 ASIAN_HANDICAP；旧 URL
+                    # /odds/asian-handicap/... 会跳回比赛概览页，重试也只是
+                    # 白等 4 * ODDS_WAIT_MS，直接记空。
+                    result["raw"][market] = []
 
             entry = _build_entry(
                 result["raw"].get("1x2", []),
