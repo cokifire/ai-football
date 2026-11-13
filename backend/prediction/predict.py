@@ -375,11 +375,15 @@ def _llm_pct(v) -> float | None:
 
 
 def _check_handicap_consistency(data: dict) -> bool:
-    """半球盘下 win 与 handicap 方向一致性硬校验。
+    """让 0.5 球盘下 win 与 handicap 方向一致性硬校验。
 
-    只判能由 win/win_pct 直接确定方向的两种（其余组合跳过，避免误杀）：
-      - 客让半（handicap_num>0 且为 x.5）& win=客胜：客队赢盘=P(客胜)=win_pct，主队赢盘=1-win_pct
-      - 主让半（handicap_num<0 且为 x.5）& win=主胜：主队赢盘=P(主胜)=win_pct，客队赢盘=1-win_pct
+    只在盘口为 ±0.5 时生效：此时让球方赢球即穿盘，赢盘概率可由 win/win_pct
+    直接确定，其余组合跳过（避免误杀）：
+      - 客让0.5（handicap_num=+0.5）& win=客胜：客队赢盘=P(客胜)=win_pct，主队赢盘=1-win_pct
+      - 主让0.5（handicap_num=-0.5）& win=主胜：主队赢盘=P(主胜)=win_pct，客队赢盘=1-win_pct
+    1.0 球以上盘口让球方可"赢球但输盘"（如客让1.5、客队仅净胜1球），受让方
+    赢盘概率显著高于 1-win_pct，不能用 1-win_pct 硬比；否则会把 LLM 单一自洽
+    分布下的合法结论误判为矛盾（2026-11-13 fixture=1528970 曾三次误杀）。
     返回 False 表示自相矛盾（如 win=客胜60% 却在客让0.5 下注主队且 pct≈59%）。
     """
     win = str(data.get("win") or "").strip()
@@ -394,18 +398,17 @@ def _check_handicap_consistency(data: dict) -> bool:
         return True
     if win_pct is None or hpct is None:
         return True
-    # 只判半球盘（x.5）：abs(hc)*2 为奇数
-    hc2 = abs(hc) * 2
-    if abs(hc2 - round(hc2)) > 1e-9 or round(hc2) % 2 == 0:
+    # 等式只在让 0.5 球时成立，更大的盘口交给 LLM 的自洽分布判断
+    if abs(abs(hc) - 0.5) > 1e-9:
         return True
 
     tol = 0.03  # 3pp 舍入容差
     if win == "客胜" and hc > 0:
-        # 客让半：主队赢盘应为 1 - P(客胜)
+        # 客让0.5：主队赢盘应为 1 - P(客胜)
         if hteam == "主队" and hpct > (1.0 - win_pct) + tol:
             return False
     elif win == "主胜" and hc < 0:
-        # 主让半：客队赢盘应为 1 - P(主胜)
+        # 主让0.5：客队赢盘应为 1 - P(主胜)
         if hteam == "客队" and hpct > (1.0 - win_pct) + tol:
             return False
     return True

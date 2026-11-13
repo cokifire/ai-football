@@ -1,8 +1,9 @@
 """回归测试：让球方向一致性校验 + value_bet AH 盘口 key 符号。
 
 覆盖：
-  1. prediction.predict._check_handicap_consistency —— 半球盘下 win 与 handicap
-     方向矛盾（如 win=客胜60% 却客让0.5 下注主队）应判为不合规；
+  1. prediction.predict._check_handicap_consistency —— 让 0.5 球盘下 win 与
+     handicap 方向矛盾（如 win=客胜60% 却客让0.5 下注主队）应判为不合规；
+     1.0 球以上盘口让球方可"赢球但输盘"，不做硬校验（交给 LLM 自洽分布）；
   2. value_bet_service._consensus —— AH 盘口 key 与 llm_handicap_num 同口径
      （正=客让/负=主让），不得取反，主/客两侧价格不交换。
 """
@@ -17,11 +18,35 @@ def test_handicap_consistency_rejects_contradiction():
         "win": "客胜", "win_pct": "60%",
         "handicap_num": "+0.5", "handicap_team": "主队", "handicap_pct": "59%",
     }) is False
-    # 主让半的对称矛盾：win=主胜70%，主让1.5，却下注客队76%
+    # 主让0.5 的对称矛盾：客队赢盘应为 1-P(主胜)=30%，却报 76%
+    assert _check_handicap_consistency({
+        "win": "主胜", "win_pct": "70%",
+        "handicap_num": "-0.5", "handicap_team": "客队", "handicap_pct": "76%",
+    }) is False
+
+
+def test_handicap_consistency_allows_large_handicap():
+    """1.0 球以上盘口不做 1-win_pct 硬比。
+
+    让球方"赢球但输盘"时 handicap_pct 本就大于 1-win_pct，属 LLM 单一
+    自洽分布的合法结论。回归 2026-11-13 fixture=1528970：客让1.5、
+    win=客胜却下注主队受让，三次都被判矛盾导致整场预测未落库。
+    """
+    # 日志第 1 次输出
+    assert _check_handicap_consistency({
+        "win": "客胜", "win_pct": "44%",
+        "handicap_num": "1.5", "handicap_team": "主队", "handicap_pct": "80%",
+    }) is True
+    # 日志第 3 次：+1.5 写法
+    assert _check_handicap_consistency({
+        "win": "客胜", "win_pct": "43%",
+        "handicap_num": "+1.5", "handicap_team": "主队", "handicap_pct": "80%",
+    }) is True
+    # 主让1.5 对称：原 rejects_contradiction 用例，现在应放行
     assert _check_handicap_consistency({
         "win": "主胜", "win_pct": "70%",
         "handicap_num": "-1.5", "handicap_team": "客队", "handicap_pct": "76%",
-    }) is False
+    }) is True
 
 
 def test_handicap_consistency_accepts_consistent():
@@ -30,10 +55,10 @@ def test_handicap_consistency_accepts_consistent():
         "win": "客胜", "win_pct": "60%",
         "handicap_num": "0.5", "handicap_team": "客队", "handicap_pct": "60%",
     }) is True
-    # 方向一致：主让1.5 下注主队
+    # 方向一致：主让0.5 下注主队（让球方）
     assert _check_handicap_consistency({
         "win": "主胜", "win_pct": "70%",
-        "handicap_num": "-1.5", "handicap_team": "主队", "handicap_pct": "70%",
+        "handicap_num": "-0.5", "handicap_team": "主队", "handicap_pct": "70%",
     }) is True
 
 
@@ -46,6 +71,11 @@ def test_handicap_consistency_skips_non_half_ball_and_draw():
     assert _check_handicap_consistency({
         "win": "平局", "win_pct": "40%",
         "handicap_num": "0.5", "handicap_team": "主队", "handicap_pct": "50%",
+    }) is True
+    # 整数盘 1.0 同样不做硬校验
+    assert _check_handicap_consistency({
+        "win": "客胜", "win_pct": "44%",
+        "handicap_num": "1.0", "handicap_team": "主队", "handicap_pct": "80%",
     }) is True
 
 
