@@ -430,14 +430,13 @@ def _unavailable(key, selected_side, reason):
         "calibrated_p": None,
         "push_p": None,
         "sides": {},
-        "margin": None,
         "market_consensus_side": None,
         "suggested_side": None,
     }
 
 
 def calibrated_sides(key, raw_p, selected_side, odds_a, odds_b, line,
-                     path=CALIBRATION_PATH, margin=0.03):
+                     path=CALIBRATION_PATH):
     """把「所选方向」的 Platt 校准概率展开成两侧 edge，给出对称方向建议。
 
     key="ou" 时两侧为 over/under，odds_a 是大球赔率；
@@ -448,9 +447,9 @@ def calibrated_sides(key, raw_p, selected_side, odds_a, odds_b, line,
     p_push 只取市场两侧赔率隐含概率的缺口（整数线，属下界估计），
     quarter line 无整场走水记 0；缺赔率/缺参数一律 UNAVAILABLE，不造代理指标。
 
-    判据是两侧 edge（概率 - 赔率隐含概率）之差，不是「赢盘概率是否过五成」；
-    两侧 edge 差小于 margin 时回落到市场共识侧，避免只朝受让方/小球一侧偏。
-    本函数只返回参考建议，绝不改写 llm_ou_type / llm_handicap_team 的落库值。
+    判据是两侧 edge（概率 - 赔率隐含概率），不是「赢盘概率是否过五成」；
+    建议方向取 edge 较高的一侧。本函数只返回参考建议，
+    绝不改写 llm_ou_type / llm_handicap_team 的落库值。
     """
     names = {"ou": ("over", "under"), "ah": ("home", "away")}.get(key)
     if names is None:
@@ -485,8 +484,7 @@ def calibrated_sides(key, raw_p, selected_side, odds_a, odds_b, line,
     }
     consensus_side = names[0] if implied_a >= implied_b else names[1]
     edge_a, edge_b = sides[names[0]]["edge"], sides[names[1]]["edge"]
-    suggested = (consensus_side if abs(edge_a - edge_b) < margin
-                 else (names[0] if edge_a > edge_b else names[1]))
+    suggested = names[0] if edge_a > edge_b else names[1]
 
     return {
         "status": "AVAILABLE",
@@ -498,7 +496,6 @@ def calibrated_sides(key, raw_p, selected_side, odds_a, odds_b, line,
         "push_p": push,
         "push_is_lower_bound": True,
         "sides": sides,
-        "margin": margin,
         "market_consensus_side": consensus_side,
         "suggested_side": suggested,
     }
@@ -508,8 +505,7 @@ def direction_calibration_hint(cons, path=CALIBRATION_PATH):
     """生成注入预测 prompt 的「校准方向参考」文本。
 
     预测时 llm_*_pct 尚未产出，无法直接调用 calibrated_sides；这里给 LLM 的是
-    历史校准偏差、本场两侧市场隐含概率基线，以及两侧等价的 edge 判据，
-    让它在生成方向时自行做对称校验。只作参考，不强制服从，也不改落库字段。
+    历史校准偏差与本场两侧市场隐含概率基线。只作参考，不强制服从，也不改落库字段。
     """
     payload = load_calibration(path)
     params = payload.get("params", {})
@@ -543,12 +539,5 @@ def direction_calibration_hint(cons, path=CALIBRATION_PATH):
         "本场市场两侧隐含概率（1/赔率，未去水）：大小球 "
         + ("、".join(ou_lines) if ou_lines else "暂无")
         + "；亚盘 " + ("、".join(ah_lines) if ah_lines else "暂无") + "。"
-    )
-    lines.append(
-        "方向规则：两侧都算 edge（校准后概率 − 赔率隐含概率），判据只用 edge，"
-        "禁止用概率过半当阈值；两侧 edge 差小于 0.03 时取市场共识侧/让方，"
-        "不得默认受让方或小球；模型与市场分歧>15pp、名义EV≥100%、未确认首发、"
-        "短休、xG样本<5、密集赛程等降权条件对两侧等价，不得只压让方/强队侧；"
-        "整数盘走水使两侧概率之和小于 1 属正常，不是错误数据。"
     )
     return "\n".join(lines)

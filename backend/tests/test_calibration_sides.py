@@ -1,8 +1,8 @@
 """方向对称校验的失败测试（TDD RED）。
 
 覆盖：Platt 校准双侧换算、整数盘走水、quarter line 无整场走水、
-缺赔率/缺校准参数标 UNAVAILABLE、两侧 edge 判据（不用 50% 阈值）、
-两侧 edge 接近时回落到市场共识侧（让方），以及共用赔率工具。
+缺赔率/缺校准参数标 UNAVAILABLE、两侧 edge 判据（不用 50% 阈值、取 edge 较高侧）、
+以及共用赔率工具。
 """
 import json
 import math
@@ -99,24 +99,24 @@ def test_edge_not_fifty_percent_threshold_decides_side(tmp_path):
     assert r["suggested_side"] == "under"
 
 
-def test_near_equal_edges_fall_back_to_market_consensus_giving_side(tmp_path):
+def test_near_equal_edges_favor_higher_edge_side(tmp_path):
     path = _write_calibration(tmp_path, {"ah": {"a": 1.0, "b": 0.0}})
-    # 选中受让方（弱队），但两侧 edge 差小于 margin 时应回落到让方 home
+    # 两侧 edge 接近时不再回落市场共识侧，改取 edge 较高一侧
     r = calibrated_sides("ah", 0.50, "away", 1.90, 2.00, -1.75, path=path)
     assert r["selected_side"] == "away"
     assert r["market_consensus_side"] == "home"
-    assert r["suggested_side"] == "home"
+    assert r["suggested_side"] == "away"
 
 
-def test_direction_hint_uses_two_sided_edge_and_no_fifty_percent_threshold(tmp_path):
+def test_direction_hint_omits_direction_rule(tmp_path):
     path = _write_calibration(tmp_path, {"ou": {"a": 1.0, "b": 0.0}})
     cons = {"ou": {2.5: {"over": 1.90, "under": 1.95}}, "ah": {}}
     hint = direction_calibration_hint(cons, path=path)
-    assert "edge" in hint
+    assert "方向规则" not in hint
+    assert "取市场共识" not in hint
+    assert "edge" not in hint
     assert "两侧" in hint
     assert "2.5" in hint
-    assert "过五成" not in hint
-    assert "50%" not in hint
 
 
 def test_direction_hint_reports_calibrated_hit_rate_from_real_params(tmp_path):
@@ -151,7 +151,7 @@ def test_calibrated_comparison_keeps_llm_side_and_suggestion_separate(tmp_path):
     assert set(out["ou"]["sides"]) == {"over", "under"}
     assert out["ah"]["llm_side"] == "away"
     assert out["ah"]["selected_side"] == "away"
-    assert out["ah"]["suggested_side"] == "home"  # 边缘接近时回落到让方
+    assert out["ah"]["suggested_side"] == "away"  # 边缘接近时取 edge 较高侧
 
 
 def test_calibrated_comparison_marks_missing_odds_unavailable(tmp_path):

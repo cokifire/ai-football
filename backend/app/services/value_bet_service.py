@@ -37,7 +37,7 @@ def _unavailable_comparison(key, side, reason):
     }
 
 
-def calibrated_comparison(p, cons, margin=0.03, path=CALIBRATION_PATH):
+def calibrated_comparison(p, cons, path=CALIBRATION_PATH):
     """生成 ou / ah 的双侧校准对照，供 LLM 原方向与校准建议方向并排展示。
 
     只读取已有预测与赔率共识，不写库、不覆盖 llm_ou_type / llm_handicap_team。
@@ -57,7 +57,7 @@ def calibrated_comparison(p, cons, margin=0.03, path=CALIBRATION_PATH):
         side = "over" if "大" in ou_type else "under"
         if mkt and raw is not None:
             r = calibrated_sides("ou", raw, side, mkt["over"], mkt["under"], ln,
-                                 path=path, margin=margin)
+                                 path=path)
         else:
             r = _unavailable_comparison("ou", side, "缺少该盘口线的两侧赔率或所选方向概率")
         r["llm_side"] = side
@@ -75,7 +75,7 @@ def calibrated_comparison(p, cons, margin=0.03, path=CALIBRATION_PATH):
         side = "away" if team == "客队" else "home"
         if mkt and raw is not None:
             r = calibrated_sides("ah", raw, side, mkt["home_side"], mkt["away_side"], hcv,
-                                 path=path, margin=margin)
+                                 path=path)
         else:
             r = _unavailable_comparison("ah", side, "缺少该盘口线的两侧赔率或所选方向概率")
         r["llm_side"] = side
@@ -182,7 +182,7 @@ def compute_value_bets(db, fixture_id, refresh=False, margin=0.03):
         markets["1x2"] = {"available": False}
 
     # 双侧校准对照：LLM 原方向与校准建议方向并排返回，不改任何落库字段。
-    comparison = calibrated_comparison(p, cons, margin=margin)
+    comparison = calibrated_comparison(p, cons)
 
     # ── 大小球 ──
     ou_type = (p.get("llm_ou_type") or "").strip()

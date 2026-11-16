@@ -1408,7 +1408,6 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     # 分析方法（技能）
     - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
-    - handicap_team / ou_type 必须遵守【校准方向参考】的两侧对称规则：两侧都算 edge，降权条件两侧等价；deep_report 写出两侧 edge 的比较依据。
 
     # output-schema
     一致性硬约束：win/handicap/ou 必须来自同一份最终 1X2 分布。半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
