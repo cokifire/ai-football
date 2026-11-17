@@ -56,6 +56,9 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
   const [pctInputs, setPctInputs] = useState<PctInputs>(EMPTY_PCT)
   const debouncedPct = useDebounced(pctInputs, 400)
 
+  // 盘口深浅筛选（仅影响盘口类别）
+  const [handicapDepth, setHandicapDepth] = useState('')
+
   useEffect(() => {
     const fetchAccuracy = async () => {
     setLoading(true)
@@ -68,6 +71,8 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
       if (filters.season.trim()) params.season = filters.season.trim()
       if (filters.team.trim()) params.team = filters.team.trim()
       if (filters.llmModel) params.llm_model = filters.llmModel
+      // 盘口深浅：仅影响「盘口」类别的样本与命中统计
+      if (handicapDepth) params.handicap_depth = handicapDepth
       // 置信度区间：按类别分别下发，仅影响对应类别的样本与命中统计
       for (const [key, cfg] of Object.entries(PCT_FILTERS)) {
         const range = debouncedPct[key as keyof PctInputs]
@@ -88,7 +93,7 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
     }
     }
     fetchAccuracy()
-  }, [filters.dateFrom, filters.dateTo, filters.leagueId, filters.season, filters.team, filters.llmModel, debouncedPct])
+  }, [filters.dateFrom, filters.dateTo, filters.leagueId, filters.season, filters.team, filters.llmModel, debouncedPct, handicapDepth])
 
   const setPctField = (key: keyof PctInputs, field: 'min' | 'max', value: string) => {
     setPctInputs((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }))
@@ -116,7 +121,26 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
           </div>
           <p className="mt-1 text-sm text-gray-500">按预测类别查看模型的历史命中表现</p>
         </div>
-        <span className="badge-blue">{data.length} 个类别</span>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-500" title="按让球数深浅筛选，仅影响「盘口」类别">
+            <span className="whitespace-nowrap">盘口深浅</span>
+            <select
+              value={handicapDepth}
+              onChange={(e) => setHandicapDepth(e.target.value)}
+              className="input h-8 px-2 py-1 text-xs"
+            >
+              <option value="">全部</option>
+              <option value="0">平手盘(0)</option>
+              <option value="lte0.25">浅盘 ≤0.25</option>
+              <option value="lte0.5">≤0.5</option>
+              <option value="lte0.75">≤0.75</option>
+              <option value="lte1.0">≤1.0</option>
+              <option value="lte1.5">≤1.5</option>
+              <option value="gt1.5">深盘 &gt;1.5</option>
+            </select>
+          </label>
+          <span className="badge-blue">{data.length} 个类别</span>
+        </div>
       </div>
 
       {error && (

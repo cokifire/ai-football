@@ -1444,7 +1444,6 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
 
     # output-schema
-    一致性约束：win/handicap/ou 默认来自同一份最终 1X2 分布；若你对净胜球幅度或进球总数有独立判断，让球/大小球可偏离该分布，但须在 deep_report 说明偏离依据。唯一硬约束是半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
     输出约束,请严格输出JSON格式:
     {{"win":"主胜|平局|客胜",
     "win_pct":"win 所选项的概率（win=主胜则主胜概率），如85%",

@@ -280,6 +280,7 @@ async def get_predictions_accuracy(
     ou_pct_max: float | None = Query(None, description="大小球概率百分比上限"),
     hand_pct_min: float | None = Query(None, description="盘口赢盘概率百分比下限"),
     hand_pct_max: float | None = Query(None, description="盘口赢盘概率百分比上限"),
+    handicap_depth: str | None = Query(None, description="盘口深浅过滤（仅影响盘口类别）：0 / lte0.25 / lte0.5 / lte0.75 / lte1.0 / lte1.5 / gt1.5"),
     db: Session = Depends(get_db),
 ):
     """整体分类预测准确率：胜负 / 大小球 / 盘口 / 比分Top3。
@@ -293,7 +294,7 @@ async def get_predictions_accuracy(
     }
     return await asyncio.to_thread(
         _get_accuracy_sync, db, date, date_from, date_to, league_id, season, team,
-        llm_model, category, pct_ranges
+        llm_model, category, pct_ranges, handicap_depth
     )
 
 
@@ -339,7 +340,34 @@ def _parse_pct(val) -> float | None:
         return None
 
 
-def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, llm_model, category, pct_ranges=None):
+# 盘口深浅区间 key（按 |让球数| 分层），与 tools/handicap_depth_accuracy.py 及前端筛选一致。
+_HANDICAP_DEPTH_KEYS = ("0", "lte0.25", "lte0.5", "lte0.75", "lte1.0", "lte1.5", "gt1.5")
+
+
+def _handicap_depth_key(num) -> str | None:
+    """把 llm_handicap_num（字符串）映射到盘口深浅区间 key；无法解析返回 None。"""
+    if num is None:
+        return None
+    try:
+        a = abs(float(str(num).strip()))
+    except (TypeError, ValueError):
+        return None
+    if a == 0:
+        return "0"
+    if a <= 0.25:
+        return "lte0.25"
+    if a <= 0.5:
+        return "lte0.5"
+    if a <= 0.75:
+        return "lte0.75"
+    if a <= 1.0:
+        return "lte1.0"
+    if a <= 1.5:
+        return "lte1.5"
+    return "gt1.5"
+
+
+def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, llm_model, category, pct_ranges=None, handicap_depth=None):
     pct_ranges = pct_ranges or {}
     conditions = ["f.fulltime_home IS NOT NULL AND f.fulltime_away IS NOT NULL"]
     params: dict = {}
@@ -399,6 +427,10 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ll
             # None 表示没有可验证结果，包含大小球/盘口走水，必须排除。
             if flag is None:
                 continue
+            # 盘口深浅过滤：仅对盘口类别生效，只统计落在指定深浅区间内的盘口。
+            if key == "handicap" and handicap_depth in _HANDICAP_DEPTH_KEYS:
+                if _handicap_depth_key(d.get("llm_handicap_num")) != handicap_depth:
+                    continue
             # 按该类别自己的置信度区间筛选：区间只对当前类别生效，
             # 且 pct 缺失（未解析出数值）的记录不纳入该类别样本。
             pct_min, pct_max = pct_ranges.get(key) or (None, None)
