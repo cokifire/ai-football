@@ -493,6 +493,29 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
         return None
 
 
+def _market_over25_prob(cons: dict) -> float | None:
+    """从 consensus 的 ou 共识里取「市场去水 P(大2.5)」，对齐 over25_prob 口径。
+
+    优先取 2.5 线；无 2.5 线时取两侧原始赔率最接近（最均衡）的线近似。
+    返回 0-1 概率，无大小球共识时返回 None。
+    """
+    ou = (cons or {}).get("ou") or {}
+    if not ou:
+        return None
+
+    def _devig(over_odd, under_odd):
+        over_odd, under_odd = float(over_odd), float(under_odd)
+        return (1.0 / over_odd) / (1.0 / over_odd + 1.0 / under_odd)
+
+    if 2.5 in ou:
+        s = ou[2.5]
+        return _devig(s["over"], s["under"])
+    # 无 2.5 线：取两侧原始赔率差最小的线（最接近五五开，语义最贴近 2.5）
+    line = min(ou, key=lambda ln: abs(ou[ln]["over"] - ou[ln]["under"]))
+    s = ou[line]
+    return _devig(s["over"], s["under"])
+
+
 # 固定庄家白名单（大小写不敏感匹配）。仅抓取并保留这些庄家的赔率数据，
 # 用于替代原先「取数据最多前 5 家」的逻辑，保证各家数据来源稳定一致。
 ODDS_BOOKMAKER_WHITELIST = ["Bet365", "Unibet", "SBO", "Pinnacle", "Marathonbet"]
@@ -1297,11 +1320,12 @@ def _competition_context(fixture: dict) -> str:
     if kind:
         return (
             f"本场属于{kind}。"
-            "这类比赛样本少、轮换多、战意和赛制影响大，赔率市场不可作为主要判断依据。"
+            "这类比赛样本少、轮换多、战意和赛制影响大，历史交锋与模型样本可靠性下降，"
+            "但赔率市场仍可作为先验参考；仅当市场明显失真或无有效赔率时才放弃市场判断。"
         )
     return (
-        "本场是常规联赛。赔率仍只能作为市场情绪和风险提示，"
-        "最终判断应优先依据球队状态、主客场、积分背景和近10场双方比赛历史。"
+        "本场是常规联赛。赔率市场是可用的先验，"
+        "最终判断应结合球队状态、主客场、积分背景与近10场双方比赛历史。"
     )
 
 
@@ -1312,7 +1336,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       intelligence_markdown: str = "",
                       bayes_context: dict | None = None,
                       home_xg_text: str = "", away_xg_text: str = "",
-                      calibration_hint: str = "") -> str:
+                      calibration_hint: str = "",
+                      market_over25_prob: float | None = None) -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -1358,6 +1383,14 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
         else '【市场赔率】暂无，不用预测盘口及大小球，对应的数据输出用 "-" 替代'
     )
 
+    # 市场去水大球概率：宿主已从 consensus 算好（对齐 over25_prob 口径 P>2.5）。
+    # 无大小球共识时显式写暂无，让 LLM 用 50% 兜底（blend_total 的 p_market_over25）。
+    market_over25_text = (
+        f"{market_over25_prob:.0%}"
+        if market_over25_prob is not None
+        else "暂无（blend_total 用 50% 兜底）"
+    )
+
     # 分析方法与最终输出由 codex 技能接管：技能负责推演过程，但最终回复只交付 JSON。
     skill_name = (settings.codex_skill_name or "").strip()
 
@@ -1386,6 +1419,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     *【赔率数据】
     {odds_section}
+    市场去水大球概率(P>2.5，供 blend_total 的 p_market_over25): {market_over25_text}
 
     *【贝叶斯结果】P0/P1 为宿主已计算的输入，不得伪造或杜撰盘口；你的 win/win_pct 是独立判断，可与 P1 不同但需说明依据
     P0: {json.dumps(bayes_context.get('p0', {}), ensure_ascii=False)}
@@ -1399,7 +1433,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     *【机器模型数据】XGBoost 原始输出（先验与参数，未经贝叶斯修正），仅供校准参考
     胜平负先验: {xgb_win_text}
     参考 λ（回归器原始输出，仅参考）: {lambda_text}（让球/大小球必须从你自己的最终 1X2 分布派生，不要直接用该 λ）
-    大小球参考:{pw['over25_prob']:.0%}大球
+    大小球参考(模型P>2.5，供 blend_total 的 p_model_over25):{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
     模型最高项:{model_top_text}
 
@@ -1410,13 +1444,13 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     - 请使用 ${skill_name} 的宿主路径（路径 B）完成分析。
 
     # output-schema
-    一致性硬约束：win/handicap/ou 必须来自同一份最终 1X2 分布。半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
+    一致性约束：win/handicap/ou 默认来自同一份最终 1X2 分布；若你对净胜球幅度或进球总数有独立判断，让球/大小球可偏离该分布，但须在 deep_report 说明偏离依据。唯一硬约束是半球盘恒等式：客让0.5 → 客队赢盘=P(客胜)、主队赢盘=P(平)+P(主胜)；主让0.5 → 主队赢盘=P(主胜)、客队赢盘=P(平)+P(客胜)。若你判客胜60%，客让0.5 必须下注客队(60%)，绝不能下注主队。
     输出约束,请严格输出JSON格式:
     {{"win":"主胜|平局|客胜",
     "win_pct":"win 所选项的概率（win=主胜则主胜概率），如85%",
     "score":"三个最可能比分用逗号分隔如2-1,1-1,3-0",
     "handicap_num":"让球盘口线，负数=主队让，正数=客队让，如-1=主让1球（必须取已提供赔率中的盘口）",
-    "handicap_team":"建议下注的一方：主队或客队, 填两侧 edge 比较后有赢盘价值的一方（不得只因强队让深盘就默认受让方）",
+    "handicap_team":"建议下注的一方：主队或客队",
     "handicap_pct":"handicap_team 这一方的赢盘概率，如65%",
     "ou_line":"大小球线，如2.5（必须取已提供赔率中的盘口）",
     "ou_type":"大或小","ou_pct":"ou_type 所选项的概率（大=大球概率，小=小球概率），如60%",
@@ -1560,8 +1594,13 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         try:
             # 校准方向参考只作对称校验输入；生成失败不阻断预测。
             # 赔率已在第 2 步落库，此处用同一份结构化快照取两侧市场基线。
+            # 市场去水大球概率也一并算好注入，供 blend_total 的 p_market_over25，
+            # 避免 LLM 自己去解析多庄家赔率文本。
+            market_over25_prob = None
             try:
-                calibration_hint = direction_calibration_hint(consensus([odds["odds_data"]]))
+                cons = consensus([odds["odds_data"]])
+                calibration_hint = direction_calibration_hint(cons)
+                market_over25_prob = _market_over25_prob(cons)
             except Exception as e:
                 logger.warning("校准方向参考生成失败 fixture={}: {}", fixture_id, e)
                 calibration_hint = ""
@@ -1571,7 +1610,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
                                        lineups_text, weather_text,
                                        intelligence_markdown, bayes_context,
                                        home_xg_text, away_xg_text,
-                                       calibration_hint=calibration_hint)
+                                       calibration_hint=calibration_hint,
+                                       market_over25_prob=market_over25_prob)
             llm_result, llm_model = _call_llm(prompt)
         except CodexError:
             # codex 配置/环境错误（如 schema 文件缺失）不是可重试的模型故障，

@@ -76,6 +76,38 @@ def solve_lambda(share, total, rho=-0.03):
     return lh, total - lh, model(lh, total - lh, rho)
 
 
+def total_from_over25(share, p_over25, target=2.5, rho=-0.03):
+    """由「两路份额 + 模型 P(总进球>target)」反解总进球 T。
+
+    与 solve_lambda 同构的二分：使 model(share, T)['ou'][target] == p_over25。
+    p_over25 越界夹到 [0.01, 0.99] 避免二分不收敛。
+    """
+    p = min(max(float(p_over25), 0.01), 0.99)
+    lo, hi = 0.5, 8.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        _, _, rr = solve_lambda(share, mid, rho)
+        if rr['ou'].get(target, 0.0) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def blend_total(share, p_market_over25, p_model_over25, w_model=0.35, target=2.5, rho=-0.03):
+    """市场与模型 over25 概率加权，反解用于 solve_lambda 的总进球。
+
+    p_market_over25 = 市场去水 P(总进球>target)，从赔率文本「大小球<target> 大X%」读；
+                      无大小球赔率时用 0.5（即公平 target 线）。
+    p_model_over25  = 模型 P(总进球>target)（over25_prob）。
+    加权 p_blend = (1-w_model)*p_market + w_model*p_model，再经 total_from_over25
+    反解 total。两侧同用概率、不在「线=2.5」与「P>2.5」两个维度间混算。
+    w_model 默认 0.35：市场主导，模型 over25 显著偏离市场时 total 往模型方向挪。返回 total。
+    """
+    p_blend = (1.0 - float(w_model)) * float(p_market_over25) + float(w_model) * float(p_model_over25)
+    return total_from_over25(share, p_blend, target, rho)
+
+
 def two_way(dr):
     """Elo 差值 -> 两路（非平局）胜率。dr = 主队 Elo + HFA - 客队 Elo"""
     return 1.0 / (10 ** (-dr / 400.0) + 1.0)
