@@ -880,15 +880,56 @@ def _fetch_intelligence_markdown(fixture: dict) -> tuple[str, str]:
         return "# 外部比赛情报\n\n获取失败，忽略该数据源。", "UNAVAILABLE"
 
 
+def _fetch_group_gap(db, league_id, season, group, team_id) -> str:
+    """算该队与同组前后相邻两名的积分差（按积分降序确定排名）。
+
+    - 榜首：领先第2名 X 分
+    - 末尾：落后第N-1名 X 分
+    - 中间：落后第M名 X 分、领先第M+2名 X 分（M、M+2 为具体名次）
+    组内不足两队或定位不到该队时返回空串。用 COALESCE(group_name,'') 归一化，
+    普通联赛（无 group_name）也按整个联赛算分差。
+    """
+    rows = db.execute(text("""
+        SELECT team_id, points FROM standings
+        WHERE league_id=:lid AND season=:s AND COALESCE(group_name, '') = :g
+        ORDER BY points DESC, goals_diff DESC
+    """), {"lid": league_id, "s": season, "g": group or ""}).fetchall()
+    if len(rows) < 2:
+        return ""
+    # teams 已按积分降序，下标 +1 即积分榜名次
+    teams = [(int(r[0]), int(r[1])) for r in rows]  # (team_id, points)
+    idx = next((i for i, t in enumerate(teams) if t[0] == team_id), None)
+    if idx is None:
+        return ""
+    my_pts = teams[idx][1]
+    parts = []
+    # 前一名：下标 idx-1，名次 idx；后一名：下标 idx+1，名次 idx+2
+    if idx > 0:
+        parts.append(f"落后第{idx}名{teams[idx - 1][1] - my_pts}分")
+    if idx < len(teams) - 1:
+        parts.append(f"领先第{idx + 2}名{my_pts - teams[idx + 1][1]}分")
+    return "，".join(parts)
+
+
 def _fetch_standings_text(db, team_id, league_id, season) -> str:
     row = db.execute(text("""
-        SELECT `rank`, points, goals_diff, all_played, all_win, all_draw, all_lose
+        SELECT `rank`, points, goals_diff, all_played, all_win, all_draw, all_lose, group_name
         FROM standings WHERE team_id=:tid AND league_id=:lid AND season=:s LIMIT 1
     """), {"tid": team_id, "lid": league_id, "s": season}).fetchone()
     if not row:
         return "无积分榜数据"
     d = dict(row._mapping)
-    return f"排名{d['rank']} 积{d['points']}分 {d['all_win']}胜{d['all_draw']}平{d['all_lose']}负 净胜球{d['goals_diff']}"
+    group = (d.get("group_name") or "").strip()
+    head = (
+        f"排名{d['rank']} 积{d['points']}分 "
+        f"{d['all_win']}胜{d['all_draw']}平{d['all_lose']}负 净胜球{d['goals_diff']} 已赛{d['all_played']}场"
+    )
+    if group:
+        head = f"{group} {head}"
+    gap = _fetch_group_gap(db, league_id, season, group, team_id)
+    if gap:
+        return f"{head}｜{gap}"
+    return head
 
 
 def _fetch_team_recent_via_api(team_id: int) -> str:
@@ -1397,6 +1438,7 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
     return f"""# 【比赛信息】
     {fixture.get('home_name','')} vs {fixture.get('away_name','')}
     联赛:{fixture.get('league_name','')} 赛季:{fixture.get('season','')}
+    轮次:{fixture.get('round') or '-'}
     赛事属性:{competition_context}
     阵容信息:{lineups_text}
     比赛场地:{fixture.get('venue_city','')}
