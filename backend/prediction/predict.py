@@ -880,15 +880,27 @@ def _fetch_intelligence_markdown(fixture: dict) -> tuple[str, str]:
         return "# 外部比赛情报\n\n获取失败，忽略该数据源。", "UNAVAILABLE"
 
 
-def _fetch_group_gap(db, league_id, season, group, team_id) -> str:
+_KNOCKOUT_ROUND_KEYS = ("final", "round of", "playoff", "play-off", "knockout", "淘汰")
+
+
+def _is_knockout_round(round_name: str) -> bool:
+    """判断轮次是否属于淘汰赛阶段（无积分榜排名的意义，不应算前后名次分差）。"""
+    r = (round_name or "").lower()
+    return any(k in r for k in _KNOCKOUT_ROUND_KEYS)
+
+
+def _fetch_group_gap(db, league_id, season, group, team_id, round_name: str = "") -> str:
     """算该队与同组前后相邻两名的积分差（按积分降序确定排名）。
 
     - 榜首：领先第2名 X 分
     - 末尾：落后第N-1名 X 分
     - 中间：落后第M名 X 分、领先第M+2名 X 分（M、M+2 为具体名次）
-    组内不足两队或定位不到该队时返回空串。用 COALESCE(group_name,'') 归一化，
+    淘汰赛阶段直接返回空串（积分榜排名无意义）。组内不足两队或定位不到该队
+    时也返回空串。用 COALESCE(group_name,'') 归一化，
     普通联赛（无 group_name）也按整个联赛算分差。
     """
+    if _is_knockout_round(round_name):
+        return f"这是{round_name}赛"
     rows = db.execute(text("""
         SELECT team_id, points FROM standings
         WHERE league_id=:lid AND season=:s AND COALESCE(group_name, '') = :g
@@ -911,7 +923,10 @@ def _fetch_group_gap(db, league_id, season, group, team_id) -> str:
     return "，".join(parts)
 
 
-def _fetch_standings_text(db, team_id, league_id, season) -> str:
+def _fetch_standings_text(db, team_id, league_id, season, round_name: str = "") -> str:
+    # 淘汰赛阶段无积分榜排名的意义，直接返回提示，避免输出小组赛残留积分误导模型。
+    if _is_knockout_round(round_name):
+        return f"这是{round_name}赛"
     row = db.execute(text("""
         SELECT `rank`, points, goals_diff, all_played, all_win, all_draw, all_lose, group_name
         FROM standings WHERE team_id=:tid AND league_id=:lid AND season=:s LIMIT 1
@@ -926,7 +941,7 @@ def _fetch_standings_text(db, team_id, league_id, season) -> str:
     )
     if group:
         head = f"{group} {head}"
-    gap = _fetch_group_gap(db, league_id, season, group, team_id)
+    gap = _fetch_group_gap(db, league_id, season, group, team_id, round_name)
     if gap:
         return f"{head}｜{gap}"
     return head
@@ -1590,8 +1605,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
         away_stats = _fetch_team_recent_via_db(db, fixture['away_id'], fixture['date'])
         home_xg_text = _fetch_team_tactical_xg(db, fixture['home_id'], fixture.get('date'))
         away_xg_text = _fetch_team_tactical_xg(db, fixture['away_id'], fixture.get('date'))
-        home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'])
-        away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'])
+        home_standings = _fetch_standings_text(db, fixture['home_id'], fixture['league_id'], fixture['season'], fixture.get('round') or '')
+        away_standings = _fetch_standings_text(db, fixture['away_id'], fixture['league_id'], fixture['season'], fixture.get('round') or '')
         lineups_text = _fetch_lineups_text(fixture_id, fixture['home_id'], fixture['away_id'])
         weather_text = _fetch_weather_text(fixture.get('weather_city'), fixture.get('timestamp'))
         intelligence_markdown, intel_status = _fetch_intelligence_markdown(fixture)
