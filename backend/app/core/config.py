@@ -15,6 +15,19 @@ class Settings(BaseSettings):
     # API-Football key 的滚动窗口限额；免费套餐通常为 10 次/分钟。
     api_football_rate_limit: int = 10
     api_football_rate_window: float = 60.0
+    # API-Football 代理/备用通道: 主 key 当日额度 (UTC 自然日) 耗尽时, 经这里 +
+    # 备用 key 继续请求, 不影响主 key 的状态记账 (两行 provider 分开记)。
+    # 两项都留空 = 不启用, 保持原来的快速失败行为; **代理与备用 key 必须同时
+    # 配置**才启用 —— 账号级日额度必须换 key 才恢复, IP 级封锁必须换出口,
+    # 只配一项是无效配置 (告警并按未配置处理)。
+    #   api_football_proxy           HTTP 代理, 形如 http://username:password@ip:port
+    #                              (per-channel httpx.Client(proxy=...), 不动进程
+    #                               环境变量, 避免波及并发线程里其它请求)
+    #   api_football_proxy_base_url  代理通道访问的端点 (留空=沿用主 base_url)
+    #   api_football_proxy_api_key   备用 API key (留空=视为未配置)
+    api_football_proxy: str = ""
+    api_football_proxy_base_url: str = ""
+    api_football_proxy_api_key: str = ""
 
     # 天气数据（OpenWeatherMap）
     openweathermap_api_key: str = ""

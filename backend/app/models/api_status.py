@@ -26,6 +26,11 @@ from app.db.base import Base
 
 # 主键常量。脚本里统一从这里取，避免散落的字符串拼写错误。
 PROVIDER_API_FOOTBALL = "api-football"
+# API-Football 代理通道 (备用 key) 的额度状态主键。与主 key 分两行记: 两个
+# 账号的当日额度互不相干 (主 key 耗尽不代表备用 key 也用完), 备用通道耗尽也
+# 要单独闩锁, 否则每次请求都会再打一次已耗尽的备用 key。
+# 两者都是 UTC 自然日重置 (见 api_status_service._RESET_CADENCE)。
+PROVIDER_API_FOOTBALL_PROXY = "api-football-proxy"
 # 外部比赛情报抓取 (Firecrawl search/scrape) 的额度状态主键。
 PROVIDER_FIRECRAWL = "firecrawl"
 # 代理通道 (备用 key / 代理端点) 的额度状态主键。与主 key 分两行记: 两个账号的

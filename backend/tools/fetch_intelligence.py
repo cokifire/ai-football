@@ -10,10 +10,16 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import urlparse
 
 import requests
 from loguru import logger
+
+from app.core.proxy_utils import mask_proxy_url, normalize_proxy_url
+
+# 代理 URL 脱敏/规范化的历史私有名, 保留别名避免改动下方全部调用点。
+_mask_proxy_url = mask_proxy_url
+_normalize_proxy_url = normalize_proxy_url
 
 
 INTELLIGENCE_SITES = (
@@ -197,45 +203,6 @@ def _firecrawl_proxy_config() -> dict | None:
         return config
     except Exception:  # noqa: BLE001 - 读不到配置按"未启用"处理
         return None
-
-def _normalize_proxy_url(proxy_url: str) -> str:
-    """把代理 URL 里的账号密码做百分号编码, 兼容含 # + & ( ! ~ 等特殊字符的凭证。
-
-    RFC 3986 规定 userinfo 里不允许出现 # (它是 fragment 起始符): requests 解析
-    http://nuD#Z+0-a(&8Y0X:pw@ip:port 时会把 netloc 截断成 "nuD", 于是把 "nud"
-    当目标主机去解析 DNS ( ProxyError -> NameResolutionError('nud') )。因此不能
-    指望 urlsplit 之类的标准解析 (它们同样按 RFC 截断), 这里    按 "scheme://
-    userinfo@hostport" 手工切分: 以最后一个 @ 分界 (密码允许含 @), 用户名取
-    第一个 : 之前 (密码允许含 :), 两侧先 unquote 再 quote — 对"已经写了编码
-    凭证"的配置是幂等的, 不会二次编码。
-    """
-    text = (proxy_url or "").strip()
-    if "@" not in text or "://" not in text:
-        return text
-    scheme, _, rest = text.partition("://")
-    userinfo, sep, hostport = rest.rpartition("@")
-    if not sep or ":" not in userinfo:
-        # 没有账号密码 (或只有用户名): 原样返回, 无需编码
-        return text
-    user, _, password = userinfo.partition(":")
-    encoded_user = quote(unquote(user), safe="")
-    encoded_password = quote(unquote(password), safe="")
-    return f"{scheme}://{encoded_user}:{encoded_password}@{hostport}"
-
-
-def _mask_proxy_url(proxy_url: str) -> str:
-    """把代理 URL 里的账号密码抹成 ***, 防止凭证进日志 / api_status.last_error。"""
-    text = (proxy_url or "").strip()
-    if not text or "@" not in text:
-        return text
-    scheme, _, rest = text.partition("://")
-    if not _:
-        return text
-    userinfo, sep, host = rest.rpartition("@")
-    if not sep:
-        return text
-    user = userinfo.split(":", 1)[0]
-    return f"{scheme}://{user}:***@{host}" if user else f"{scheme}://***:***@{host}"
 
 
 class _ProxiedFirecrawlClient:

@@ -38,6 +38,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.api_status import (
     PROVIDER_API_FOOTBALL,
+    PROVIDER_API_FOOTBALL_PROXY,
     PROVIDER_FIRECRAWL,
     PROVIDER_FIRECRAWL_PROXY,
 )
@@ -71,6 +72,9 @@ _RESET_CADENCE_DAILY = "daily"
 _RESET_CADENCE_MONTHLY = "monthly"
 _RESET_CADENCE: dict[str, str] = {
     PROVIDER_API_FOOTBALL: _RESET_CADENCE_DAILY,
+    # 备用 key 同样是 UTC 自然日重置, 但与主 key 分两行: 两个账号的当日额度
+    # 互不相干, 主 key 耗尽不代表备用 key 也用完。
+    PROVIDER_API_FOOTBALL_PROXY: _RESET_CADENCE_DAILY,
     PROVIDER_FIRECRAWL: _RESET_CADENCE_MONTHLY,
     # 备用账号同样是月度配额, 但重置日可能与主账号不同 (见 _reset_day_for)。
     PROVIDER_FIRECRAWL_PROXY: _RESET_CADENCE_MONTHLY,
@@ -118,6 +122,8 @@ def _quota_reset_since(provider: str, exhausted_date, today) -> bool:
 _PROVIDER_ALIASES: dict[str, str] = {
     PROVIDER_API_FOOTBALL: PROVIDER_API_FOOTBALL,
     "api_football": PROVIDER_API_FOOTBALL,
+    PROVIDER_API_FOOTBALL_PROXY: PROVIDER_API_FOOTBALL_PROXY,
+    "api_football_proxy": PROVIDER_API_FOOTBALL_PROXY,
     PROVIDER_FIRECRAWL: PROVIDER_FIRECRAWL,
     PROVIDER_FIRECRAWL_PROXY: PROVIDER_FIRECRAWL_PROXY,
 }

@@ -13,8 +13,8 @@
 
 本模块封装统一的入口 ``fetch_odds_with_fallback(fixture, db, ...)``:
 
-* **入口检查**: 先查 ``api_status`` 表 (``api-football`` 额度)。如果已耗尽, 直接走
-  Flashscore, 不再冲 API。
+* **入口检查**: 先查 ``api_status`` 表 (``has_available_channel`` — 主/备用两个
+  通道)。如果所有通道都已耗尽, 直接走 Flashscore, 不再冲 API。
 * **API 路径**: 调用 predict.py 的 ``_fetch_odds``。它内部也已封装 ``is_quota_exhausted``
   但与本服务的检查"双保险"无副作用 — 两次都查的是同一个 DB 行;
 * **降级路径**: API 没拿到 ``odds_data`` (被 quota 拦截 / 接口返回 error / 数据为
@@ -38,10 +38,7 @@ from typing import Optional
 
 from loguru import logger
 
-from app.services.api_status_service import (
-    PROVIDER_API_FOOTBALL,
-    is_quota_exhausted,
-)
+from app.core.api_football import has_available_channel
 
 
 class OddsUnavailableError(Exception):
@@ -87,12 +84,13 @@ def fetch_odds_with_fallback(
     fixture_id = fixture.get("id")
     match_date = fixture.get("date")
 
-    # ── 入口检查：api_status 配额已耗尽就别再冲 API 了 ──
-    quota_already_exhausted = is_quota_exhausted(PROVIDER_API_FOOTBALL)
-    if quota_already_exhausted:
+    # ── 入口检查：所有通道的配额都耗尽就别再冲 API 了 ──
+    # 通道感知: 主 key 当日额度耗尽但备用 key + 代理通道可用时, API 路径仍值得
+    # 一试 (api_football 客户端会自动切换), 不该直接降级到 Flashscore。
+    if not has_available_channel():
         logger.info(
-            f"[赔率] api_status 标记 api-football 当日额度已耗尽, 跳过 API 直接走 Flashscore: "
-            f"fixture_id={fixture_id}"
+            f"[赔率] api_status 标记 api-football 所有通道当日额度均已耗尽, "
+            f"跳过 API 直接走 Flashscore: fixture_id={fixture_id}"
         )
         odds = _fetch_flashscore_odds(fixture)
         if not (odds and odds.get("odds_data")):
