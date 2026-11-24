@@ -130,13 +130,13 @@ export default function AccuracyPanel({ filters }: { filters: AccuracyFilters })
               className="input h-8 px-2 py-1 text-xs"
             >
               <option value="">全部</option>
-              <option value="0">平手盘(0)</option>
-              <option value="lte0.25">浅盘 ≤0.25</option>
-              <option value="lte0.5">≤0.5</option>
-              <option value="lte0.75">≤0.75</option>
-              <option value="lte1.0">≤1.0</option>
-              <option value="lte1.5">≤1.5</option>
-              <option value="gt1.5">深盘 &gt;1.5</option>
+              <option value="0">平手盘</option>
+              <option value="lte0.25">0.25</option>
+              <option value="lte0.5">0.5</option>
+              <option value="lte0.75">0.75</option>
+              <option value="lte1.0">1.0</option>
+              <option value="lte1.5">1.5</option>
+              <option value="gt1.5">&gt;1.5</option>
             </select>
           </label>
           <span className="badge-blue">{data.length} 个类别</span>
