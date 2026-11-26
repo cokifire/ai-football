@@ -257,7 +257,7 @@ export default function PredictionsPage() {
             <span className="text-sm font-semibold text-gray-700">筛选条件</span>
             {(appliedFilters.dateFrom || appliedFilters.dateTo || appliedFilters.leagueId || appliedFilters.season || appliedFilters.team || appliedFilters.llmModel) && <span className="badge-gray">已应用</span>}
           </div>
-          <div className="flex flex-wrap items-end gap-3">
+          <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); handleSearch() }}>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">起始日期</label>
               <input type="date" className="input" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} />
@@ -293,6 +293,7 @@ export default function PredictionsPage() {
                 title="按实际生成预测的 LLM 模型筛选"
               >
                 <option value="">全部模型</option>
+                <option value="__unknown__">未知模型</option>
                 {modelOptions.map((item) => (
                   <option key={item.model} value={item.model}>
                     {item.model}（{item.count}场）
@@ -301,10 +302,10 @@ export default function PredictionsPage() {
               </select>
             </div>
             <div className="flex items-end gap-2">
-              <button className="btn btn-primary btn-sm" onClick={handleSearch}>搜索</button>
-              <button className="btn btn-secondary btn-sm" onClick={resetFilters}>重置</button>
+              <button type="submit" className="btn btn-primary btn-sm">搜索</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={resetFilters}>重置</button>
             </div>
-          </div>
+          </form>
         </div>
       </div>
 

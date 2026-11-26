@@ -25,6 +25,9 @@ router = APIRouter()
 # 单次批量预测上限：避免一次提交过多任务把 LLM / 情报抓取额度打爆。
 MAX_BATCH_SIZE = 50
 
+# 预测模型筛选的哨兵值：表示「未知模型」，即 llm_model 为空或缺失（NULL / 空串 / 纯空白）的记录。
+UNKNOWN_MODEL = "__unknown__"
+
 
 class BatchPredictRequest(BaseModel):
     fixture_ids: list[int]
@@ -394,8 +397,11 @@ def _get_accuracy_sync(db, date, date_from, date_to, league_id, season, team, ll
         conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
         params["team"] = f"%{team.strip()}%"
     if llm_model:
-        conditions.append("p.llm_model = :llm_model")
-        params["llm_model"] = llm_model.strip()
+        if llm_model.strip() == UNKNOWN_MODEL:
+            conditions.append("(p.llm_model IS NULL OR TRIM(p.llm_model) = '')")
+        else:
+            conditions.append("p.llm_model = :llm_model")
+            params["llm_model"] = llm_model.strip()
     if category:
         conditions.append("f.category = :category")
         params["category"] = category
@@ -546,8 +552,11 @@ def _get_predictions_sync(db, fixture_id, date, date_from, date_to, category, le
             conditions.append("(p.home_name LIKE :team OR p.away_name LIKE :team)")
             params["team"] = f"%{team.strip()}%"
         if llm_model:
-            conditions.append("p.llm_model = :llm_model")
-            params["llm_model"] = llm_model.strip()
+            if llm_model.strip() == UNKNOWN_MODEL:
+                conditions.append("(p.llm_model IS NULL OR TRIM(p.llm_model) = '')")
+            else:
+                conditions.append("p.llm_model = :llm_model")
+                params["llm_model"] = llm_model.strip()
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
