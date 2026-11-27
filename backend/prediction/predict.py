@@ -45,113 +45,50 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 FEATURE_COLS_PATH = os.path.join(MODELS_DIR, 'feature_cols.pkl')
 
 
-# ── API-Football 请求节流 ──
-# 统一走 app.core.api_football 的进程级共享限流器：预测路径与赛程同步路径
-# 必须共用同一份 10 次/分钟预算，否则两者叠加会把服务端推到 ~19 次/分钟。
+# ── API-Football 请求 ──
+# 统一走 app.core.api_football 的多通道客户端：节流、主备 key 自动切换、
+# 限流重试都集中在统一模块里，预测路径与赛程同步路径共用同一份预算。
 from app.core.api_football import (
-    _api_rate_limiter,
-    _rate_limit_wait_seconds,
-    is_quota_exhausted,
-    mark_quota_exhausted,
+    api_football_get_sync,
+    ApiFootballError,
+    ApiFootballQuotaExceeded,
+    ApiFootballRateLimited,
+    ApiFootballProxyError,
 )
-
-# 预测路径上 429 的重试次数（与统一 client 的 RATE_LIMIT_RETRIES 对齐）
-_API_GET_RETRIES = 3
-
-
-def _http_with_deadline(method: str, url: str, *, headers=None, params=None,
-                        json=None, timeout: float = 30.0, label: str = "HTTP"):
-    """发起 HTTP 请求并强制「墙钟超时」上限，超时/异常返回 None。
-
-    httpx 同步客户端的 timeout 不约束 DNS 解析阶段：若服务器无法访问外网
-    （DNS/连接被防火墙黑洞），请求会无限阻塞，导致后端 worker 被永久挂起
-    （表现为前端 socket hang up、curl 永久等待）。这里改用独立线程 + join 超时
-    强制设上限，让请求快速失败而非卡死进程。
-    """
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
-
-    def _do():
-        import httpx
-        return httpx.request(
-            method, url,
-            headers=headers or {}, params=params, json=json,
-            timeout=timeout,
-        )
-
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(_do)
-        try:
-            return fut.result(timeout=timeout + 5)
-        except _FuturesTimeout:
-            logger.error(
-                f"{label} 请求在 {timeout + 5:.0f}s 内无响应"
-                f"（疑似服务器无法访问外网 / DNS 解析挂起）: {url}"
-            )
-            return None
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"{label} 请求异常: {e}")
-            return None
 
 
 def _api_get(path: str, params: dict, timeout: float = 10.0) -> dict:
-    """带节流地请求 API-Football 的指定接口，返回解析后的 JSON。
+    """请求 API-Football 的指定接口，返回解析后的 JSON。
 
-    节流走 app.core.api_football 的共享限流器（与赛程同步共用同一份预算）；
-    HTTP 仍经 _http_with_deadline，保留墙钟超时保护——httpx 的 timeout 不
-    覆盖 DNS 解析阶段，见该函数说明。
+    统一走 app.core.api_football 的多通道客户端：主 key 当日额度耗尽时自动
+    切换「备用 key + 代理出口」通道（与赛程同步共用同一份 10 次/分钟预算）。
+    失败时返回 {} 供调用方降级，不抛异常——保持历史契约；唯「当日额度耗尽
+    （主备都用完）」会返回 ``{"errors": {"requests": ...}}`` 哨兵，让
+    ``_fetch_odds`` 能向上游透出 429「接口受限」而非误报「无赔率」。
     """
     if not settings.api_football_base_url:
         logger.debug("api_football_base_url 未配置，跳过 API-Football 请求")
         return {}
-    if is_quota_exhausted():
-        logger.debug(f"API-Football 当日额度已耗尽，跳过请求 [{path}]")
+    try:
+        resp = api_football_get_sync(path, params=params, timeout=timeout)
+        return resp.json()
+    except ApiFootballQuotaExceeded as e:
+        logger.warning(f"API-Football key 额度耗尽 [{path}]: {e}")
+        # 保持 _fetch_odds 的 {"__api_error__": ...} 哨兵契约, 让手动赔率抓取
+        # 端点能识别「接口受限」并返回 429, 而不是误报成「无赔率」。
+        return {"errors": {"requests": str(e)}}
+    except ApiFootballRateLimited as e:
+        logger.warning(f"API-Football 短时限流 [{path}]: {e}")
         return {}
-    url = f"{settings.api_football_base_url.rstrip('/')}/{path.lstrip('/')}"
-
-    for attempt in range(_API_GET_RETRIES):
-        # 每次真正发出的请求（含重试）都占用共享额度
-        _api_rate_limiter.acquire()
-        resp = _http_with_deadline(
-            "GET", url,
-            headers={"x-apisports-key": settings.api_football_key},
-            params=params, timeout=timeout, label="API-Football",
-        )
-        if resp is None:
-            logger.warning(f"API-Football 请求无响应 [{path}] params={params}")
-            return {}
-
-        if resp.status_code == 429:
-            if attempt >= _API_GET_RETRIES - 1:
-                logger.warning(f"API-Football 短时限流重试耗尽 [{path}]")
-                return {}
-            wait = _rate_limit_wait_seconds(resp, attempt)
-            # 共享窗口：把本地节奏一并后移，避免后续请求继续踩在同一条边界上
-            _api_rate_limiter.penalize(wait)
-            logger.warning(
-                f"API-Football 短时限流 [{path}] (429)，{wait:.1f}s 后重试 #{attempt + 1}"
-            )
-            time.sleep(wait)
-            continue
-
-        try:
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                f"API-Football 响应失败 [{path}] status={resp.status_code} "
-                f"params={params}: {e}; body={resp.text[:500]!r}"
-            )
-            return {}
-        # 即便 HTTP 200，接口也可能在 errors 字段返回限流/配额等错误（如当日请求数耗尽）
-        if isinstance(data, dict) and data.get("errors"):
-            _msg = data["errors"].get("requests") or data["errors"].get("message") or str(data["errors"])
-            logger.warning(f"API-Football 返回错误 [{path}]: {_msg}")
-            # errors.requests 是当日额度耗尽的明确信号：置位闩锁，避免后续
-            # 预测继续消耗已用尽的额度。
-            if isinstance(data["errors"], dict) and "requests" in data["errors"]:
-                mark_quota_exhausted(f"{path}: {_msg}")
-        return data
-    return {}
+    except ApiFootballProxyError as e:
+        logger.warning(f"API-Football 代理通道不可用 [{path}]: {e}")
+        return {}
+    except ApiFootballError as e:
+        logger.warning(f"API-Football 请求失败 [{path}]: {e}")
+        return {}
+    except Exception as e:  # noqa: BLE001 - json 解析失败等
+        logger.warning(f"API-Football 响应解析失败 [{path}]: {e}")
+        return {}
 
 
 def _load_feature_cols() -> list[str]:

@@ -546,6 +546,49 @@ def _client_for(channel: _Channel, *, sync: bool):
     return client
 
 
+def _client_get_with_wall_clock(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict,
+    timeout_cfg: httpx.Timeout,
+    label: str,
+) -> httpx.Response | None:
+    """在独立 daemon 线程里发起 ``client.get``, 用墙钟上限兜住 DNS 解析挂起。
+
+    httpx 的 connect/read timeout 不覆盖 DNS 解析阶段: 出口 DNS 被黑洞时
+    ``client.get`` 会无限阻塞, 拖死 worker。这里把请求放进 daemon 线程跑,
+    主线程 join 一个墙钟上限; 超时返回 None (调用方按传输错误重试), 后台
+    线程随进程自然消亡, 不拖住主流程。
+    """
+    import threading
+
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["resp"] = client.get(
+                url, headers=headers, params=params, timeout=timeout_cfg
+            )
+        except Exception as exc:  # noqa: BLE001 - 异常传回主线程重抛, 走统一重试
+            box["err"] = exc
+
+    wall_clock = CONNECT_TIMEOUT + (timeout_cfg.read or READ_TIMEOUT) + 5.0
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(wall_clock)
+    if t.is_alive():
+        logger.error(
+            f"[API-Football][{label}] 请求在 {wall_clock:.0f}s 内无响应"
+            f"（疑似 DNS 解析挂起）: {url}"
+        )
+        return None
+    if "err" in box:
+        raise box["err"]
+    return box.get("resp")
+
+
 def _main_channel() -> _Channel:
     for channel in resolve_channels():
         if channel.name == "main":
@@ -582,12 +625,19 @@ def api_football_get_sync(
             _api_rate_limiter.acquire()
             # 计时从通过限流器之后开始，避免把节流等待算成"慢请求"。
             t0 = time.monotonic()
-            r = client.get(
+            r = _client_get_with_wall_clock(
+                client,
                 url,
                 headers=_headers_for(channel),
                 params=params,
-                timeout=timeout_cfg,
+                timeout_cfg=timeout_cfg,
+                label=channel.name,
             )
+            if r is None:
+                # 墙钟超时（疑似 DNS 挂起）: 当作传输错误, 交给下面的重试逻辑。
+                raise httpx.TimeoutException(
+                    f"wall-clock deadline exceeded (suspected DNS hang): {url}"
+                )
             elapsed = time.monotonic() - t0
             if elapsed >= SLOW_LOG_THRESHOLD:
                 logger.warning(

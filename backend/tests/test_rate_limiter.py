@@ -161,8 +161,16 @@ def test_wait_for_drain_slept_is_clamped(fast_limiter):
 
 
 def test_quota_latch_fast_fails(monkeypatch):
-    """当日额度耗尽后，后续请求应立刻失败而不是继续消耗额度重试。"""
+    """当日额度耗尽后，后续请求应立刻失败而不是继续消耗额度重试。
+
+    只测「主 key 耗尽且无备用通道」的快速失败场景：显式清空代理/备用 key 配置，
+    否则 Settings 单例会读到真实 .env 里的备用通道，主 key 耗尽后自动切到
+    代理通道、发出真实网络请求，既污染测试也违背本用例的断言前提。
+    """
     monkeypatch.setattr(af.settings, "api_football_key", "dummy-key")
+    monkeypatch.setattr(af.settings, "api_football_proxy", "")
+    monkeypatch.setattr(af.settings, "api_football_proxy_base_url", "")
+    monkeypatch.setattr(af.settings, "api_football_proxy_api_key", "")
     af.reset_quota_latch()
     assert af.is_quota_exhausted() is False
 
