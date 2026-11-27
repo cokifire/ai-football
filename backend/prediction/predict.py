@@ -37,6 +37,7 @@ from prediction.bayes import (
 from prediction.training.model import fill_na_with_medians, load_feature_medians
 from app.services.calibration_service import direction_calibration_hint
 from app.services.market_odds import consensus
+from prediction.derivation import build_derived_context, convert_ou_prob
 
 import pandas as pd
 
@@ -493,10 +494,13 @@ def _parse_over_under(values, prefer_line: float | None = None) -> dict | None:
         return None
 
 
-def _market_over25_prob(cons: dict) -> float | None:
+def _market_over25_prob(cons: dict, share: float = 0.55) -> float | None:
     """从 consensus 的 ou 共识里取「市场去水 P(大2.5)」，对齐 over25_prob 口径。
 
-    优先取 2.5 线；无 2.5 线时取两侧原始赔率最接近（最均衡）的线近似。
+    优先取 2.5 线；无 2.5 线时取两侧隐含概率最接近 50/50 的最均衡线 L，
+    经泊松反解 total 后换算到 P(大2.5)，而不是把 P(大L) 直接当 P(大2.5)
+    （高线时低估 ~15-20pp）。
+    share = P(主胜)/(P(主胜)+P(客胜))（P1 两路份额），仅影响 λ 拆分。
     返回 0-1 概率，无大小球共识时返回 None。
     """
     ou = (cons or {}).get("ou") or {}
@@ -510,10 +514,9 @@ def _market_over25_prob(cons: dict) -> float | None:
     if 2.5 in ou:
         s = ou[2.5]
         return _devig(s["over"], s["under"])
-    # 无 2.5 线：取两侧原始赔率差最小的线（最接近五五开，语义最贴近 2.5）
-    line = min(ou, key=lambda ln: abs(ou[ln]["over"] - ou[ln]["under"]))
+    line = float(min(ou, key=lambda ln: abs(1 / float(ou[ln]["over"]) - 1 / float(ou[ln]["under"]))))
     s = ou[line]
-    return _devig(s["over"], s["under"])
+    return convert_ou_prob(share, _devig(s["over"], s["under"]), line, target=2.5)
 
 
 # 固定庄家白名单（大小写不敏感匹配）。仅抓取并保留这些庄家的赔率数据，
@@ -1393,7 +1396,8 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
                       bayes_context: dict | None = None,
                       home_xg_text: str = "", away_xg_text: str = "",
                       calibration_hint: str = "",
-                      market_over25_prob: float | None = None) -> str:
+                      market_over25_prob: float | None = None,
+                      derived_text: str = "") -> str:
     pw = xgb_result
     top3_str = '  '.join(f"{t['score']}({t['prob']:.0%})" for t in pw['top3'])
 
@@ -1489,10 +1493,13 @@ def _build_llm_prompt(fixture: dict, xgb_result: dict, odds_text: str,
 
     *【机器模型数据】XGBoost 原始输出（先验与参数，未经贝叶斯修正），仅供校准参考
     胜平负先验: {xgb_win_text}
-    参考 λ（回归器原始输出，仅参考）: {lambda_text}（让球/大小球必须从你自己的最终 1X2 分布派生，不要直接用该 λ）
+    参考 λ（回归器原始输出，仅参考）: {lambda_text}（让球/大小球以【参考派生值】为派生基准，不要直接用该 λ）
     大小球参考(模型P>2.5，供 blend_total 的 p_model_over25):{pw['over25_prob']:.0%}大球
     Top3比分参考: {top3_str}
     模型最高项:{model_top_text}
+
+    *【参考派生值】宿主已按 blend_total（市场65%/模型35%）+ solve_lambda 以 P1 两路份额预计算，是让球/大小球的默认派生基准，不必自己跑 core.py；有独立判断时按偏离规则（与自洽分布偏差 ≥10pp 且写明量化依据）调整
+    {derived_text or '暂无（P1 或赔率不足，按 skill 默认规则自行派生）'}
 
     *【校准方向参考】（历史统计，仅供对称校验，不强制服从）
     {calibration_hint}
@@ -1653,13 +1660,24 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
             # 市场去水大球概率也一并算好注入，供 blend_total 的 p_market_over25，
             # 避免 LLM 自己去解析多庄家赔率文本。
             market_over25_prob = None
+            cons = None
+            # P1 两路份额：无 2.5 线时 _market_over25_prob 需要它做 λ 拆分换算。
+            _p1 = bayes_context.get("p1") or {}
+            _wh, _wa = float(_p1.get("home", 0) or 0), float(_p1.get("away", 0) or 0)
+            share = _wh / (_wh + _wa) if _wh + _wa > 0 else 0.55
             try:
                 cons = consensus([odds["odds_data"]])
                 calibration_hint = direction_calibration_hint(cons)
-                market_over25_prob = _market_over25_prob(cons)
+                market_over25_prob = _market_over25_prob(cons, share)
             except Exception as e:
                 logger.warning("校准方向参考生成失败 fixture={}: {}", fixture_id, e)
                 calibration_hint = ""
+            # 宿主预计算让球/大小球派生基准（blend_total → solve_lambda），
+            # 替代 skill 让 LLM 自行 exec core.py 的不可控路径。
+            derived_text = build_derived_context(
+                bayes_context.get("p1") or {}, market_over25_prob,
+                xgb_result.get("over25_prob"), cons,
+            )
             prompt = _build_llm_prompt(fixture, xgb_result, odds_text,
                                        home_stats, away_stats,
                                        home_standings, away_standings,
@@ -1667,7 +1685,8 @@ def predict_fixture(fixture_id: int, db=None) -> dict:
                                        intelligence_markdown, bayes_context,
                                        home_xg_text, away_xg_text,
                                        calibration_hint=calibration_hint,
-                                       market_over25_prob=market_over25_prob)
+                                       market_over25_prob=market_over25_prob,
+                                       derived_text=derived_text)
             llm_result, llm_model = _call_llm(prompt)
         except CodexError:
             # codex 配置/环境错误（如 schema 文件缺失）不是可重试的模型故障，
